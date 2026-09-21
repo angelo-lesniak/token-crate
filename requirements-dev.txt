@@ -5,4 +5,4 @@
 # Ruff: the lint and format gate for the package and the tests.
 PyYAML==6.0.3
 podman-compose==1.6.0
-ruff==0.16.6
+ruff==0.16.8
