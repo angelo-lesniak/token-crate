@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Starts the Paseo daemon with its bundled web UI inside the pi container.
+# The wrapper's entrypoint has prepared the agent home and changed into the
+# project directory; Paseo finds pi on PATH and starts it in RPC mode.
+set -Eeuo pipefail
+
+# The port the set manifest declares, passed in by the wrapper, which
+# hands the same value to the forwarder; declaring it twice would let the
+# two drift, and a mismatch shows only as the `ui` start timeout.
+readonly PORT=${TOKENCRATE_UI_PORT:?the wrapper sets this from the set manifest}
+export PASEO_HOME="$HOME/.paseo"
+export PASEO_LISTEN=0.0.0.0:$PORT PASEO_WEB_UI_ENABLED=true
+# No relay (the hosted rendezvous service) and no speech: the speech
+# features download models at daemon start, and the container has no
+# route out.
+export PASEO_RELAY_ENABLED=false PASEO_DICTATION_ENABLED=false PASEO_VOICE_MODE_ENABLED=false
+readonly HEALTH="http://127.0.0.1:$PORT/api/health"
+mkdir -p "$PASEO_HOME"
+[[ ! -L "$PASEO_HOME/config.json" && ( ! -e "$PASEO_HOME/config.json" || -f "$PASEO_HOME/config.json" ) ]] \
+  || { echo "TokenCrate UI: $PASEO_HOME/config.json must be a regular file; move it aside" >&2; exit 1; }
+# Paseo refuses to start while paseo.pid names a live process. The file
+# survives in the agent home from an earlier container, whose process ids
+# mean nothing here, so it is removed: this launcher is the only daemon
+# the container will run.
+rm -f "$PASEO_HOME/paseo.pid"
+# Paseo's create-agent form takes its provider and model from what the
+# browser saved the last time, never from the daemon, so the first start
+# seeds what the daemon can do: the providers whose command lines are not
+# in this image are turned off (pi is the only one left to pick), the
+# preset the session was started with is the pi provider's default model
+# at the terminal's thinking level, and an agent profile (Paseo's saved
+# provider-and-model choice) starts an agent with one click. The daemon
+# keeps the file afterwards, so a later edit in Paseo's settings stays.
+if [[ ! -f "$PASEO_HOME/config.json" && -n "${TOKENCRATE_PRESET:-}" ]]; then
+  node - "$TOKENCRATE_PRESET" "$PASEO_HOME/config.json" <<'JS'
+const fs = require("fs");
+const crypto = require("crypto");
+const preset = process.argv[2];
+const file = process.argv[3];
+const model = `tokencrate/${preset}`;
+const providers = Object.fromEntries(["claude", "codex", "copilot", "opencode", "omp"].map((id) => [id, { enabled: false }]));
+providers.pi = { additionalModels: [{ id: model, label: model, isDefault: true, defaultThinkingOptionId: "xhigh" }] };
+const profile = {
+  id: `tokencrate-${preset}`, name: `TokenCrate ${preset}`, provider: "pi", model, thinkingOptionId: "xhigh",
+  notes: "Seeded by TokenCrate for the preset the session was started with.",
+};
+const config = { version: 1, daemon: { agentProfiles: [profile] }, agents: { providers } };
+const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+try {
+  fs.writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  fs.renameSync(temporary, file);
+} finally { fs.rmSync(temporary, { force: true }); }
+JS
+fi
+echo "TokenCrate UI: Paseo listens on port $PORT inside the container"
+# Paseo runs as a runner, a supervisor, and the daemon; a signal to the
+# runner leaves the other two behind, so the stop goes through Paseo.
+paseo daemon start --foreground &
+daemon=$!
+trap 'paseo daemon stop --force --timeout 8 >/dev/null 2>&1; wait "$daemon"' TERM INT
+ready=false
+for _ in $(seq 1 120); do
+  curl -sf -o /dev/null "$HEALTH" && { ready=true; break; }
+  kill -0 "$daemon" 2>/dev/null || { wait "$daemon"; exit 1; }
+  sleep 0.5
+done
+# Falling through silently turned a daemon that never answers into the
+# wrapper's start timeout instead of a message from the launcher.
+if [[ "$ready" != true ]]; then
+  echo "TokenCrate UI: Paseo did not answer $HEALTH within 60 seconds" >&2
+  paseo daemon stop --force --timeout 8 >/dev/null 2>&1 || true
+  wait "$daemon" || true
+  exit 1
+fi
+# The project directory is the only project: Paseo works in workspaces,
+# so the first start registers it as a local workspace (no worktree), and
+# a later start finds it in the daemon's state under the agent home.
+if ! paseo workspace ls --json 2>/dev/null | node -e '
+  const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(rows.some((row) => row && row.isolation === "local" && row.cwd === process.argv[1]) ? 0 : 1);
+' "$PWD"; then
+  paseo workspace create --isolation local --path "$PWD" --json >/dev/null \
+    || echo "TokenCrate UI: Paseo did not register $PWD as a workspace; add it in the UI" >&2
+fi
+wait "$daemon"

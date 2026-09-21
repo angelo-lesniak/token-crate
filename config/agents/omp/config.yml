@@ -1,0 +1,17 @@
+# Static oh-my-pi settings. The entrypoint writes them into the agent home
+# with modelRoles.default for the selected preset, and names this file in
+# PI_CONFIG_FILES, whose values outrank the home copy and the project.
+autolearn:
+  enabled: false
+enabledProviders: []
+# Start at the highest thinking level; the generated model list clamps it to
+# what the preset accepts (xhigh on Qwen presets, high on gpt-oss).
+defaultThinkingLevel: xhigh
+# The shell of the bash tool. A key set here cannot be changed in-app.
+shellPath: /bin/bash
+# The onboarding wizard asks an interactive session to sign in to a provider
+# and stores its completion in the home, which is a fresh tmpfs at every
+# start: it would open at every interactive session and can reach no
+# provider from here. The model comes from the generated list instead.
+startup:
+  setupWizard: false

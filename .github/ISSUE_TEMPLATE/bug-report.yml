@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible TokenCrate problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include credentials, private model paths, prompts, project
+        content, or vulnerability details. Use GitHub private vulnerability
+        reporting for security issues.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include the command, expected result, and actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: pins
+    attributes:
+      label: Pins and preset
+      description: Paste the output of `bash bin/tokencrate pins` and name the preset.
+      placeholder: qwen3.8-27b-q4
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Container engine
+      options:
+        - Rootless Podman with podman-compose
+        - Docker Engine with Compose v2
+        - Other / configuration only
+    validations:
+      required: true
+  - type: textarea
+    id: host
+    attributes:
+      label: Host and GPU details
+      description: Include OS, engine/Compose, NVIDIA driver, GPU, and nvidia-ctk versions when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or reports
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed credentials, prompts, and private paths from this report.
+          required: true
+        - label: I ran `bash bin/tokencrate doctor` when the problem involves the host or the GPU.
+          required: false

@@ -1,0 +1,25 @@
+schema = 1
+description = "Qwen3.8-27B uncensored (abliterated by huihui-ai): Unsloth's UD-Q4_K_XL requantized after abliteration (17.4 GB), with MTP heads"
+upstream_model = "Qwen/Qwen3.8-27B"
+model_card = "https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF/blob/8f1b52408a2f6e317535190c9386f776cacf0079/README.md"
+# The same file layout as unsloth/Qwen3.8-27B-GGUF UD-Q4_K_XL (arch qwen35,
+# 866 tensors, the blk.64.nextn.* MTP tensors, an identical embedded chat
+# template; compared from the GGUF headers at the pinned commits), so the
+# shipped patched template applies unchanged. The card says layers 18 to 51 were
+# ablated with Sumandora/remove-refusals-with-transformers and MTP and
+# vision were left untouched. The repository moves often; the pin is the
+# commit of 2026-09-17.
+mtp = true
+chat_template_file = "qwen3.8-27b-agent.jinja"
+
+[[license]]
+name = "Apache License 2.0 (Qwen3.8-27B; the abliteration inherits it)"
+url = "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF"
+revision = "8f1b52408a2f6e317535190c9386f776cacf0079"
+source = "Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf"
+size = 17378626464
+sha256 = "ebbc66b45cf36bf47dc052d560337ff047a8b4eef851c8919d83d623703b6aa4"

@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Questions and setup help
+    url: https://github.com/angelo-lesniak/token-crate/discussions/categories/q-a
+    about: Ask for help with installation, configuration, presets, and agents.
+
+  - name: Ideas and feature discussions
+    url: https://github.com/angelo-lesniak/token-crate/discussions/categories/ideas
+    about: Suggest and discuss possible improvements before opening an issue.

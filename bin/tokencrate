@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# TokenCrate entry point: runs the Python package next to this script with the
+# caller's working directory unchanged (`agent` mounts it as the project).
+# -P keeps that directory off the module path: a project that carries its own
+# `tokencrate` package must not run on the host.
+set -eu
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+python=python3
+command -v "$python" >/dev/null 2>&1 || python=python
+if ! command -v "$python" >/dev/null 2>&1; then
+  printf 'TokenCrate: python3 was not found; install Python 3.11 or newer.\n' >&2
+  exit 1
+fi
+if ! "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+  printf 'TokenCrate: %s is too old; Python 3.11 or newer is required.\n' \
+    "$("$python" --version 2>&1)" >&2
+  exit 1
+fi
+PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" exec "$python" -P -m tokencrate "$@"

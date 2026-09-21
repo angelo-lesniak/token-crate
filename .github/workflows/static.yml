@@ -1,0 +1,38 @@
+name: static
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install static tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep shellcheck
+          python3 -m pip install -r requirements-dev.txt
+
+      - name: Run project checks
+        # The runner checks out only tracked files, so this is also the proof
+        # that the gate needs no untracked artifact from a developer checkout.
+        env:
+          # A missing tool must fail CI, never silently skip its component.
+          TOKENCRATE_STATIC_STRICT: "1"
+        run: bash tests/static.sh
+
+      - name: Lint Dockerfiles
+        run: |
+          for dockerfile in services/llama/Dockerfile services/agents/Dockerfile; do
+            docker run --rm --interactive hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e \
+              hadolint --failure-threshold warning - < "$dockerfile"
+          done

@@ -1,0 +1,74 @@
+schema = 1
+description = "Qwen3.8-Flash-Next (125B, 6B active) Q4, experts in system memory: the 96 GB RAM tier"
+model_set = "qwen3.8-flash-next-ud-q4-k-xl"
+
+# Measured on an RTX 5090 with 96 GB of RAM (docs/validation.md): 26.2 GiB
+# held on the card at these settings, 33 to 34 tokens per second of
+# generation, 120 (a short prompt) to 740 (6K and 12K prompts) of prompt
+# processing, every smoke check passed. The
+# weights in system memory are memory-mapped, so the host
+# shows them as page cache (86 GiB), not as used memory. Sources: the Unsloth guide (https://unsloth.ai/docs/models/qwen3.8-next)
+# and the model card, which give the sampling defaults and the thinking
+# controls; the memory arithmetic is in docs/models.md.
+[server]
+# Only the 12 sparse-attention layers of the 48 hold a KV cache (2 KV heads,
+# head size 256): about 1.6 GiB at 128K in q8_0, so the long slot is cheap.
+ctx_size = 131072
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+# The transformer weights are about 82 GB after the 29 GB n-gram table,
+# nearly all of it experts: 1,576 MiB per layer (the loader's buffer
+# sizes at verbosity 4). The card takes the attention and DeltaNet
+# weights, the cache (1.6 GiB at 128K in q8_0, plus the indexer's 0.2),
+# the compute buffers (4.1 GiB at the 2048 micro-batch), and the experts
+# of 10 layers: 20.1 GiB of model buffer, 26.2 GiB held in all, 4.2 GiB
+# of a 32 GB card free. The experts of the other 38 layers stay in system
+# memory, 60 GiB mapped, and the n-gram table is another 27 GiB when it
+# stays resident: 87 of the 93 GiB a 96 GB host reports, so the preset
+# does not depend on how much of the table llama.cpp keeps. Lower it
+# while nvidia-smi shows headroom; raise it when the card is full.
+n_cpu_moe = 38
+flash_attn = "auto"
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+# The 36 Gated DeltaNet layers cannot KV-shift, like the 27B's; 16
+# checkpoints as in the 27B's 128K preset.
+ctx_checkpoints = 16
+# The 2048 micro-batch: 740 tokens per second on the 6,052-token bench
+# prompt and 730 to 790 on two 12,052-token ones, against 324 at the
+# default, for 2.1 GiB more of compute buffer; the two expert layers kept
+# off the card to pay for it cost about 1 token per second of generation.
+# llama.cpp issue 28282 (a CUDA illegal memory access at this micro-batch
+# on this card class, reported on a GLM model) did not show on the 12K
+# prompts.
+batch_size = 2048
+ubatch_size = 2048
+# load-mode = "none" ([server.extra]), which the loader recommends over
+# the memory map for CPU tensor overrides, measured 242 and 1,315 tokens
+# per second of prompt processing with this micro-batch (119 and 740
+# mapped) and the same generation, but reads the experts into 58 GiB of
+# memory the kernel cannot reclaim (free: 69 GiB used, 24 available,
+# under 1 GiB free, up to 3,000 pages swapped in per second during the
+# bench), which the n-gram table's on-demand reads then share with
+# everything else on the host. Not set; to try it, add these two lines
+# at the end of this file:
+#   [server.extra]
+#   load-mode = "none"
+# No MTP on the pinned build (llama.cpp pull request 28243 is open, and it
+# needs separate draft files); the ngram speculation types are the thing
+# to try for speed, unmeasured.
+reasoning_effort = "xhigh"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+# The card's thinking-mode defaults.
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+
+[requires]
+vram_gib = 30
+ram_gib = 96

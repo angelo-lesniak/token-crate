@@ -1,0 +1,49 @@
+schema = 1
+description = "Qwen3.8-Flash-Next uncensored (orcarouter's refusal removal), plain Q4_K_S in 3 parts (111.8 GB), Qwen Community License, gated repository: the 96 GB RAM tier"
+upstream_model = "Qwen/Qwen3.8-Flash-Next"
+model_card = "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF/blob/0434906af7b5202b676d43f108cf4f73d25691ef/README.md"
+# The most downloaded uncensored build of this model when it was pinned
+# (198K downloads and 341 likes against 52.6K and 75 for huihui-ai's), by the
+# method that placed first of eight in a benchmark of uncensored
+# Qwen3.8-27B builds (https://nathan.sapwell.net/posts/qwen38-27b-abliteration/);
+# nobody has benchmarked it on Flash-Next. Plain llama.cpp quants, not
+# Unsloth's dynamic ones; at 4 bits the n-gram table keeps its 4-bit floor
+# either way. The repository is gated with automatic approval: accept its
+# terms on Hugging Face and set HF_TOKEN before models fetch. Read from
+# the card and the GGUF header with a token: the method is abliteration, the
+# architecture is qwen4exp, and the embedded chat template is not the
+# Unsloth file's (8,952 characters against 9,993), so the patched template
+# below replaces a different original; the first smoke run shows whether
+# the file works with it. The repository tags
+# itself Apache-2.0; the weights derive from Qwen3.8-Flash-Next, whose
+# license is linked below.
+mtp = false
+chat_template_file = "qwen3.8-27b-agent.jinja"
+
+[[license]]
+name = "Qwen Community License 1.0 (Qwen3.8-Flash-Next)"
+url = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF"
+revision = "0434906af7b5202b676d43f108cf4f73d25691ef"
+source = "Qwen3.8-Flash-Next-Uncensored-Q4_K_S-00001-of-00003.gguf"
+size = 44888775360
+sha256 = "8f940bf64c9a62a4dce1935999ac8ed287bb90ff5a4e5cc22ddac767cd56557d"
+
+[[file]]
+role = "split"
+repository = "orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF"
+revision = "0434906af7b5202b676d43f108cf4f73d25691ef"
+source = "Qwen3.8-Flash-Next-Uncensored-Q4_K_S-00002-of-00003.gguf"
+size = 44934400672
+sha256 = "d19d80982e5fa2416a21342be71e5d8041c0c088720ac5cc54bca79a9eafb10c"
+
+[[file]]
+role = "split"
+repository = "orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF"
+revision = "0434906af7b5202b676d43f108cf4f73d25691ef"
+source = "Qwen3.8-Flash-Next-Uncensored-Q4_K_S-00003-of-00003.gguf"
+size = 21946739488
+sha256 = "6be547f9575cfdf23314426d62fb65ef4052841dd156f7b77dd79a93da3e4087"

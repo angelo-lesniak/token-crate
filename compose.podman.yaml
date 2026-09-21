@@ -1,0 +1,12 @@
+# Rootless Podman maps the host user into every container with keep-id so
+# bind-mounted files keep their ownership. Docker needs only `user:`, which
+# compose.yaml sets for every service.
+x-keep-id: &keep-id
+  userns_mode: "keep-id:uid=${HOST_UID:-1000},gid=${HOST_GID:-1000}"
+
+services:
+  llama: *keep-id
+  agent-pi: *keep-id
+  agent-ui: *keep-id
+  ui-forward: *keep-id
+  agent-omp: *keep-id

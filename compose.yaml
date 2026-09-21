@@ -1,0 +1,344 @@
+name: "${COMPOSE_PROJECT_NAME:-tokencrate}"
+
+# Shared hardening for interactive coding-agent containers. Agents reach only
+# the model through the internal `agents` network; compose.agent-egress.yaml
+# adds the default network for one session when the user asks for it. A
+# browser UI has its own internal network (`ui`), so a terminal agent of any
+# project can neither resolve nor reach a running UI.
+x-agent-common: &agent-common
+  read_only: true
+  init: true
+  pids_limit: 512
+  cap_drop: ["ALL"]
+  security_opt:
+    - no-new-privileges:true
+  stdin_open: true
+  tty: true
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  networks: [agents]
+  working_dir: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
+  tmpfs:
+    # `exec` is explicit because Docker mounts a tmpfs `noexec` unless told
+    # otherwise and Podman does not: a toolchain that builds a program and
+    # runs it under /tmp (odin) would work on one engine and not the other.
+    # It removes no boundary; the project directory is writable and
+    # executable, which is where a session's own code lives.
+    - &agent-tmp "/tmp:rw,exec,nosuid,nodev,mode=1777,size=${LLM_AGENT_TMPFS_SIZE:-1g}"
+    # World-writable like /tmp: the entrypoint runs as the host user, not root.
+    - &agent-run "/run/tokencrate:rw,nosuid,nodev,mode=1777,size=64m"
+    # The home is a tmpfs that lives as long as the container. Only the
+    # transcript directories (and the UI state on agent-ui) are bound from
+    # the host; each ancestor of such a bind needs a tmpfs of its own, owned
+    # by the host UID on both engines, because the engines otherwise create
+    # root-owned mount points for nested mounts. The wrapper spells that
+    # owner per engine (`U` on Podman, `uid=,gid=` on Docker); a Compose
+    # call without it fails here instead of building a home the host user
+    # cannot write to.
+    - &home-root "/home/agent:rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
+
+# Every pin is an argument so an image never builds from a value that is
+# not in pins.env.
+x-agent-build: &agent-build
+  context: .
+  args:
+    NODE_TAG: "${NODE_TAG:?pin it in pins.env}"
+    NODE_DIGEST: "${NODE_DIGEST:?pin it in pins.env}"
+    BUN_TAG: "${BUN_TAG:?pin it in pins.env}"
+    BUN_DIGEST: "${BUN_DIGEST:?pin it in pins.env}"
+    PI_VERSION: "${PI_VERSION:?pin it in pins.env}"
+    OMP_VERSION: "${OMP_VERSION:?pin it in pins.env}"
+
+x-agent-mounts:
+  project: &agent-project-mount
+    type: bind
+    source: "${LLM_AGENT_PROJECT_DIR:-./local/project}"
+    target: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
+  skills: &agent-skills-mount
+    type: bind
+    source: "${LLM_SKILLS_DIR:-./data/skills}"
+    target: /opt/tokencrate/skills
+    read_only: true
+  repo-skills: &agent-repo-skills-mount
+    type: bind
+    source: "${TOKENCRATE_ROOT:-.}/config/skills"
+    target: /opt/tokencrate/skills-repo
+    read_only: true
+  local-skills: &agent-local-skills-mount
+    type: bind
+    source: "${LLM_LOCAL_SKILLS_DIR:-./local/skills}"
+    target: /opt/tokencrate/skills-local
+    read_only: true
+
+x-agent-pi-tmpfs: &agent-pi-tmpfs
+  - *agent-tmp
+  - *agent-run
+  - *home-root
+  - "/home/agent/.pi:rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
+  - "/home/agent/.pi/agent:rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
+
+x-agent-pi-volumes: &agent-pi-volumes
+  - *agent-project-mount
+  - &pi-sessions
+    type: bind
+    source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/.pi/agent/sessions"
+    target: /home/agent/.pi/agent/sessions
+  - &pi-etc-tokencrate-agent
+    type: bind
+    source: "${TOKENCRATE_ROOT:-.}/config/agents/pi"
+    target: /etc/tokencrate/agent
+    read_only: true
+  - &pi-etc-tokencrate-agent-generated
+    type: bind
+    source: "${TOKENCRATE_ROOT:-.}/build/agents/pi/models.json"
+    target: /etc/tokencrate/agent-generated/models.json
+    read_only: true
+  - *agent-skills-mount
+  - *agent-repo-skills-mount
+  - *agent-local-skills-mount
+
+x-agent-environment: &agent-environment
+  HOME: /home/agent
+  XDG_CONFIG_HOME: /home/agent/.config
+  XDG_CACHE_HOME: /tmp/cache
+  XDG_STATE_HOME: /home/agent/.local/state
+  npm_config_cache: /tmp/npm
+  BUN_INSTALL_CACHE_DIR: /tmp/bun
+  # oh-my-pi runs its bash tool as a login shell unless this is set, which
+  # would execute a ~/.profile written into the home during the session.
+  # pi already passes --noprofile --norc.
+  PI_BASH_NO_LOGIN: "1"
+  UMASK: "${UMASK:-0002}"
+  TOKENCRATE_PRESET: "${TOKENCRATE_PRESET:-}"
+  TOKENCRATE_SKILL_SETS: "${LLM_SKILL_SETS:-}"
+  TOKENCRATE_PROJECT_DIR: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
+  GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-}"
+  GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-}"
+  GIT_COMMITTER_NAME: "${GIT_AUTHOR_NAME:-}"
+  GIT_COMMITTER_EMAIL: "${GIT_AUTHOR_EMAIL:-}"
+
+services:
+  llama:
+    # Every image tag is interpolated from pins.env (--env-file).
+    image: "${TOKENCRATE_IMAGE:-tokencrate/llama}:${LLAMA_CPP_TAG:?pin it in pins.env}"
+    build:
+      context: .
+      dockerfile: services/llama/Dockerfile
+      args:
+        LLAMA_CPP_TAG: "${LLAMA_CPP_TAG:?pin it in pins.env}"
+        LLAMA_CPP_DIGEST: "${LLAMA_CPP_DIGEST:?pin it in pins.env}"
+    init: true
+    read_only: true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    restart: "${RESTART_POLICY:-no}"
+    stop_grace_period: "${STOP_GRACE_PERIOD:-60s}"
+    pids_limit: "${LLM_PIDS_LIMIT:-1024}"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=${LLM_TMPFS_SIZE:-2g}"
+    ports:
+      # Published on loopback only; no setting widens it. Container port 8080
+      # must match the --port of the router in services/llama/Dockerfile.
+      - "127.0.0.1:${LLM_PORT:-4207}:8080"
+    # The GPU device request lives in compose.gpu.yaml so CPU-only checks can
+    # run the same image without a CDI device.
+    networks: [default, agents, ui]
+    volumes:
+      - type: bind
+        source: "${LLM_MODELS_DIR:-./data/models}"
+        target: /models
+        read_only: true
+      - type: bind
+        source: ./build/models.ini
+        target: /etc/tokencrate/models.ini
+        read_only: true
+      - type: bind
+        source: ./config/chat-templates
+        target: /etc/tokencrate/chat-templates
+        read_only: true
+      - type: bind
+        source: ./config/llama/ui-config.json
+        target: /etc/tokencrate/ui-config.json
+        read_only: true
+    environment:
+      # CDI is the only device source; the base image's inherited
+      # NVIDIA_VISIBLE_DEVICES=all must not inject a second device set.
+      NVIDIA_VISIBLE_DEVICES: void
+      # llama.cpp offline mode for the router and every model server it
+      # starts: model files come from the mounted library only, never from a
+      # URL or Hugging Face at start (the renderer refuses those options too).
+      LLAMA_ARG_OFFLINE: "1"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+      # The CUDA backend runs every fp32 GEMM as TF32 unless told otherwise;
+      # on GLM-5.3-Flash that dropped top-1 agreement from 0.9995 to 0.896
+      # (llama.cpp pull request 27754). Harmless for the presets that run today.
+      NVIDIA_TF32_OVERRIDE: "0"
+      HOME: /tmp
+      CUDA_CACHE_PATH: /tmp/cuda-cache
+      LLAMA_CACHE: /tmp/llama-cache
+    labels:
+      # SHA-256 of the rendered build/models.ini the container was started
+      # with. It is part of the service configuration, so Compose
+      # recreates the container on `up` when the rendered configuration changed.
+      io.tokencrate.config-sha256: "${TOKENCRATE_CONFIG_SHA256:-}"
+
+  agent-pi:
+    <<: *agent-common
+    profiles: ["agent-pi"]
+    # The Dockerfile is rendered by the wrapper into a directory named by the
+    # selection's digest: the pi stage of services/agents/Dockerfile plus the
+    # selected agent sets. The tag carries the digest, so images of different
+    # selections coexist; a build without the wrapper finds no Dockerfile.
+    image: "${TOKENCRATE_AGENT_PI_IMAGE:-tokencrate/agent-pi}:${PI_VERSION:?pin it in pins.env}-node${NODE_TAG:?pin it in pins.env}-${TOKENCRATE_AGENT_SETS_TAG:-unrendered}"
+    build:
+      <<: *agent-build
+      dockerfile: "build/agents/pi/${TOKENCRATE_AGENT_SETS_TAG:-unrendered}/Dockerfile"
+      target: agent
+    environment:
+      <<: *agent-environment
+      TOKENCRATE_AGENT: pi
+      # The port the UI set's manifest declares; the launcher inside the
+      # container and the forwarder below take it from here, so the port
+      # is written once, in the manifest.
+      TOKENCRATE_UI_PORT: "${TOKENCRATE_UI_PORT:-}"
+    tmpfs: *agent-pi-tmpfs
+    volumes: *agent-pi-volumes
+
+  # Templates: the wrapper resolves these services and extends them under
+  # one distinct pair of names per UI set. It never starts these generic names.
+  # A browser UI for pi (`ui <set>`): the agent-pi image with a UI command
+  # from the selected agent set instead of `pi`, detached, on the internal
+  # `ui` network only, shared with the model and all browser UI pairs.
+  # The host reaches it through ui-forward.
+  agent-ui:
+    <<: *agent-common
+    profiles: ["ui"]
+    networks: [ui]
+    # The UI launchers stop their daemon on TERM, and Paseo gives that
+    # stop 8 seconds; the 10-second default would cut it short.
+    stop_grace_period: 20s
+    image: "${TOKENCRATE_AGENT_PI_IMAGE:-tokencrate/agent-pi}:${PI_VERSION:?pin it in pins.env}-node${NODE_TAG:?pin it in pins.env}-${TOKENCRATE_AGENT_SETS_TAG:-unrendered}"
+    build:
+      <<: *agent-build
+      dockerfile: "build/agents/pi/${TOKENCRATE_AGENT_SETS_TAG:-unrendered}/Dockerfile"
+      target: agent
+    command: ["${TOKENCRATE_UI_COMMAND:-tokencrate-ui}"]
+    environment:
+      <<: *agent-environment
+      TOKENCRATE_AGENT: pi
+      TOKENCRATE_UI_PORT: "${TOKENCRATE_UI_PORT:-}"
+    tmpfs: *agent-pi-tmpfs
+    volumes:
+      - *agent-project-mount
+      - *pi-sessions
+      - *pi-etc-tokencrate-agent
+      - *pi-etc-tokencrate-agent-generated
+      - *agent-skills-mount
+      - *agent-repo-skills-mount
+      - *agent-local-skills-mount
+      - type: bind
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/.pi-web"
+        target: /home/agent/.pi-web
+      - type: bind
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/.paseo"
+        target: /home/agent/.paseo
+
+  # Publishes the UI on loopback. A container that sits only on an internal
+  # network cannot publish a port on Docker, so this one also joins
+  # `ui-publish`, a network of its own that no agent can reach (an `--egress`
+  # session joins `default`, not this one), and forwards to agent-ui; the
+  # script also refuses requests for another host name, from another web
+  # origin, or from another site (services/agents/ui-forward.js).
+  ui-forward:
+    image: "docker.io/library/node:${NODE_TAG:?pin it in pins.env}@sha256:${NODE_DIGEST:?pin it in pins.env}"
+    profiles: ["ui"]
+    init: true
+    read_only: true
+    pids_limit: 64
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    networks: [ui-publish, ui]
+    ports:
+      # Loopback only, like the llama port. The container listens on 8080.
+      - "127.0.0.1:${TOKENCRATE_UI_HOST_PORT:-4224}:8080"
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=16m"
+    environment:
+      HOME: /tmp
+    volumes:
+      - type: bind
+        source: "${TOKENCRATE_ROOT:-.}/services/agents/ui-forward.js"
+        target: /etc/tokencrate/ui-forward.js
+        read_only: true
+    # The fallback is a port nothing listens on, so that the static gate can
+    # render this profile without the wrapper; `ui` always sets the real one.
+    command: ["node", "/etc/tokencrate/ui-forward.js", "${TOKENCRATE_UI_SERVICE:-agent-ui}", "${TOKENCRATE_UI_PORT:-0}", "8080", "${TOKENCRATE_UI_HOST_PORT:-4224}"]
+
+  agent-omp:
+    <<: *agent-common
+    profiles: ["agent-omp"]
+    image: "${TOKENCRATE_AGENT_OMP_IMAGE:-tokencrate/agent-omp}:${OMP_VERSION:?pin it in pins.env}-bun${BUN_TAG:?pin it in pins.env}"
+    build:
+      <<: *agent-build
+      dockerfile: services/agents/Dockerfile
+      target: omp
+    environment:
+      <<: *agent-environment
+      TOKENCRATE_AGENT: omp
+    tmpfs:
+      - *agent-tmp
+      - *agent-run
+      - *home-root
+      - "/home/agent/.omp:rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
+      - "/home/agent/.omp/agent:rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
+    volumes:
+      - *agent-project-mount
+      # oh-my-pi reads its global context file from the home, so the
+      # repository's copy is bound there read-only. Its settings are not:
+      # the entrypoint writes them into the home from the same repository
+      # file, which it also keeps as the overlay in PI_CONFIG_FILES, so a
+      # choice saved in a session applies and never outranks the file.
+      - type: bind
+        source: ./config/agents/omp/AGENTS.md
+        target: /home/agent/.omp/agent/AGENTS.md
+        read_only: true
+      - type: bind
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/omp}/.omp/agent/sessions"
+        target: /home/agent/.omp/agent/sessions
+      - type: bind
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/omp}/.omp/agent/blobs"
+        target: /home/agent/.omp/agent/blobs
+      - type: bind
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/omp}/.omp/agent/terminal-sessions"
+        target: /home/agent/.omp/agent/terminal-sessions
+      - type: bind
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/omp}/.omp/agent/custom-session-files"
+        target: /home/agent/.omp/agent/custom-session-files
+      - type: bind
+        source: ./config/agents/omp
+        target: /etc/tokencrate/agent
+        read_only: true
+      - type: bind
+        source: ./build/agents/omp/models.yml
+        target: /etc/tokencrate/agent-generated/models.yml
+        read_only: true
+      - *agent-skills-mount
+      - *agent-repo-skills-mount
+      - *agent-local-skills-mount
+
+networks:
+  default:
+  # Internal: containers on this network reach each other and no external
+  # host. On Docker the bridge gateway would stay reachable, so host services
+  # bound to all interfaces would be visible to an agent; compose.docker.yaml
+  # removes the gateway address from both internal networks.
+  agents:
+    internal: true
+  # All browser UIs, the model, and their forwarders; no terminal agent.
+  ui:
+    internal: true
+  # Only forwarders, so their published ports have a route to the host.
+  ui-publish:

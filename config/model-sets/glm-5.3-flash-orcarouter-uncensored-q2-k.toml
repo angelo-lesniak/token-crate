@@ -1,0 +1,54 @@
+schema = 1
+description = "GLM-5.3-Flash uncensored (orcarouter's refusal removal), plain Q2_K in 3 parts (116.9 GB), MIT, gated repository: fits 96 GB of RAM with no margin; needs a llama.cpp build with glm5next"
+upstream_model = "zai-org/GLM-5.3-Flash"
+model_card = "https://huggingface.co/orcarouter/GLM-5.3-Flash-Uncensored-GGUF/blob/47be41dfee785dd4247b9b0ecf765137fb9f5f7e/README.md"
+# Chosen for the method: orcarouter's technique placed first of eight in a
+# benchmark of uncensored Qwen3.8-27B builds (82 percent compliance, KL
+# about 0.04; https://nathan.sapwell.net/posts/qwen38-27b-abliteration/);
+# nobody has benchmarked it on GLM. Quality risk: a plain 2-bit Q2_K, not
+# an Unsloth dynamic quant (Unsloth's UD-Q2_K_XL sits at KL 0.38, a plain
+# Q2_K is worse), so expect visible degradation against the UD-Q2_K_XL set;
+# the next quant, Q3_K_M at 153 GB, does not fit. Memory: with the card
+# taking about 23 GB of weights, system memory holds 87.2 GiB of the
+# 93.35 GiB a 96 GB host reports, which leaves about 6 GiB for everything
+# else on the host (the preset gives it a 64K slot to hand the card a
+# little more); the failure mode is swapping through the memory map, not
+# a crash, and the first run decides. The method is abliteration (the
+# card, read with a token). Switch
+# the set when a dynamic 2-bit build of the method appears. The repository is gated with
+# automatic approval: accept its terms on Hugging Face and set HF_TOKEN
+# before models fetch. No MTP: the card says these GGUFs do not include
+# the draft head (layer 45), because the converter drops it, so presets
+# of this set cannot use draft-mtp. The pin is the commit of 2026-09-17.
+mtp = false
+
+[requires]
+llama_build = "unreleased"
+
+[[license]]
+name = "MIT License (GLM-5.3-Flash)"
+url = "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "orcarouter/GLM-5.3-Flash-Uncensored-GGUF"
+revision = "47be41dfee785dd4247b9b0ecf765137fb9f5f7e"
+source = "Q2_K/GLM-5.3-Flash-Uncensored-Q2_K-00001-of-00003.gguf"
+size = 44200046016
+sha256 = "2591f490ad48341c50ce0609b607082f343d8952e1ee4eaef619cc0a3f31fa50"
+
+[[file]]
+role = "split"
+repository = "orcarouter/GLM-5.3-Flash-Uncensored-GGUF"
+revision = "47be41dfee785dd4247b9b0ecf765137fb9f5f7e"
+source = "Q2_K/GLM-5.3-Flash-Uncensored-Q2_K-00002-of-00003.gguf"
+size = 44927281184
+sha256 = "4a9b30dda221f8bb031b52dfdfe3bd9c4ad5a9ccc855c5137ddc0a398a12f465"
+
+[[file]]
+role = "split"
+repository = "orcarouter/GLM-5.3-Flash-Uncensored-GGUF"
+revision = "47be41dfee785dd4247b9b0ecf765137fb9f5f7e"
+source = "Q2_K/GLM-5.3-Flash-Uncensored-Q2_K-00003-of-00003.gguf"
+size = 27742612544
+sha256 = "d6cfd3560d7d36f21aa24b64fed1abe8f8a2afb849ff6f4c0286acf7319ec0f6"

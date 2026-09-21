@@ -1,0 +1,15 @@
+schema = 1
+description = "The SkillCrate documentation-guidelines skill (MIT), pinned to one commit"
+
+# Pins: https://github.com/angelo-lesniak/skill-crate at
+# faacf5e894779435d5b53e84c73b1236577c5cc5 (main, 2026-09-14). Refresh with:
+#   bash bin/tokencrate skills status skill-crate
+# and recompute the digest for a new commit as CONTRIBUTING.md describes.
+
+[[skill]]
+name = "documentation-guidelines"
+repository = "https://github.com/angelo-lesniak/skill-crate"
+commit = "faacf5e894779435d5b53e84c73b1236577c5cc5"
+path = "skills/documentation-guidelines"
+sha256 = "8f01d82f07eedb9eafff402c67e08c1d3db61603b113524e02900d4541529a59"
+license = "MIT"

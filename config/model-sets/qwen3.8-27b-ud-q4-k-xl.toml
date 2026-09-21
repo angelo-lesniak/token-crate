@@ -1,0 +1,23 @@
+schema = 1
+description = "Qwen3.8-27B, Unsloth UD-Q4_K_XL (17.6 GB) with MTP heads"
+upstream_model = "Qwen/Qwen3.8-27B"
+model_card = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/4ca720788d1e01f1bff70c033e0d0028fd02e502/README.md"
+# Qwen3.8 mixes Gated DeltaNet layers with full attention; llama-server cannot
+# reuse cache chunks by KV shifting on it, so presets use ctx_checkpoints.
+mtp = true
+# The embedded template rejects a system message after the first turn, which
+# breaks coding agents. The shipped copy renders later system messages inline.
+chat_template_file = "qwen3.8-27b-agent.jinja"
+
+[[license]]
+name = "Apache License 2.0 (Qwen3.8-27B)"
+url = "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "unsloth/Qwen3.8-27B-GGUF"
+revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502"
+source = "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+size = 17559178144
+sha256 = "3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e"
+

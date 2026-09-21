@@ -1,0 +1,39 @@
+schema = 1
+description = ".NET SDK 10.0.401 with csharp-ls 0.28.0 (language server), netcoredbg 3.2.0-1092 (debug adapter), and a NuGet cache warmed with the console, classlib, xunit, and web templates"
+apt = ["libgssapi-krb5-2", "libicu72", "libssl3"]
+# The project name must differ from the template's package name (a project
+# named xunit cannot reference the xunit package); a failed restore fails
+# the build. The seeded NuGet.Config names the warmed cache as the only source.
+build = [
+  "install -D -m 0644 nuget-seed.config /opt/tokencrate/home-seed/.nuget/NuGet/NuGet.Config",
+  "dotnet tool install --tool-path /opt/dotnet-tools csharp-ls --version 0.28.0",
+  "ln -s /opt/netcoredbg/netcoredbg /usr/local/bin/netcoredbg",
+  "mkdir -p /tmp/warm",
+  "for template in console classlib xunit web; do dotnet new \"$template\" --name \"warm-$template\" --output \"/tmp/warm/$template\" --no-restore >/dev/null && dotnet restore \"/tmp/warm/$template\" || exit 1; done",
+  "rm -rf /tmp/warm /tmp/NuGetScratchroot /root/.dotnet /root/.nuget /root/.local",
+  "chmod -R a+rX /opt/nuget",
+]
+note = "dotnet SDK with csharp-ls (language server) and netcoredbg (debug adapter, .cs). NuGet restore defaults to the read-only image cache (console, classlib, xunit, and web templates). Uncached packages need --egress, an explicit source, and NUGET_PACKAGES set to a writable directory in the project."
+
+[[asset]]
+url = "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.401/dotnet-sdk-10.0.401-linux-x64.tar.gz"
+sha512 = "51c8b999af9e8dd9998c9edc5944e19a90788862068acd38694e098889054ce8c23d4f0c5cccfa16bf187d044562359e5ee69a9f8ad0bbe913ba90311fbce25b"
+into = "/opt/dotnet"
+
+[[asset]]
+url = "https://github.com/Samsung/netcoredbg/releases/download/3.2.0-1092/netcoredbg-linux-amd64.tar.gz"
+sha256 = "080eb3b2d2152465f599d3b33d1ee6e747794e11cc0a3773ec689f5e5f2c5afa"
+into = "/opt"
+
+# nuget-seed.config is named so that NuGet does not read it as the
+# configuration of the set directory while the image builds there. The
+# package cache the image warmed is read-only; .NET's first-run state and
+# NuGet's user configuration live in the agent home.
+[env]
+PATH = "/opt/dotnet:/opt/dotnet-tools"
+DOTNET_ROOT = "/opt/dotnet"
+DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+DOTNET_NOLOGO = "1"
+DOTNET_GENERATE_ASPNET_CERTIFICATE = "false"
+DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE = "1"
+NUGET_PACKAGES = "/opt/nuget/packages"

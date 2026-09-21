@@ -1,0 +1,32 @@
+schema = 1
+description = "The pi coding extensions: pi-lens code intelligence, anchored edits, plan mode, the advisor, and the subagent example from the pi package"
+# The subagent example ships inside the installed pi package; its agent
+# definitions are seeded into the agent home, where the example reads them.
+# Their frontmatter names Anthropic models, which no container here can
+# reach, so the `model:` line is dropped: the example then runs each
+# subagent on the session's own model and thinking level.
+build = [
+  "cp -r /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent/. subagent/",
+  "install -m 0644 subagent.package.json subagent/package.json",
+  "mkdir -p /opt/tokencrate/home-seed/.pi/agent/agents",
+  "mv subagent/agents/*.md /opt/tokencrate/home-seed/.pi/agent/agents/",
+  "rmdir subagent/agents",
+  "sed -i '1,/^---$/{/^model:/d}' /opt/tokencrate/home-seed/.pi/agent/agents/*.md",
+  "! grep -l '^model:' /opt/tokencrate/home-seed/.pi/agent/agents/*.md",
+]
+pi_packages = [
+  "node_modules/pi-lens",
+  "node_modules/pi-hashline-edit-pro",
+  "node_modules/@narumitw/pi-plan-mode",
+  "node_modules/@juicesharp/rpiv-advisor",
+  "subagent",
+]
+note = """Run lens_diagnostics after editing source files. Extra tools (lsp_navigation, ast_grep_*) load through pi_lens_activate_tools.
+Delegate with the subagent tool; /plan for a read-only plan; /advisor to consult another preset."""
+
+[npm]
+omit_peer = true
+
+# pi-lens's effective_config tool only describes pi-lens's own settings.
+[pi_lens.tools.effective_config]
+enabled = false

@@ -1,0 +1,9 @@
+{
+  "name": "tokencrate-subagent",
+  "private": true,
+  "description": "The subagent example that ships inside the pinned pi package, loaded as a local pi package; its agent definitions are seeded into the agent home.",
+  "pi": {
+    "extensions": ["./index.ts"],
+    "prompts": ["./prompts"]
+  }
+}

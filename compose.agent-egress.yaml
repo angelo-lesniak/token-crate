@@ -1,0 +1,9 @@
+# Opt-in overlay: gives an agent container the default network as well, so it
+# can reach the internet for one session (for example to install packages).
+# The wrapper includes it for `agent --egress`, the only way to grant it.
+x-egress: &egress
+  networks: [agents, default]
+
+services:
+  agent-pi: *egress
+  agent-omp: *egress

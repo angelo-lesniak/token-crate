@@ -1,0 +1,11 @@
+{
+  "name": "tokencrate-agent-set-pi-web",
+  "private": true,
+  "description": "PI WEB, pinned by the lockfile; the image's pi provides the peer packages. node-pty is raised to the first version that ships a Linux prebuild, because the set installs with scripts disabled and the image has no compiler.",
+  "dependencies": {
+    "@jmfederico/pi-web": "1.202609.0"
+  },
+  "overrides": {
+    "node-pty": "1.2.0-beta.15"
+  }
+}

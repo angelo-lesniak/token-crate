@@ -1,0 +1,7 @@
+# GPU device request for the llama service. The wrapper includes this overlay
+# unless LLM_GPU=false, which lets the same image run CPU-only checks without
+# a CDI device.
+services:
+  llama:
+    devices:
+      - "${GPU_DEVICE:-nvidia.com/gpu=all}"

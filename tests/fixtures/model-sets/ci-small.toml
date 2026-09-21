@@ -1,0 +1,17 @@
+schema = 1
+description = "Qwen3-0.6B Q4_K_M (0.4 GB): a small real instruct model for CPU agent-loop checks"
+upstream_model = "Qwen/Qwen3-0.6B"
+model_card = "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/blob/50968a4468ef4233ed78cd7c3de230dd1d61a56b/README.md"
+mtp = false
+
+[[license]]
+name = "Apache License 2.0 (Qwen3-0.6B, per the model card)"
+url = "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/blob/50968a4468ef4233ed78cd7c3de230dd1d61a56b/README.md"
+
+[[file]]
+role = "weights"
+repository = "unsloth/Qwen3-0.6B-GGUF"
+revision = "50968a4468ef4233ed78cd7c3de230dd1d61a56b"
+source = "Qwen3-0.6B-Q4_K_M.gguf"
+size = 396705472
+sha256 = "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a"

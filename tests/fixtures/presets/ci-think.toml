@@ -1,0 +1,32 @@
+schema = 1
+description = "CPU-only fixture preset with thinking on and the patched template, for the agent thinking-level check"
+model_set = "ci-tiny"
+
+[server]
+# oh-my-pi's first request is about 51K tokens with this model's tiny
+# vocabulary (18K with the Qwen tokenizer).
+ctx_size = 65536
+n_predict = 64
+parallel = 1
+gpu_layers = 0
+flash_attn = "off"
+cache_type_k = "f16"
+cache_type_v = "f16"
+# Thinking stays on so the agents send their level; the toy model never
+# closes the think block, which the integration check tolerates.
+reasoning_effort = "medium"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+# llama-server caps a slot at the model's training context (2048 for this
+# toy model), so the metadata override lifts it to ctx_size. The prompt log
+# holds every formatted prompt; tests/integration.py reads the effort
+# sentence there because the server log never prints the prompt.
+[server.extra]
+log-prompts-dir = "/tmp/prompts"
+override-kv = "llama.context_length=int:65536"
+
+[sampling]
+temperature = 0.8
+
+[requires]
+vram_gib = 1

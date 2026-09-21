@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Fake container engine for the CLI tests. Answers the probes the wrapper
+makes and records every `compose` invocation on stdout so tests can check the
+routing; no container ever runs. Behaves as `podman` or `docker` from its
+own file name. Controls (environment variables):
+  FAKE_ENGINE_LLAMA_RUNNING=true    `ps` lists one running llama container
+  FAKE_ENGINE_CONFIG_SHA256=<digest>  `inspect` reports this config label (default: rendered digest, or empty if absent)
+  FAKE_ENGINE_STATE=<status>        `inspect` reports this .State.Status
+  FAKE_ENGINE_NETWORK=<json>        `network inspect` prints this document (FAKE_ENGINE_NETWORK_<NAME> for one network)
+  FAKE_PODMAN_COMPOSE_DOCKER_PLUGIN=true   `podman compose version` names the Docker plugin
+  FAKE_PODMAN_ROOTLESS=false / FAKE_PODMAN_RUNTIME=runc   `podman info --format` values
+"""
+
+import hashlib
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+name = os.path.basename(sys.argv[0])
+arguments = sys.argv[1:]
+if "HF_TOKEN" in os.environ:
+    print("fake engine: Hugging Face token leaked into the engine environment", file=sys.stderr)
+    sys.exit(1)
+
+
+def trace(kind):
+    print(
+        f"{kind} project={os.environ.get('LLM_AGENT_PROJECT_DIR', 'unset')} "
+        f"home={os.environ.get('TOKENCRATE_AGENT_HOME', 'unset')} "
+        f"preset={os.environ.get('TOKENCRATE_PRESET', 'unset')} "
+        f"sha={os.environ.get('TOKENCRATE_CONFIG_SHA256', 'unset')} "
+        f"skill_sets={os.environ.get('LLM_SKILL_SETS', 'unset')} args="
+        + " ".join(shlex.quote(item) for item in arguments)
+    )
+
+
+first = arguments[0] if arguments else ""
+if first == "--version":
+    print(f"{name} version 6.1.0-fake" if name == "podman" else "Docker version fake")
+elif first == "info":
+    if "--format" in arguments:
+        rootless = os.environ.get("FAKE_PODMAN_ROOTLESS", "true")
+        runtime = os.environ.get("FAKE_PODMAN_RUNTIME", "crun")
+        print(f"{rootless}/{runtime}")
+    else:
+        print(f"fake {name} engine")
+elif first == "compose" and arguments[1:2] == ["version"]:
+    if name == "podman":
+        print("podman version 6.1.0-fake")
+        if os.environ.get("FAKE_PODMAN_COMPOSE_DOCKER_PLUGIN") == "true":
+            print("Docker Compose version v2.0.0-fake")
+        else:
+            print("podman-compose version 1.6.0-fake")
+    else:
+        print("Docker Compose version fake")
+elif first == "compose":
+    trace("compose")
+elif first == "ps":
+    service = next(
+        (arg.split("=", 2)[-1] for arg in arguments if arg.startswith("label=com.docker.compose.service=")), ""
+    )
+    if os.environ.get("FAKE_ENGINE_LLAMA_RUNNING") == "true" and service in ("", "llama"):
+        print("fake-llama-container")
+    ui = os.environ.get("FAKE_ENGINE_UI_SET", "")
+    if ui:
+        suffix = hashlib.sha256(ui.encode()).hexdigest()[:16]
+        for role in ("agent-ui", "ui-forward"):
+            if service in ("", f"{role}-{suffix}"):
+                print(f"fake-{role}-{suffix}")
+elif first == "inspect":
+    if arguments[2] == "{{json .}}":
+        cid = arguments[-1]
+        service = "llama" if cid == "fake-llama-container" else cid.removeprefix("fake-")
+        labels = {
+            "com.docker.compose.project": os.environ.get("COMPOSE_PROJECT_NAME", "tokencrate"),
+            "com.docker.compose.service": service,
+        }
+        if service.startswith(("agent-ui-", "ui-forward-")):
+            labels["io.tokencrate.ui-set"] = os.environ.get("FAKE_ENGINE_UI_SET", "")
+        port = (
+            os.environ.get("FAKE_ENGINE_LLAMA_PORT", os.environ.get("LLM_PORT", "4207"))
+            if service == "llama"
+            else os.environ.get("FAKE_ENGINE_UI_PORT", "4224")
+        )
+        print(
+            json.dumps(
+                {
+                    "Id": cid,
+                    "Config": {"Labels": labels},
+                    "NetworkSettings": {
+                        "Ports": {
+                            "8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": port}]
+                            if service == "llama" or service.startswith("ui-forward-")
+                            else []
+                        }
+                    },
+                }
+            )
+        )
+    elif "io.tokencrate.config-sha256" in arguments[2]:
+        # The CLI runs from the scratch checkout; the fixture engine lives
+        # in the source checkout and can also be invoked from a project dir.
+        digest = os.environ.get("FAKE_ENGINE_CONFIG_SHA256")
+        if digest is None:
+            config = Path(os.environ["PYTHONPATH"]) / "build/models.ini"
+            try:
+                digest = hashlib.sha256(config.read_bytes()).hexdigest()
+            except FileNotFoundError:
+                digest = ""
+        print(digest)
+    else:
+        print(os.environ.get("FAKE_ENGINE_STATE", "running"))
+elif arguments == ["version", "--format", "{{.Server.Version}}"]:
+    print("29.7.2-fake")
+elif arguments[:2] == ["network", "ls"]:
+    pass
+elif arguments[:2] == ["network", "inspect"]:
+    # One object per invocation, as `--format '{{json .}}'` prints it: Docker's
+    # shape without a gateway (isolated mode), Podman's with one.
+    # FAKE_ENGINE_NETWORK=missing: the engine does not know the network.
+    network = arguments[-1].rsplit("_", 1)[-1].upper().replace("-", "_")
+    default = (
+        '{"subnets": [{"subnet": "10.89.0.0/24", "gateway": "10.89.0.1"}]}'
+        if name == "podman"
+        else '{"IPAM": {"Config": [{"Subnet": "172.18.0.0/16"}]}}'
+    )
+    document = os.environ.get(f"FAKE_ENGINE_NETWORK_{network}", os.environ.get("FAKE_ENGINE_NETWORK", default))
+    if document == "missing":
+        print("Error: No such network", file=sys.stderr)
+        sys.exit(1)
+    print(document)
+elif first in ("image", "build", "run", "exec", "stop", "rm", "logs"):
+    trace(first)
+else:
+    print(f"fake engine: unsupported invocation: {' '.join(arguments)}", file=sys.stderr)
+    sys.exit(1)

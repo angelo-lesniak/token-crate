@@ -1,0 +1,27 @@
+schema = 1
+description = "Qwen3.8-27B Q6 quality tier: one 48K slot with MTP, about 7 GiB more GPU memory than Q4"
+model_set = "qwen3.8-27b-ud-q6-k-xl"
+
+[server]
+ctx_size = 49152
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+flash_attn = "auto"
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+spec_type = "draft-mtp"
+spec_draft_n_max = 2
+ctx_checkpoints = 8
+reasoning_effort = "xhigh"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+
+[requires]
+vram_gib = 30

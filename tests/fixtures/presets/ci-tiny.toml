@@ -1,0 +1,25 @@
+schema = 1
+description = "CPU-only fixture preset for the smoke check with the tiny CI model"
+model_set = "ci-tiny"
+
+[server]
+# Large enough for a coding agent's system prompt, tool schemas, and skill
+# catalog (about 5,300 tokens for pi with two skills) plus a short answer.
+ctx_size = 8192
+n_predict = 64
+parallel = 1
+gpu_layers = 0
+flash_attn = "off"
+cache_type_k = "f16"
+cache_type_v = "f16"
+# The toy model never closes a <think> block, so thinking is disabled; the
+# declared efforts still let the smoke check compare two template renders.
+enable_thinking = false
+reasoning_effort = "medium"
+reasoning_efforts = ["low", "medium"]
+
+[sampling]
+temperature = 0.8
+
+[requires]
+vram_gib = 1

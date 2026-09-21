@@ -1,0 +1,23 @@
+schema = 1
+description = "CPU-only fixture preset with a small real instruct model for agent-loop checks"
+model_set = "ci-small"
+
+[server]
+# oh-my-pi's base prompt (31 tools plus the skill catalog) is about 18K
+# tokens, so the agent-loop check needs a 32K context.
+ctx_size = 32768
+n_predict = 256
+parallel = 1
+gpu_layers = 0
+flash_attn = "auto"
+cache_type_k = "f16"
+cache_type_v = "f16"
+enable_thinking = false
+
+[sampling]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+
+[requires]
+vram_gib = 1

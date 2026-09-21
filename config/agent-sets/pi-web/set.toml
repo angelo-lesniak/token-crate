@@ -1,0 +1,23 @@
+schema = 1
+description = "PI WEB (jmfederico/pi-web), a browser UI for pi with a session daemon; start it with `ui pi-web`"
+# npm still places a copy of pi under the scope directory although the peers
+# are omitted; the image's pi must be the only one, so the directory is
+# replaced by links to the global install: pi-coding-agent itself, and
+# pi-ai and pi-agent-core, which npm nests below it.
+build = [
+  "rm -rf node_modules/@earendil-works && mkdir node_modules/@earendil-works",
+  "ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent node_modules/@earendil-works/pi-coding-agent",
+  "ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai node_modules/@earendil-works/pi-ai",
+  "ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core node_modules/@earendil-works/pi-agent-core",
+  "install -m 0755 tokencrate-ui-pi-web /usr/local/bin/tokencrate-ui-pi-web",
+]
+
+[npm]
+omit_peer = true
+
+[env]
+PATH = "/opt/tokencrate/sets/pi-web/node_modules/.bin"
+
+[ui]
+command = "tokencrate-ui-pi-web"
+port = 8504

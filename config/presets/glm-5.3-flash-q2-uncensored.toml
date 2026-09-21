@@ -1,0 +1,44 @@
+schema = 1
+description = "GLM-5.3-Flash uncensored (abliterated by orcarouter), plain 2-bit: the 96 GB RAM tier, tight, unverified"
+model_set = "glm-5.3-flash-orcarouter-uncensored-q2-k"
+
+# glm-5.3-flash-q2 on the orcarouter file: the same gate, the same first
+# attempt, and the same fallback ladder, which glm-5.3-flash-q2.toml
+# states with their sources. Three settings differ: the slot and
+# n_cpu_moe, because the file is 8 GB larger, and no MTP drafting, because
+# orcarouter's GGUFs drop the draft head (their card), which also makes
+# step 3 of the ladder moot here. Its first run waits for that preset's
+# measured speed and passing smoke. With the gate opened by hand on a
+# build without the architecture, the load fails at once with "unknown
+# model architecture: 'glm5next'" (the load attempt in docs/validation.md).
+[server]
+ctx_size = 65536
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+# A 64K slot instead of 128K: the smaller cache and scratch leave the card
+# a little more room. The weights are 116.9 GB and experts are about
+# 2.4 GB per layer at this quant; with 39 of the 45 layers' experts in
+# system memory the card holds about 23 GB of weights before the cache and
+# buffers, and system memory holds 93.6 GB, 87.2 GiB of the 93.35 GiB a
+# 96 GB host reports. That leaves about 6 GiB for everything else on the
+# host, so the first run decides: when the host swaps, this preset does
+# not fit and goes. One layer fewer moves 2.4 GB to the card.
+n_cpu_moe = 39
+flash_attn = "off"
+cache_type_k = "f16"
+cache_type_v = "f16"
+ctx_checkpoints = 8
+batch_size = 2048
+ubatch_size = 2048
+reasoning_effort = "high"
+reasoning_efforts = ["low", "high", "max"]
+thinking_toggle = false
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+
+[requires]
+vram_gib = 30
+ram_gib = 96

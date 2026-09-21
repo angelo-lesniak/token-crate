@@ -1,0 +1,11 @@
+#!/bin/sh
+# The browser the pi-chrome-devtools extension launches. Chromium's own
+# sandbox needs a setuid helper or user namespaces, which the hardened
+# container denies; the container is the sandbox, so run without it,
+# headless (no display), and without /dev/shm (64 MB by default).
+exec /usr/bin/chromium \
+  --headless=new \
+  --no-sandbox \
+  --disable-gpu \
+  --disable-dev-shm-usage \
+  "$@"

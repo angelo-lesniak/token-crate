@@ -1,0 +1,85 @@
+schema = 1
+description = "GLM-5.3-Flash UD-Q2_K_XL, experts in system memory: the 96 GB RAM tier, unverified"
+model_set = "glm-5.3-flash-ud-q2-k-xl"
+
+# The researched first attempt, not a measured configuration,
+# and one that needs tuning after every llama.cpp update:
+# nothing below has run, because no llama.cpp release carries the
+# architecture (pull requests 27752 and 27754,
+# https://github.com/ggml-org/llama.cpp/pull/27754). The model set's
+# [requires] llama_build keeps this preset out of the router until the pin
+# passes a build that has it. Sources: the Unsloth pull request text and
+# benchmarks, the Unsloth guide (https://unsloth.ai/docs/models/glm-5.3-flash),
+# and the model discussion
+# (https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/discussions/4).
+#
+# First run, when the gate opens: if this crashes or produces garbage,
+# downgrade one item at a time in this order and record which one fixed it:
+#   1. ubatch_size = 512: issue 28282 (open since 2026-09-02) is a CUDA
+#      illegal memory access on sm_120 during a long prefill (7K+ tokens) at
+#      -ub 2048, around the second or third context checkpoint; -ub 512 is a
+#      full workaround and prefill gets much slower. Reproduced with non-IQ
+#      quants and on other cards, so it is not this quant.
+#      https://github.com/ggml-org/llama.cpp/issues/28282
+#   2. [server.extra] load-mode = "none": a user in the discussion reported
+#      crashes fixed by --load-mode none; the pull request's benchmarks ran
+#      with -lm none. The renderer does not own that key.
+#   3. No MTP: drop spec_type and spec_draft_n_max.
+#   4. reasoning_effort = "low": "default thinking runs ridiculously long,
+#      but low seems okay" (same discussion).
+#   5. Context at or below 262144 (already true; one report says generation
+#      crashes above that).
+#   6. n_cpu_moe up to 45 (everything but attention on the CPU).
+# Expected speed at the fallback: the one consumer report (an RTX 3090 with
+# DDR5-4800) gives 6 to 7 tokens per second of generation and 60 to 70 of
+# prompt processing at 108K context; the bottleneck is host memory
+# bandwidth for 18B active parameters, which a 5090 does not lift much.
+[server]
+ctx_size = 131072
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+# The weights are 108.7 GB and the card holds about 25 GB of them after
+# the cache and buffers; experts are about 2.2 GB per layer at this quant,
+# so 38 of the 45 layers keep their experts in system memory (78 GiB of
+# the 93 GiB a 96 GB host reports). Lower it while nvidia-smi shows
+# headroom; raise it, or switch the set to UD-IQ2_XXS, when the host
+# swaps.
+n_cpu_moe = 38
+# Not optional on this architecture (pull request 27754): flash attention
+# casts the MLA latent to f16, which breaks the output, so it stays off;
+# with it off the renderer allows no quantized V cache, and the request
+# states the cache type is not a correctness issue. Re-read the pull
+# request at every pin bump: when -fa on becomes correct, a q8_0 cache is
+# worth trying. Without flash attention the attention scratch of the 11
+# full-attention layers grows with context times micro-batch; at 128K and
+# a 2048 micro-batch that is the first suspect for an out-of-memory
+# (fallback 1).
+flash_attn = "off"
+cache_type_k = "f16"
+cache_type_v = "f16"
+# The 34 linear-attention layers cannot KV-shift, like Qwen's DeltaNet
+# layers, so checkpoints are how earlier prompt work is reused.
+ctx_checkpoints = 8
+# The file carries the NextN layer; the pull request measured 58.6 to 86.5
+# tokens per second on a B200 with two draft tokens, three slightly lower,
+# five no gain.
+spec_type = "draft-mtp"
+spec_draft_n_max = 2
+batch_size = 2048
+ubatch_size = 2048
+# Thinking is always on: reasoning_effort in {low, high, max} through the
+# template, no enable_thinking switch. pi lists max as a level and oh-my-pi
+# rounds an unknown level up, so the efforts need no map change.
+reasoning_effort = "high"
+reasoning_efforts = ["low", "high", "max"]
+thinking_toggle = false
+
+# The Unsloth guide's defaults; no top_k or min_p guidance is published.
+[sampling]
+temperature = 1.0
+top_p = 0.95
+
+[requires]
+vram_gib = 30
+ram_gib = 96

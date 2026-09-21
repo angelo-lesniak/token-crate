@@ -1,0 +1,8 @@
+# Python dependencies for the contributor test gate (tests/static.sh).
+# PyYAML: tests/test_project_contracts.py parses the Compose files and CI workflows.
+# podman-compose: tests every Compose variant against the supported standalone
+# provider even when the contributor machine has no running Podman engine.
+# Ruff: the lint and format gate for the package and the tests.
+PyYAML==6.0.3
+podman-compose==1.6.0
+ruff==0.16.6

@@ -1,0 +1,3 @@
+#!/bin/sh
+# The scratch host has no GPU, whatever the machine running the tests has.
+exit 1

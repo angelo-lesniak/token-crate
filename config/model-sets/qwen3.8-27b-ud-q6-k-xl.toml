@@ -1,0 +1,19 @@
+schema = 1
+description = "Qwen3.8-27B, Unsloth UD-Q6_K_XL (25.3 GB): the quality tier, with MTP heads"
+upstream_model = "Qwen/Qwen3.8-27B"
+model_card = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/4ca720788d1e01f1bff70c033e0d0028fd02e502/README.md"
+mtp = true
+chat_template_file = "qwen3.8-27b-agent.jinja"
+
+[[license]]
+name = "Apache License 2.0 (Qwen3.8-27B)"
+url = "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "unsloth/Qwen3.8-27B-GGUF"
+revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502"
+source = "Qwen3.8-27B-UD-Q6_K_XL.gguf"
+size = 25299061664
+sha256 = "701d8fa9ed214ab21bfc130cd2a7df19ca89bbef7713e2dfb19f3c63696aa917"
+

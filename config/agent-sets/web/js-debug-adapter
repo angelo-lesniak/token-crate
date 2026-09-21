@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+// js-debug's DAP server only listens on a socket; the debug extension speaks
+// DAP over stdio. Start the server on a private Unix socket and bridge.
+"use strict";
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const net = require("node:net");
+const os = require("node:os");
+const path = require("node:path");
+
+const socketPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "js-debug-")), "dap.sock");
+const server = spawn(process.execPath, ["/opt/js-debug/src/dapDebugServer.js", socketPath], {
+  stdio: ["ignore", "ignore", "inherit"],
+});
+const stop = (code) => {
+  server.kill();
+  fs.rmSync(path.dirname(socketPath), { recursive: true, force: true });
+  process.exit(code);
+};
+server.on("exit", (code) => stop(code === 0 ? 0 : 1));
+// The debug extension ends a session by killing this process.
+process.on("SIGTERM", () => stop(0));
+process.on("SIGINT", () => stop(0));
+
+const deadline = Date.now() + 15000;
+const connect = () => {
+  const socket = net.connect(socketPath);
+  socket.once("connect", () => {
+    // Only a connection that was established ends the bridge when it closes.
+    socket.on("close", () => stop(0));
+    socket.on("error", () => stop(1));
+    process.stdin.pipe(socket);
+    socket.pipe(process.stdout);
+    process.stdin.on("end", () => socket.end());
+  });
+  socket.once("error", () => {
+    // Refused while the server is still starting: retry until the deadline.
+    if (socket.connecting || !socket.remoteAddress) {
+      socket.destroy();
+      if (Date.now() < deadline) setTimeout(connect, 100);
+      else stop(1);
+    }
+  });
+};
+connect();

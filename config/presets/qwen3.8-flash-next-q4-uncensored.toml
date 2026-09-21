@@ -1,0 +1,38 @@
+schema = 1
+description = "Qwen3.8-Flash-Next uncensored (abliterated by orcarouter) Q4: the 96 GB RAM tier"
+model_set = "qwen3.8-flash-next-orcarouter-uncensored-q4-k-s"
+
+# qwen3.8-flash-next-q4 on the orcarouter file (111.8 GB, the same 4-bit
+# class): the same settings but n_cpu_moe, whose reasons and memory
+# arithmetic qwen3.8-flash-next-q4.toml states. Two more expert layers on
+# the card (n_cpu_moe = 34) fit but did not improve generation speed,
+# so 36 stays. docs/validation.md records the comparison and the
+# measurements on each tested build.
+[server]
+ctx_size = 131072
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+n_cpu_moe = 36
+flash_attn = "auto"
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+ctx_checkpoints = 16
+# The 2048 micro-batch as in qwen3.8-flash-next-q4, kept at n_cpu_moe 36
+# because this file left more GPU headroom in the comparison recorded
+# in docs/validation.md.
+batch_size = 2048
+ubatch_size = 2048
+reasoning_effort = "xhigh"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+
+[requires]
+vram_gib = 30
+ram_gib = 96

@@ -1,0 +1,15 @@
+schema = 1
+description = "Chrome DevTools tools for pi against Debian's Chromium, started headless without its own sandbox (the container is the sandbox)"
+apt = ["chromium", "fonts-liberation"]
+pi_packages = ["node_modules/@narumitw/pi-chrome-devtools"]
+build = ["install -m 0755 tokencrate-chromium /usr/local/bin/tokencrate-chromium"]
+note = "chromium (headless) is available to the chrome devtools tools."
+
+[npm]
+omit_peer = true
+
+# The extension reads the browser path from this variable. Its author
+# prefers pi's browser.executablePath setting, which a set cannot write
+# (CONTRIBUTING.md, "One pi configuration for every selection").
+[env]
+PI_CHROME_DEVTOOLS_BROWSER = "/usr/local/bin/tokencrate-chromium"

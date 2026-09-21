@@ -1,0 +1,52 @@
+schema = 1
+description = "Qwen3.8-Flash-Next (125B total, 6B active, plus a 51B n-gram embedding table; Qwen Community License), Unsloth UD-Q4_K_XL in 4 parts (111.3 GB): the 96 GB RAM tier"
+upstream_model = "Qwen/Qwen3.8-Flash-Next"
+model_card = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/blob/38bb39ee97821de2c9009abb7e93950eec396e66/README.md"
+# The 4-bit tier of Unsloth's table (https://unsloth.ai/docs/models/qwen3.8-next):
+# KL 0.047 and 92.3 percent top-1, the same class as the shipped 27B Q4;
+# UD-IQ4_XS (93.7 GB, 0.084, 89.6 percent) is the lighter option. Every
+# quant keeps the n-gram table at 4 bits (about 29 GB); llama.cpp reads its
+# rows on demand through the memory map, so it need not stay resident.
+# Header read at the pinned commit: architecture qwen4exp (in llama.cpp since
+# 2026-08-27, so the pinned build loads it), and the embedded chat template
+# is byte for byte the 27B's (9,993 characters, the same digest), so the
+# shipped patched template applies. The MTP layer needs an open llama.cpp
+# pull request (28243) and separate draft files, so mtp stays false.
+mtp = false
+chat_template_file = "qwen3.8-27b-agent.jinja"
+
+[[license]]
+name = "Qwen Community License 1.0 (Qwen3.8-Flash-Next)"
+url = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "unsloth/Qwen3.8-Flash-Next-GGUF"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
+source = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+size = 10946624
+sha256 = "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"
+
+[[file]]
+role = "split"
+repository = "unsloth/Qwen3.8-Flash-Next-GGUF"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
+source = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"
+size = 49859583136
+sha256 = "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9"
+
+[[file]]
+role = "split"
+repository = "unsloth/Qwen3.8-Flash-Next-GGUF"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
+source = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf"
+size = 49376141504
+sha256 = "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3"
+
+[[file]]
+role = "split"
+repository = "unsloth/Qwen3.8-Flash-Next-GGUF"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
+source = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
+size = 12087983520
+sha256 = "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a"

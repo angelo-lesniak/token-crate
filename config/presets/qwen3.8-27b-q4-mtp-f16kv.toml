@@ -1,0 +1,43 @@
+schema = 1
+description = "Qwen3.8-27B Q4 with MTP and an unquantized (f16) KV cache, about 2 GiB more GPU memory than the default"
+model_set = "qwen3.8-27b-ud-q4-k-xl"
+
+# qwen3.8-27b-q4-mtp with cache_type_k/v = f16 instead of q8_0. Only the 16
+# full-attention layers of the 64 hold a KV cache (4 KV heads, head size
+# 256; the 48 Gated DeltaNet layers keep recurrent state the cache type does
+# not touch): 4.0 GiB at 64K in f16 against 2.1 GiB in q8_0, plus about 6
+# percent for the MTP layer, so the 64K slot still fits a 32 GB card; the
+# 128K and Q6 presets keep q8_0. A KL-divergence benchmark on Qwen3.6-27B
+# (the same hybrid architecture) put the q8_0 cache at a mean KL of 0.024
+# against f16, worst on long documents (0.142) and tool calls
+# (https://localbench.substack.com/p/kv-cache-quantization-benchmark).
+# bf16 buys nothing over f16 on the pinned build: the CUDA flash-attention
+# vector kernel (single-token generation) has a bf16 path, the mma kernel
+# that processes prompts converts K and V to f16 first
+# (ggml/src/ggml-cuda/fattn.cu at b10920: bf16 is in the vector kernel's
+# type list, fattn-mma-f16.cuh has no bf16 path).
+# docs/validation.md records the measured memory and speed tradeoff
+# against q8_0 on each tested build; the quality difference is unmeasured.
+[server]
+ctx_size = 65536
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+flash_attn = "auto"
+cache_type_k = "f16"
+cache_type_v = "f16"
+spec_type = "draft-mtp"
+spec_draft_n_max = 3
+ctx_checkpoints = 8
+reasoning_effort = "xhigh"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+
+[requires]
+vram_gib = 25

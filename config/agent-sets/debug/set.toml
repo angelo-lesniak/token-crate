@@ -1,0 +1,13 @@
+schema = 1
+description = "The PieX debug extension: one debug tool over the debug adapters other sets ship (netcoredbg, js-debug, lldb-dap)"
+pi_packages = ["piex-dap"]
+# The extension at one commit of https://github.com/piex-dev/piex (read the
+# upstream diff of extensions/dap before moving it).
+build = [
+  "git init -q /tmp/piex",
+  "git -C /tmp/piex fetch -q --depth 1 https://github.com/piex-dev/piex 5cd4467cbc89ff5dd5dd600f1310c75d71ab1e02",
+  "git -C /tmp/piex checkout -q FETCH_HEAD -- extensions/dap",
+  "mv /tmp/piex/extensions/dap piex-dap",
+  "rm -rf /tmp/piex",
+]
+note = "Debug with the debug tool after building; name the adapter when the file type does not select one."

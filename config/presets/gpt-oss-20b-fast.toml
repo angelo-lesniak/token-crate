@@ -1,0 +1,29 @@
+schema = 1
+description = "gpt-oss-20b MXFP4: fast chat and a tool-calling fallback with two 64K slots"
+model_set = "gpt-oss-20b-mxfp4"
+
+[server]
+ctx_size = 131072
+n_predict = 16384
+parallel = 2
+gpu_layers = 99
+flash_attn = "auto"
+cache_type_k = "f16"
+cache_type_v = "f16"
+batch_size = 2048
+ubatch_size = 2048
+# medium keeps this preset fast for clients that send no effort; the agents
+# send their own thinking level (high at their default). The harmony template
+# has no thinking switch.
+reasoning_effort = "medium"
+reasoning_efforts = ["low", "medium", "high"]
+thinking_toggle = false
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+min_p = 0.0
+
+[requires]
+vram_gib = 20

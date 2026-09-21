@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python-development:
+        patterns:
+          - "*"
+
+  # The npm lockfiles of the agent sets: security updates only. A version
+  # bump is a reviewed change to a set (docs/agent-sets.md), not a pull
+  # request Dependabot opens; the limit of 0 keeps version updates off
+  # while security advisories still produce a pull request.
+  - package-ecosystem: npm
+    directories:
+      - /config/agent-sets/browser
+      - /config/agent-sets/paseo
+      - /config/agent-sets/pi-web
+      - /config/agent-sets/coding
+      - /config/agent-sets/web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0

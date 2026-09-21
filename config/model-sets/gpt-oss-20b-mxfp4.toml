@@ -1,0 +1,17 @@
+schema = 1
+description = "gpt-oss-20b in its native MXFP4 quantization (12.1 GB), a fast model with tool calling"
+upstream_model = "openai/gpt-oss-20b"
+model_card = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/ef9b12f2ff56c69cf32153a02784e7a3c88bf524/README.md"
+mtp = false
+
+[[license]]
+name = "Apache License 2.0 (gpt-oss-20b)"
+url = "https://huggingface.co/openai/gpt-oss-20b/blob/6cee5e81ee83917806bbde320786a8fb61efebee/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "ggml-org/gpt-oss-20b-GGUF"
+revision = "ef9b12f2ff56c69cf32153a02784e7a3c88bf524"
+source = "gpt-oss-20b-MXFP4.gguf"
+size = 12109566624
+sha256 = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"

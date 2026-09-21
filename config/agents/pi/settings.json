@@ -1,0 +1,28 @@
+{
+  "enableInstallTelemetry": false,
+  "enableAnalytics": false,
+  "defaultProjectTrust": "ask",
+  "defaultThinkingLevel": "xhigh",
+  "quietStartup": false,
+  "collapseChangelog": true,
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 8192,
+    "keepRecentTokens": 12000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 2,
+    "baseDelayMs": 2000,
+    "provider": {
+      "timeoutMs": 3600000,
+      "maxRetries": 0
+    }
+  },
+  "images": {
+    "autoResize": true
+  },
+  "markdown": {
+    "mermaid": "final"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "tokencrate-agent-set-web",
+  "private": true,
+  "description": "The TypeScript and Vue language tools of the web agent set, pinned by this lockfile.",
+  "dependencies": {
+    "@vue/language-server": "3.3.11",
+    "@vue/typescript-plugin": "3.3.11",
+    "typescript": "7.0.2",
+    "typescript-language-server": "6.0.0",
+    "vue-tsc": "3.3.11"
+  }
+}

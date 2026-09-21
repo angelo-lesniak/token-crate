@@ -1,0 +1,31 @@
+schema = 1
+description = "gpt-oss-20b MXFP4, one 32K slot: the smallest preset, for a 16 GB card"
+model_set = "gpt-oss-20b-mxfp4"
+
+# The smallest shipped preset: the file gpt-oss-20b-fast loads, in its native
+# MXFP4, with a smaller cache. Held 12.7 GiB (docs/validation.md).
+[server]
+# One 32K slot, not two: with an extension set and high reasoning a 32K slot
+# is the smallest that takes the largest agent request.
+ctx_size = 32768
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+flash_attn = "auto"
+cache_type_k = "f16"
+cache_type_v = "f16"
+batch_size = 2048
+ubatch_size = 2048
+# medium for clients that send no effort; the agents send their own level.
+reasoning_effort = "medium"
+reasoning_efforts = ["low", "medium", "high"]
+thinking_toggle = false
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+min_p = 0.0
+
+[requires]
+vram_gib = 15

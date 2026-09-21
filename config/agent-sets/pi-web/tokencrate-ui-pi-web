@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Starts PI WEB inside the pi container: the session daemon, then the web
+# server, on the port the set declares. The wrapper's entrypoint has
+# prepared the agent home and changed into the project directory.
+set -Eeuo pipefail
+
+# The port the set manifest declares, passed in by the wrapper, which
+# hands the same value to the forwarder; declaring it twice would let the
+# two drift, and a mismatch shows only as the `ui` start timeout.
+readonly PORT=${TOKENCRATE_UI_PORT:?the wrapper sets this from the set manifest}
+readonly DATA_DIR="$HOME/.pi-web"
+readonly SOCKET=/run/tokencrate/pi-web-sessiond.sock
+
+export PI_WEB_HOST=0.0.0.0 PI_WEB_PORT=$PORT
+export PI_WEB_DATA_DIR=$DATA_DIR PI_WEB_SESSIOND_SOCKET=$SOCKET
+# No release check and no model-catalog refresh: the container has no
+# route out, and the failures would only fill the log.
+export PI_WEB_OFFLINE=1 PI_WEB_SKIP_VERSION_CHECK=1
+# Keep the model's tool vocabulary the same as in the terminal: no
+# PI WEB session-spawning tools (the coding set has a subagent tool) and
+# no PI WEB environment facts in the system prompt.
+export PI_WEB_SPAWN_SESSIONS=false PI_WEB_SUBSESSIONS=false PI_WEB_ENVIRONMENT_FACTS=false
+
+mkdir -p "$DATA_DIR"
+# The project directory is the only project; PI WEB lists it at once. The
+# bundled relay package is recorded as dismissed so the daemon does not
+# add it to pi's package list at every start (the entrypoint would remove
+# it again).
+node - "$DATA_DIR" "$PWD" "$HOME/.pi/agent" <<'JS'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [dataDir, project, profileDir] = process.argv.slice(2);
+const now = new Date().toISOString();
+const projectsFile = path.join(dataDir, "projects.json");
+const dismissalsFile = path.join(dataDir, "pi-package-dismissals.json");
+for (const file of [projectsFile, dismissalsFile]) {
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (stat && !stat.isFile()) throw new Error(`TokenCrate UI: ${file} must be a regular file; move it aside`);
+}
+const read = (file, fallback) => {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch (error) { return fallback; }
+};
+const write = (file, value) => {
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } finally { fs.rmSync(temporary, { force: true }); }
+};
+const projects = read(projectsFile, { projects: [] });
+if (!Array.isArray(projects.projects)) projects.projects = [];
+if (!projects.projects.some((entry) => entry && entry.path === project)) {
+  projects.projects.push({ id: crypto.randomUUID(), name: path.basename(project), path: project, createdAt: now });
+  write(projectsFile, projects);
+}
+const dismissals = read(dismissalsFile, { dismissals: [] });
+if (!Array.isArray(dismissals.dismissals)) dismissals.dismissals = [];
+if (!dismissals.dismissals.some((entry) => entry && entry.packageId === "@jmfederico/pi-relay" && entry.profileDir === profileDir)) {
+  dismissals.dismissals.push({ profileDir, packageId: "@jmfederico/pi-relay", dismissedAt: now });
+  write(dismissalsFile, dismissals);
+}
+JS
+
+rm -f "$SOCKET"
+pi-web-sessiond &
+sessiond=$!
+ready=false
+for _ in $(seq 1 60); do
+  [[ -S "$SOCKET" ]] && { ready=true; break; }
+  kill -0 "$sessiond" 2>/dev/null || { wait "$sessiond" || true; echo "TokenCrate UI: pi-web-sessiond exited before it listened" >&2; exit 1; }
+  sleep 0.5
+done
+# Falling through silently turned a daemon that never listens into the
+# wrapper's start timeout instead of a message from the launcher.
+if [[ "$ready" != true ]]; then
+  echo "TokenCrate UI: pi-web-sessiond did not create $SOCKET within 30 seconds" >&2
+  kill "$sessiond" 2>/dev/null || true
+  exit 1
+fi
+pi-web-server &
+server=$!
+trap 'kill "$sessiond" "$server" 2>/dev/null || true' EXIT
+# Bash runs no EXIT trap for an untrapped fatal signal, so a container stop
+# would leave both processes to the engine's kill; Paseo traps TERM too.
+trap 'exit 143' TERM INT
+echo "TokenCrate UI: PI WEB listens on port $PORT inside the container"
+# The first process to exit ends the session; the trap stops the other.
+wait -n "$sessiond" "$server"

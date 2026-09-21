@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-agent-set-paseo",
+  "private": true,
+  "description": "The Paseo command-line package with its daemon and bundled web UI, pinned by the lockfile.",
+  "dependencies": {
+    "@getpaseo/cli": "0.8.0"
+  }
+}

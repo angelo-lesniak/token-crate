@@ -1,0 +1,21 @@
+schema = 1
+description = "Tiny public GGUF (1.2 MB) for the real downloader and CPU smoke checks"
+upstream_model = "ggml-org/models-moved"
+model_card = "https://huggingface.co/ggml-org/models-moved/blob/499bc8821c6b12b4e53c5bffcb21ec206f212d81/README.md"
+mtp = false
+# The Qwen agent template is applied to this unrelated tiny model on purpose:
+# the CPU smoke check proves that the patched template renders a system
+# message after the first turn, independent of the model's quality.
+chat_template_file = "qwen3.8-27b-agent.jinja"
+
+[[license]]
+name = "See the ggml-org/models-moved model card (TinyLlamas test models)"
+url = "https://huggingface.co/ggml-org/models-moved/blob/499bc8821c6b12b4e53c5bffcb21ec206f212d81/README.md"
+
+[[file]]
+role = "weights"
+repository = "ggml-org/models-moved"
+revision = "499bc8821c6b12b4e53c5bffcb21ec206f212d81"
+source = "tinyllamas/stories260K.gguf"
+size = 1185376
+sha256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"

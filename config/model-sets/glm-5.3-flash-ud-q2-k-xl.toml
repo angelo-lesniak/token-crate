@@ -1,0 +1,60 @@
+schema = 1
+description = "GLM-5.3-Flash (320B total, 18B active; hybrid linear and sparse attention, MIT), Unsloth UD-Q2_K_XL in 4 parts (108.7 GB): the 96 GB RAM tier; needs a llama.cpp build with glm5next"
+upstream_model = "zai-org/GLM-5.3-Flash"
+model_card = "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/blob/621d456e93e926e4b52f85cff5f634358c1828f9/README.md"
+# The largest quant that fits a 32 GB card plus 96 GB of RAM with margin:
+# the card takes about 24 GB of weights after the cache and buffers, which
+# leaves 79 GiB of the 93 GiB the host reports for the rest. Unsloth's own
+# table (https://unsloth.ai/docs/models/glm-5.3-flash): UD-Q2_K_XL at KL
+# 0.380 and 78.3 percent top-1; UD-IQ3_XXS (120.4 GB, 0.284, 81.6 percent)
+# would leave no margin at all on this split; UD-IQ2_XXS (101.8 GB, 0.450,
+# 76.3 percent) is the fallback if this one turns out tight. The GGUF
+# header names the architecture glm5next, and part 4 carries the NextN
+# (MTP) layer as four blk.45.nextn tensors (headers of all parts read at
+# the pinned commit). The repository moves often;
+# the pin is the commit of 2026-09-17.
+mtp = true
+
+# No llama.cpp release carries glm5next (docs/validation.md): pull requests
+# 27752 and 27754 (https://github.com/ggml-org/llama.cpp/pull/27754) are open.
+# Replace the sentinel with the first b-number that loads the file and raise
+# the pin past it; until then the renderer keeps the presets of this set
+# out of the router.
+[requires]
+llama_build = "unreleased"
+
+[[license]]
+name = "MIT License (GLM-5.3-Flash)"
+url = "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "unsloth/GLM-5.3-Flash-GGUF"
+revision = "621d456e93e926e4b52f85cff5f634358c1828f9"
+source = "UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00001-of-00004.gguf"
+size = 9429859
+sha256 = "b2aaab111a0f93f04b0627270691fe430b6bb14b17c0d62f9c0f1ac75e7efef4"
+
+[[file]]
+role = "split"
+repository = "unsloth/GLM-5.3-Flash-GGUF"
+revision = "621d456e93e926e4b52f85cff5f634358c1828f9"
+source = "UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00002-of-00004.gguf"
+size = 49294975936
+sha256 = "f4a9e1ab13d5d9620f5590c9a4aba4c169e6707a1554f3be3fe3112f80a66825"
+
+[[file]]
+role = "split"
+repository = "unsloth/GLM-5.3-Flash-GGUF"
+revision = "621d456e93e926e4b52f85cff5f634358c1828f9"
+source = "UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00003-of-00004.gguf"
+size = 49949266048
+sha256 = "330a8ad76c787b3ab6df062dd30abea7aafe6a0e3d5860e8720dfa4abb2434a5"
+
+[[file]]
+role = "split"
+repository = "unsloth/GLM-5.3-Flash-GGUF"
+revision = "621d456e93e926e4b52f85cff5f634358c1828f9"
+source = "UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00004-of-00004.gguf"
+size = 9466399584
+sha256 = "5c294f42edc5d69cf00a79ab444e61f0742e9933105fc5c85f97da54dab8946f"

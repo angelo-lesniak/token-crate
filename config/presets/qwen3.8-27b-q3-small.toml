@@ -1,0 +1,33 @@
+schema = 1
+description = "Qwen3.8-27B at three bits, one 32K slot: the smallest 27B preset, for a 16 GB card"
+model_set = "qwen3.8-27b-ud-q3-k-xl"
+
+# The smallest 27B preset: UD-Q3_K_XL, 13.1 GB against the default set's
+# 17.6 GB. Held 13.5 GiB (docs/validation.md). What three bits cost this
+# model on agent work is not measured, so gpt-oss-20b-small stays the tested
+# 16 GB path.
+[server]
+ctx_size = 32768
+n_predict = 16384
+parallel = 1
+gpu_layers = 99
+flash_attn = "auto"
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+# No spec_type: the file carries the MTP tensors, but drafting cost about a
+# GiB on the Q4 presets, which would leave a 16 GB card under a GiB once the
+# desktop has its share.
+ctx_checkpoints = 8
+reasoning_effort = "xhigh"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+[sampling]
+# Qwen's recommended thinking-mode sampling.
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+
+[requires]
+vram_gib = 15

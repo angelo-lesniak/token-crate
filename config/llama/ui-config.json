@@ -1,0 +1,14 @@
+{
+  "showMessageStats": true,
+  "showThoughtInProgress": true,
+  "renderThinkingAsMarkdown": true,
+  "excludeReasoningFromContext": true,
+  "showModelTags": true,
+  "showModelQuantization": true,
+  "showBuildVersion": true,
+  "titleGenerationUseLLM": false,
+  "titleGenerationUseFirstLine": true,
+  "pdfAsImage": false,
+  "jsSandboxEnabled": false,
+  "backend_sampling": true
+}

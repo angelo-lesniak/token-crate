@@ -1,0 +1,4 @@
+# Public Git hosts that skill sets may reference. One lowercase host per line.
+github.com
+gitlab.com
+codeberg.org

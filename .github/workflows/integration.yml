@@ -1,0 +1,43 @@
+name: integration
+
+on:
+  pull_request:
+    paths:
+      - bin/tokencrate
+      - tokencrate/**
+      - services/**
+      - compose*.yaml
+      - pins.env
+      - config/**
+      - tests/integration.py
+      - tests/concurrent_clients.py
+      - tests/fixtures/**
+      - .github/workflows/integration.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    # No GPU on the runner: the same images serve the fixture models on the
+    # CPU and the wrapper runs its real commands against them.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CONTAINER_ENGINE: docker
+      LLM_GPU: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the test dependencies
+        run: python3 -m pip install -r requirements-dev.txt
+
+      - name: Create .env and the host directories
+        run: bash bin/tokencrate init
+
+      - name: Run the integration check
+        run: python3 tests/integration.py

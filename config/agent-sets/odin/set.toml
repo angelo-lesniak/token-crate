@@ -1,0 +1,55 @@
+schema = 1
+description = "Odin dev-2026-08 with OLS dev-2026-08 (language server) and odinfmt, clang 19 as the linker, lldb-dap 19 (debug adapter), SDL2, Vulkan, and glslc"
+# clang is Odin's linker on Linux (the LLVM 19 one, shared with lldb); the
+# X11 and OpenGL development packages are what the prebuilt raylib in the
+# Odin release links against.
+apt = [
+  "clang-19",
+  "glslc",
+  "libgl1-mesa-dev",
+  "libsdl2-dev",
+  "libvulkan-dev",
+  "libx11-dev",
+  "libxcursor-dev",
+  "libxi-dev",
+  "libxinerama-dev",
+  "libxrandr-dev",
+  "lldb-19",
+]
+# The build fails unless the pinned compiler links and runs a program.
+build = [
+  "chmod 0755 /opt/ols/ols-x86_64-unknown-linux-gnu /opt/ols/odinfmt-x86_64-unknown-linux-gnu",
+  "ln -s /opt/ols/ols-x86_64-unknown-linux-gnu /opt/ols/ols",
+  "ln -s /opt/ols/odinfmt-x86_64-unknown-linux-gnu /opt/ols/odinfmt",
+  "ln -s /usr/bin/clang-19 /usr/local/bin/clang",
+  "ln -s /usr/bin/lldb-dap-19 /usr/local/bin/lldb-dap",
+  "printf 'package main\\nimport \"core:fmt\"\\nmain :: proc() { fmt.println(\"ok\") }\\n' > /tmp/hello.odin",
+  "odin run /tmp/hello.odin -file -out:/tmp/hello",
+  "rm -f /tmp/hello /tmp/hello.odin",
+]
+note = """odin (ODIN_ROOT=/opt/odin; vendor raylib and lua are prebuilt there), ols (language server), odinfmt, clang (linker), lldb-dap (debug adapter: pass adapter lldb-dap after `odin build -debug`).
+SDL2, Vulkan headers and loader, glslc. There is no display: SDL uses its dummy drivers; window-creating code cannot be run here."""
+
+# Odin and OLS stay on the same monthly tag and are upgraded together.
+[[asset]]
+url = "https://github.com/odin-lang/Odin/releases/download/dev-2026-08/odin-linux-amd64-dev-2026-08.tar.gz"
+sha256 = "d858c0a182bb28d7b04b04dbb8aed592a9c96c84e4400ee917c74b45848a4d87"
+into = "/opt/odin"
+strip = 1
+
+[[asset]]
+url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-08/ols-x86_64-unknown-linux-gnu.zip"
+sha256 = "6fbeef39393476ad8c0601ad2fcc75e5df789f1c4990809fe87cd6f3f3680807"
+into = "/opt/ols"
+
+[env]
+PATH = "/opt/odin:/opt/ols"
+ODIN_ROOT = "/opt/odin"
+SDL_VIDEODRIVER = "dummy"
+SDL_AUDIODRIVER = "dummy"
+
+[pi_lens.lsp.servers.ols]
+name = "Odin Language Server"
+extensions = [".odin"]
+command = "ols"
+args = []

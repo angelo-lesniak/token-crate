@@ -1,0 +1,15 @@
+# Docker Engine 28 or newer. An internal bridge normally keeps an address on
+# the host (the gateway), through which a container reaches every host
+# service bound to all interfaces. Gateway mode `isolated` gives the bridge
+# no host address, so an agent container reaches the model and nothing on
+# the host; container names still resolve. Rootless Podman needs nothing
+# here: its bridge gateway belongs to the user's network namespace. The
+# wrapper includes this file for Docker; `doctor` checks the Engine version.
+x-isolated: &isolated
+  driver_opts:
+    com.docker.network.bridge.gateway_mode_ipv4: isolated
+    com.docker.network.bridge.gateway_mode_ipv6: isolated
+
+networks:
+  agents: *isolated
+  ui: *isolated
