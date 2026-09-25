@@ -40,9 +40,11 @@ PI_LENS_FILE = "/opt/tokencrate/pi-lens.json"
 # One script per selected set with `check` lines; the containment check
 # runs each as the container user.
 CHECKS_DIR = "/opt/tokencrate/checks"
+# True whichever way the session was started: the note cannot see the flag.
 NOTE_HEADER = (
-    "This container has no internet. "
-    "Package installs (npm, pip, apt) fail unless the session was started with --egress."
+    "This container has no internet unless the session was started with --egress or --cloud; "
+    "without it, package installs (npm, pip, apt) fail. "
+    "Try an install once before working around a missing package."
 )
 ROOTS = (("config", "config/agent-sets"), ("local", "local/agent-sets"))
 
