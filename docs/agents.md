@@ -29,7 +29,7 @@ These measurements used the 27B on an RTX 5090; see the
 [oh-my-pi](validation.md#oh-my-pi) records. The
 [request-size record](validation.md#request-size-of-the-coding-set)
 measures the tools and schema characters each set adds to every request.
-The default preset has one 64K slot. Use `qwen3.8-27b-q4-long` (one 128K
+The default preset has one 64K slot. Use `qwen3.8-27b-q4-mtp-long` (one 128K
 slot) when a session runs out of context.
 
 ## What the container can and cannot do
@@ -188,10 +188,19 @@ The `coding` agent set adds four pi-lens skills from the image.
 
 Included:
 
-- `pocock-core`: ten skills from `mattpocock/skills` (MIT) for engineering
-  and productivity tasks (`tdd`, `code-review`, `diagnosing-bugs`,
-  `implement`, `research`, `triage`, `to-spec`, `writing-for-agents`,
-  `grill-me`, `handoff`).
+- `pocock-core`: seventeen skills from `mattpocock/skills` (MIT) for
+  engineering and productivity tasks (`tdd`, `code-review`,
+  `diagnosing-bugs`, `implement`, `research`, `triage`, `to-spec`,
+  `wayfinder`, `domain-modeling`, `codebase-design`,
+  `improve-codebase-architecture`, `prototype`,
+  `setup-matt-pocock-skills`, `writing-for-agents`, `grill-me`, `grilling`,
+  `handoff`). The set includes every skill that another one calls by name:
+  `grill-me` only hands over to `grilling`, and `wayfinder` calls
+  `grilling`, `domain-modeling`, `research`, and `prototype`. `code-review`,
+  `to-spec`, `triage`, and `wayfinder` read the project's issue tracker
+  from `docs/agents/issue-tracker.md`, which `/setup-matt-pocock-skills`
+  writes; without it, `wayfinder` keeps its map as Markdown under
+  `.scratch/`.
 - `skill-crate`: one skill, `documentation-guidelines`, from
   [SkillCrate](https://github.com/angelo-lesniak/skill-crate) (MIT): the
   documentation policy and workflow that TokenCrate's own pages follow,

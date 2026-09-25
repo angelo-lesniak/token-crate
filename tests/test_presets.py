@@ -143,11 +143,18 @@ class PresetTests(unittest.TestCase):
             self.assertIn(f"{name}: {UNRELEASED_WAIT}\n", stdout)
         self.assertIn(f"Rendered {len(LOADABLE_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into {output}.\n", stdout)
         self.assertEqual(presets.rendered_model_ids(output), set(LOADABLE_PRESETS))
-        # The two MTP variants differ from the default in one thing each: the
-        # KV cache type, and the model file (with the same patched template).
-        mtp, f16kv, uncensored = (config[f"qwen3.8-27b-q4-mtp{suffix}"] for suffix in ("", "-f16kv", "-uncensored"))
+        # The MTP variants differ from the default in one thing each: the
+        # KV cache type, the model file (with the same patched template), and
+        # the slot; the uncensored long preset is the long one on that file.
+        variants = ("mtp", "mtp-f16kv", "uncensored-mtp", "mtp-long", "uncensored-mtp-long")
+        mtp, f16kv, uncensored, mtp_long, uncensored_long = (config[f"qwen3.8-27b-q4-{name}"] for name in variants)
         self.assertEqual({key for key in mtp if mtp[key] != f16kv.get(key)}, {"cache-type-k", "cache-type-v"})
         self.assertEqual({key for key in mtp if mtp[key] != uncensored.get(key)}, {"model"})
+        self.assertEqual({key for key in mtp if mtp[key] != mtp_long.get(key)}, {"ctx-size", "ctx-checkpoints"})
+        self.assertEqual({key for key in mtp_long if mtp_long[key] != uncensored_long.get(key)}, {"model"})
+        # The two 128K presets differ only in drafting.
+        long = config["qwen3.8-27b-q4-long"]
+        self.assertEqual({key for key in mtp_long if mtp_long[key] != long.get(key)}, {"spec-type", "spec-draft-n-max"})
         # The Flash-Next presets reuse the 27B's patched template, which
         # their file embeds, and never draft with MTP.
         flash = config["qwen3.8-flash-next-q4"]

@@ -254,7 +254,7 @@ class CliTests(unittest.TestCase):
             LLM_SKILL_SETS="pocock-core",
             FAKE_ENGINE_LLAMA_RUNNING="true",
         )
-        # A set directory with one of ten skills present is incomplete.
+        # A set directory with one of seventeen skills present is incomplete.
         (self.scratch.storage / "skills" / "pocock-core" / "tdd").mkdir(parents=True)
         self.expect_failure(
             "skill set pocock-core is incomplete (missing: code-review",

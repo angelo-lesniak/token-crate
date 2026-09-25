@@ -37,12 +37,14 @@ review them yourself. The repository's MIT license does not cover weights.
 | `qwen3.8-27b-q4-mtp` (default) | Qwen3.8 Q4 | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 138 to 154 tokens/s | a single agent; a second client waits for the slot instead of sharing it |
 | `qwen3.8-27b-q4` | Qwen3.8 Q4 | 64K total, 32K per slot | 2 | none | 24 GiB | 74 to 75 tokens/s | the built-in chat UI and an agent at the same time on one loaded model |
 | `qwen3.8-27b-q4-long` | Qwen3.8 Q4 | 128K | 1 | none | 28 GiB | 75 to 76 tokens/s | oh-my-pi, whose [first request](agents.md) is large, and long agent sessions |
+| `qwen3.8-27b-q4-mtp-long` | Qwen3.8 Q4 | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 138 to 154 tokens/s | oh-my-pi and long agent sessions at the default's speed |
 | `qwen3.8-27b-q6-quality` | Qwen3.8 Q6 | 48K | 1 | MTP, 2 draft tokens | 30 GiB | 100 to 113 tokens/s | the quality tier |
 | `gpt-oss-20b-fast` | gpt-oss-20b | 128K total, 64K per slot | 2 | none | 20 GiB | 246 to 264 tokens/s | fast chat and a tool-calling fallback |
 | `gpt-oss-20b-small` | gpt-oss-20b | 32K | 1 | none | 15 GiB | 244 to 260 tokens/s | a 16 GB card: the tested path of the two |
 | `qwen3.8-27b-q3-small` | Qwen3.8 Q3 | 32K | 1 | none | 15 GiB | 89 to 91 tokens/s | a 16 GB card with the 27B; what three bits cost it on agent work is not measured |
 | `qwen3.8-27b-q4-mtp-f16kv` | Qwen3.8 Q4 | 64K | 1 | MTP, 3 draft tokens | 25 GiB | 143 to 144 tokens/s | the default's settings with an unquantized KV cache, for long documents and tool calls |
-| `qwen3.8-27b-q4-mtp-uncensored` | Qwen3.8 Q4 abliterated | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 143 to 151 tokens/s | uncensored (abliterated), refusals removed at the weight level |
+| `qwen3.8-27b-q4-uncensored-mtp` | Qwen3.8 Q4 abliterated | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 143 to 151 tokens/s | uncensored (abliterated), refusals removed at the weight level |
+| `qwen3.8-27b-q4-uncensored-mtp-long` | Qwen3.8 Q4 abliterated | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 142 to 147 tokens/s | uncensored (abliterated) with the 128K slot |
 | `glm-5.3-flash-q2` | GLM-5.3-Flash Q2 | 128K | 1 | MTP, 2 draft tokens | 30 GiB and 96 GiB RAM | not loadable | the [96 GB RAM tier](#the-96-gb-ram-tier) |
 | `glm-5.3-flash-q2-uncensored` | GLM-5.3-Flash Q2 uncensored | 64K | 1 | none (its files drop the MTP head) | 30 GiB and 96 GiB RAM | not loadable | uncensored (orcarouter), 2-bit, no memory margin |
 | `qwen3.8-flash-next-q4` | Flash-Next Q4 | 128K | 1 | none | 30 GiB and 96 GiB RAM | 31 to 32 tokens/s | the [96 GB RAM tier](#the-96-gb-ram-tier) that the pinned build loads: 125B parameters, 6B active, experts in system memory |
@@ -55,10 +57,12 @@ short and a long prompt on an RTX 5090, from
 llama.cpp build b11028, except `qwen3.8-flash-next-q4-uncensored`, whose
 figure is from [the 96 GB tier
 record](validation.md#the-settings-of-the-96-gb-ram-tier) on build
-b10920, and the two 16 GB presets, which are from [their own
-record](validation.md#the-16-gb-presets). The presets measured on the
-32 GB card held 3 to 7 GiB less GPU memory than they declare and the
-16 GB pair 1.5 to 2.3 GiB less; the two GLM presets have no GPU record.
+b10920, the two 16 GB presets, which are from [their own
+record](validation.md#the-16-gb-presets), and the two 128K MTP presets,
+from [theirs](validation.md#the-128k-mtp-presets). The presets measured
+on the 32 GB card held 3 to 7 GiB less GPU memory than they declare and
+the 16 GB pair 1.5 to 2.3 GiB less; the two GLM presets have no GPU
+record.
 
 The default preset, `qwen3.8-27b-q4-mtp`, gives a single agent one 64K
 slot instead of two 32K slots: an agent's first request is 8,000 to
@@ -123,7 +127,7 @@ Two ways to choose another effort without reloading the model:
 The uncensored presets appear wherever the other presets do; their
 descriptions carry the word "uncensored" and the method.
 
-- `qwen3.8-27b-q4-mtp-uncensored` runs
+- `qwen3.8-27b-q4-uncensored-mtp` runs
   [huihui-ai's abliteration](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF)
   of the default preset's file with the default preset's settings. In a
   [benchmark of eight uncensored Qwen3.8-27B builds](https://nathan.sapwell.net/posts/qwen38-27b-abliteration/)
@@ -131,6 +135,9 @@ descriptions carry the word "uncensored" and the method.
   original) and every build looped in its reasoning in 30 to 45 percent
   of runs. The `reply terminates` check of `smoke` shows such a loop (the
   reply ends with `length` instead of `stop`).
+  `qwen3.8-27b-q4-uncensored-mtp-long` is the same file with the settings
+  of `qwen3.8-27b-q4-mtp-long`, a 128K slot that gives such a loop more
+  room before `n_predict` ends it.
 - `qwen3.8-flash-next-q4-uncensored` runs orcarouter's abliteration of
   Qwen3.8-Flash-Next, with the settings of `qwen3.8-flash-next-q4` and two
   more expert layers on the card, which its smaller file leaves room for.

@@ -35,6 +35,7 @@ The table summarizes the [records](#records).
 | HTTP and WebSocket authorization accepts implicit and explicit port 80 for the exact loopback authorities and rejects foreign hosts, origins, sibling ports, and disallowed Fetch Metadata | Validated | Node.js 24.20.0, engine-free harness with unprivileged listeners | [The harnesses and the CPU runs on both engines](#the-harnesses-and-the-cpu-runs-on-both-engines) |
 | Terminal pi and omp in RPC mode, PI WEB through its HTTP API, and Paseo through its daemon CLI answer sequentially while all clients stay alive, with one unchanged router and loaded model process | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2, CPU fixture; RTX 5090 on the shipped preset | [The harnesses and the CPU runs on both engines](#the-harnesses-and-the-cpu-runs-on-both-engines), [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
 | The nine loadable presets in the linked record run through CDI, pass every `smoke` check (including streamed tool calls and mid-conversation system messages), and hold 3 to 7 GiB less than `[requires]`. `bench` measures the MTP preset at about twice the generation speed of the two-slot preset using the same file | Validated | RTX 5090, driver 610.57.04, rootless Podman 6.1.1 | [The llama API and the presets](#the-llama-api-and-the-presets) |
+| `qwen3.8-27b-q4-mtp-long` and `qwen3.8-27b-q4-uncensored-mtp-long` pass every `smoke` check, report a 128K context, hold 22.5 GiB against 28 GiB declared with the slot empty and with 119,009 prompt tokens in it, find a code near the start of that prompt, reuse all but the new tokens on the next turn, and generate at the speed of their 64K MTP siblings, twice `qwen3.8-27b-q4-long` | Validated | RTX 5090, driver 615.71.09, rootless Podman 6.1.2 | [The 128K MTP presets](#the-128k-mtp-presets) |
 | `gpt-oss-20b-small` and `qwen3.8-27b-q3-small` pass every `smoke` check and hold 12.7 and 13.5 GiB, 2.3 and 1.5 GiB less than the 15 GiB they declare | Validated | RTX 5090, driver 610.57.04, rootless Podman 6.1.1 | [The 16 GB presets](#the-16-gb-presets) |
 | The 96 GB tier and the 27B variants hold less than `[requires]` and pass every `smoke` check; Flash-Next reuses a session's growing prompt, and the settings behind `n_cpu_moe`, the 2048 micro-batch, and the unset `load-mode` are measured | Validated | RTX 5090 with 96 GB of RAM | [The settings of the 96 GB RAM tier](#the-settings-of-the-96-gb-ram-tier) |
 | The pi image renders and builds for `coding`, `coding,debug,dotnet,web,browser`, and `coding,debug,odin` from the pinned Node base image; each passes the agent check, whose per-set lines come from the sets' `check` scripts; prompts complete on CPU and GPU, with answers checked in the GPU record | Validated | Rootless Podman, with and without a GPU; Docker Engine 29.7.2 without one | [pi and the agent sets](#pi-and-the-agent-sets), [The CPU integration check](#the-cpu-integration-check), [Docker Engine](#docker-engine) |
@@ -75,7 +76,9 @@ The engine-free gate and the CPU integration check do not cover these:
   running, but the model did not finish the task;
 - whether the `[requires]` values of the presets that no session has
   filled leave the right headroom; the default preset held the same
-  20.1 GiB with an empty and a full 64K slot;
+  20.1 GiB with an empty and a full 64K slot, and the three 128K Q4
+  presets the same with an empty and a 91 percent full slot ([their
+  record](#the-128k-mtp-presets));
 - the UI launchers' readiness timeouts for a daemon that never answers:
   no recorded run had a daemon fail to start;
 - the provider in pi's interactive model picker, a cloud answer through
@@ -366,7 +369,7 @@ held before the run (995 MiB).
   | `qwen3.8-27b-q4` | 18.8 GiB | 24 GiB |
   | `qwen3.8-27b-q4-long` | 21.1 GiB | 28 GiB |
   | `qwen3.8-27b-q4-mtp-f16kv` | 21.5 GiB | 25 GiB |
-  | `qwen3.8-27b-q4-mtp-uncensored` | 19.7 GiB | 24 GiB |
+  | `qwen3.8-27b-q4-uncensored-mtp` | 19.7 GiB | 24 GiB |
   | `qwen3.8-27b-q6-quality` | 25.9 GiB | 30 GiB |
   | `qwen3.8-flash-next-q4` | 26.2 GiB | 30 GiB |
   | `qwen3.8-flash-next-q4-uncensored` | 26.4 GiB | 30 GiB |
@@ -381,7 +384,7 @@ held before the run (995 MiB).
   | `qwen3.8-27b-q4` | 75, 74 | 1,350, 3,320 |
   | `qwen3.8-27b-q4-long` | 76, 75 | 2,089, 3,517 |
   | `qwen3.8-27b-q4-mtp-f16kv` | 143, 144 | 1,838, 3,205 |
-  | `qwen3.8-27b-q4-mtp-uncensored` | 151, 143 | 1,803, 3,221 |
+  | `qwen3.8-27b-q4-uncensored-mtp` | 151, 143 | 1,803, 3,221 |
   | `qwen3.8-27b-q6-quality` | 113, 100 | 1,000, 2,707 |
   | `qwen3.8-flash-next-q4` | 32, 31 | 98, 660 |
   | `qwen3.8-flash-next-q4-uncensored` | 34, 35 | 111, 774 |
@@ -448,6 +451,75 @@ before the run, which "Held" subtracts. Date: 2026-09-20.
 
 Not covered: a 16 GB card, which no run here has; an agent session on
 either preset; what three bits cost the 27B on agent work.
+
+### The 128K MTP presets
+
+Purpose: the GPU measurement of `qwen3.8-27b-q4-mtp-long` and
+`qwen3.8-27b-q4-uncensored-mtp-long`, the 128K slot with MTP drafting,
+next to `qwen3.8-27b-q4-long` and `qwen3.8-27b-q4-uncensored-mtp`, with
+an empty and a nearly full slot. Environment: the GPU host on the shipped
+pins, driver 615.71.09, rootless Podman 6.1.2, the model files in the
+page cache. "Held" is `nvidia-smi` after `smoke` minus what the desktop
+held before `up` (960 MiB). Date: 2026-09-20.
+
+- `up` rendered 13 of 15 presets, the four under test among them, and
+  loaded the default preset in 7 to 8 seconds.
+- `smoke`: every check `pass` on all four presets, three times on
+  `qwen3.8-27b-q4-uncensored-mtp-long` and twice on
+  `qwen3.8-27b-q4-uncensored-mtp`. Every run ended both completions with
+  `stop`, so nothing looped in its reasoning, and the long presets report
+  `n_ctx` 131072.
+- Held against `[requires]`, with the slot empty and while a prompt of
+  119,009 tokens filled it:
+
+  | Preset | Held, empty | Held, 119,009 tokens | `[requires]` |
+  | --- | ---: | ---: | ---: |
+  | `qwen3.8-27b-q4-mtp` | 19.8 GiB | refused | 24 GiB |
+  | `qwen3.8-27b-q4-long` | 21.0 GiB | 21.0 GiB | 28 GiB |
+  | `qwen3.8-27b-q4-mtp-long` | 22.5 GiB | 22.5 GiB | 28 GiB |
+  | `qwen3.8-27b-q4-uncensored-mtp-long` | 22.4 GiB | 22.4 GiB | 28 GiB |
+
+  The cache is allocated when the preset loads, so a full slot adds
+  nothing (at most 4 MiB in one-second samples). Drafting costs the 128K
+  slot 1.5 GiB, and the 128K MTP presets hold 5.5 GiB less than they
+  declare. The default and `qwen3.8-27b-q4-long` repeated their figures
+  from [the preset record](#the-llama-api-and-the-presets).
+- `bench`, three iterations with a 262-token and a 6,052-token prompt,
+  prompt caching off, each pair in one report:
+
+  | Preset | Generation (short, long) | Prompt (short, long) |
+  | --- | --- | --- |
+  | `qwen3.8-27b-q4-long` | 76, 75 | 2,098, 3,499 |
+  | `qwen3.8-27b-q4-mtp-long` | 138, 154 | 1,804, 3,277 |
+  | `qwen3.8-27b-q4-uncensored-mtp` | 151, 141 | 1,778, 3,261 |
+  | `qwen3.8-27b-q4-uncensored-mtp-long` | 147, 142 | 1,714, 3,258 |
+
+  The 128K slot costs MTP nothing measurable: `qwen3.8-27b-q4-mtp-long`
+  generates at the default preset's 138 and 154 tokens per second from
+  the preset record, twice `qwen3.8-27b-q4-long`, and the abliterated
+  pair is within three percent of each other. `qwen3.8-27b-q4-long` and
+  `qwen3.8-27b-q4-uncensored-mtp` repeated their rows in that record
+  within two percent.
+- The nearly full slot: 5,049 numbered lines with an access code at line
+  151, 119,009 prompt tokens (91 percent of the slot), thinking off, and
+  a second turn on the same conversation:
+
+  | Preset | Turn 1 | Prompt tokens/s | Generation tokens/s | Code found | Turn 2 processed, reused |
+  | --- | ---: | ---: | ---: | --- | --- |
+  | `qwen3.8-27b-q4-long` | 63 s | 1,898 | 49 | yes | 32, 119,016 |
+  | `qwen3.8-27b-q4-mtp-long` | 68 s | 1,766 | 85 | yes | 31, 119,017 |
+  | `qwen3.8-27b-q4-uncensored-mtp-long` | 68 s | 1,756 | 88 | yes | 31, 119,017 |
+
+  Each answered `AZURE-7431` and ended with `stop`. On the second turn
+  the context checkpoints left only the new tokens to process. Drafting
+  kept its lead with the slot full, at 8 generated tokens per answer.
+  The second question asked for the line after line 100: the two MTP
+  presets answered `101`, `qwen3.8-27b-q4-long` answered `151`, one
+  sample each at temperature 1.0. The default refused the same prompt
+  with `400 ... exceeds the available context size (65536 tokens)`.
+
+Not covered: an agent session on either preset; answer quality over a
+full slot beyond one retrieval question.
 
 ### pi and the agent sets
 
