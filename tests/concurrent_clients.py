@@ -307,7 +307,8 @@ exit "$fail"
             failed = cli(
                 "ui", "concurrent-failure", "--sets", "", "--dir", str(other), "--port", free_port(), check=False
             )
-            assert failed.returncode and "container is exited" in failed.stderr, failed
+            stopped = f"the container {uis.container_names('concurrent-failure')[0]} is exited before it answered"
+            assert failed.returncode and stopped in failed.stderr, failed
             assert first == ui_ids("pi-web") and second == ui_ids("paseo")
             logs = selected.command("logs", uis.container_names("concurrent-failure")[0], capture=True)
             assert logs.returncode == 0
