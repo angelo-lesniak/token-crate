@@ -23,6 +23,11 @@ from pathlib import Path
 
 from tokencrate import engine, env, runtime, session, uis
 
+# The first omp prompt here is a cold prefill of about 16,000 tokens on the
+# CI runner's CPU: it took over six minutes in passing runs and over ten in
+# a slower one. A stuck client still fails well inside the job's hour.
+RPC_TIMEOUT = float(os.environ.get("RPC_TIMEOUT", "1200"))
+
 
 def request(url: str, body: dict | None = None, **headers) -> object:
     req = urllib.request.Request(
@@ -85,7 +90,7 @@ class RpcClient:
         self.process.stdin.flush()
 
     def receive(self, predicate):
-        deadline = time.monotonic() + 600
+        deadline = time.monotonic() + RPC_TIMEOUT
         while time.monotonic() < deadline:
             try:
                 event = self.events.get(timeout=1)
@@ -95,7 +100,7 @@ class RpcClient:
                 continue
             if predicate(event):
                 return event
-        raise AssertionError("RPC response timeout: " + "".join(self.output)[-5000:])
+        raise AssertionError(f"RPC response timeout ({RPC_TIMEOUT:g}s, RPC_TIMEOUT): " + "".join(self.output)[-5000:])
 
     def prompt(self, marker: str):
         self.send({"type": "get_state", "id": "state"})
