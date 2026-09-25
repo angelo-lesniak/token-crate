@@ -50,7 +50,7 @@ class PinsTests(unittest.TestCase):
             env.load_pins(self.path)
         self.write()
         self.path.write_text(self.path.read_text() + "PI_VERSION=0.85.2\n")
-        with self.assertRaisesRegex(TokenCrateError, "exactly once"):
+        with self.assertRaisesRegex(TokenCrateError, "PI_VERSION is set twice"):
             env.load_pins(self.path)
         self.write()
         self.path.write_text(self.path.read_text() + "TOOL_PYTHON_IMAGE=python\n")

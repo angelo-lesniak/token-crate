@@ -30,6 +30,16 @@ COPIED = (
 )
 
 
+def home_tmpfs_directories(agent: str) -> set[str]:
+    """Every ancestor of a retained bind needs a writable, owned tmpfs of
+    its own (the home root among them, as "."); the engines otherwise
+    create root-owned ancestors for nested mounts. What the tests check
+    compose.yaml and a running container against."""
+    from tokencrate.session import PERSISTENT_DIRECTORIES
+
+    return {str(parent) for relative in PERSISTENT_DIRECTORIES[agent] for parent in Path(relative).parents}
+
+
 def shipped(kind: str) -> list[str]:
     """The names of the shipped entries under config/<kind> (one TOML file
     each), in name order, which is the order the package reads them."""

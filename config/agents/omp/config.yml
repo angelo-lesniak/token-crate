@@ -3,7 +3,6 @@
 # PI_CONFIG_FILES, whose values outrank the home copy and the project.
 autolearn:
   enabled: false
-enabledProviders: []
 # Start at the highest thinking level; the generated model list clamps it to
 # what the preset accepts (xhigh on Qwen presets, high on gpt-oss).
 defaultThinkingLevel: xhigh

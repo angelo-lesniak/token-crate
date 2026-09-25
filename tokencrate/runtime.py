@@ -6,49 +6,35 @@ import hashlib
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-from . import TokenCrateError, presets, uis
+from . import TokenCrateError, presets
 from .engine import PROJECT_LABEL, Engine
+from .engine import network_gateway as engine_network_gateway
 from .env import Settings
-from .localhttp import OPENER
+from .localhttp import http_get, http_post
 
 # A container in one of these states will not answer (`removed`: the engine
 # no longer knows it); anything else is polled again until the timeout.
 STOPPED_STATES = ("exited", "dead", "stopped", "removing", "removed")
 
 
-def http_get(url: str, timeout: float = 5) -> str | None:
-    """The body of a GET, or None when the request fails."""
-    try:
-        with OPENER.open(url, timeout=timeout) as response:
-            return response.read().decode("utf-8", errors="replace")
-    except (OSError, urllib.error.URLError, ValueError):
-        return None
-
-
-def http_post(url: str, payload: dict, timeout: float = 5) -> str:
-    """POST a JSON body and report what the request did: "" when the router
-    accepted it, otherwise what refused it. The caller reads the effect from
-    the state that follows; this only explains a state that never changes."""
-    request = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}
-    )
-    try:
-        with OPENER.open(request, timeout=timeout):
-            return ""
-    except urllib.error.HTTPError as error:
-        return f"HTTP {error.code}"
-    except (OSError, urllib.error.URLError, ValueError) as error:
-        return str(error)
+# What `init` writes: `.env.example` stays the defaults layer, so a setting
+# is copied into `.env` only to change it, and a later checkout's new
+# default applies without an edit.
+ENV_HEADER = """\
+# Settings for this machine, read by bin/tokencrate and by Compose; not
+# committed. Every setting and its default is documented in .env.example.
+# A setting omitted here keeps that default: copy a line here only to
+# change it (for example LLM_MODELS_DIR, CONTAINER_ENGINE, or the Git
+# identity for the agent's commits).
+"""
 
 
 def init_project(settings: Settings) -> None:
     env_file = settings.root / ".env"
     if not env_file.is_file():
-        env_file.write_text((settings.root / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
+        env_file.write_text(ENV_HEADER, encoding="utf-8")
         print(f"Created {env_file}")
     else:
         print(f"Keeping existing {env_file}")
@@ -64,8 +50,6 @@ def prepare_host_directories(settings: Settings) -> None:
         settings.agents_dir / "omp",
         settings.skills_dir,
         settings.local_skills_dir,
-        settings.build_dir / "agents" / "pi",
-        settings.build_dir / "agents" / "omp",
         settings.root / "reports",
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -137,18 +121,28 @@ def stop_stack(engine: Engine) -> None:
 
 
 def require_isolated_networks(engine: Engine) -> None:
-    """On Docker the internal networks must have no gateway address
-    (compose.docker.yaml; an Engine of the checked version allocates none
-    in gateway mode isolated). Compose keeps an existing network with the
-    options it was created with, so a network created without the overlay
-    would keep its host address silently. `up` refuses before any download,
-    and every agent session refuses before its container starts, until
-    `down` has removed it."""
-    if engine.name != "docker":
-        return
+    """The internal networks as the Compose files declare them: internal,
+    created by this Compose project, and on Docker without a gateway
+    address (compose.docker.yaml). Compose keeps an existing network with
+    the options it was created with, so a network made without the
+    overlay, or by hand under the project's name, would keep its options
+    silently. `up` refuses before any download, and every agent session
+    refuses before its container starts, until the network is gone."""
     for network in ("agents", "ui"):
-        gateway = engine.network_gateway(network, missing_ok=True)
-        if gateway:
+        document = engine.network_document(network, missing_ok=True)
+        if document is None:
+            continue
+        labels = document.get("Labels") or document.get("labels") or {}
+        if labels.get(PROJECT_LABEL) != engine.settings.project_name:
+            name = f"{engine.settings.project_name}_{network}"
+            raise TokenCrateError(
+                f"the {network} network was not created by this Compose project; "
+                f"remove it ({engine.name} network rm {name}) and run: bash bin/tokencrate up"
+            )
+        if not document.get("Internal", document.get("internal")):
+            raise TokenCrateError(f"the {network} network is not internal. Run: bash bin/tokencrate down, then up")
+        gateway = engine_network_gateway(document)
+        if engine.name == "docker" and gateway:
             raise TokenCrateError(
                 f"the {network} network keeps a host gateway address ({gateway}); it was created without "
                 "gateway mode isolated. Run: bash bin/tokencrate down, then up"
@@ -246,10 +240,11 @@ def wait_until_ready(settings: Settings, engine: Engine, timeout: int, **poll_op
                 load_started = True
 
 
-def print_status(settings: Settings, engine: Engine) -> None:
-    with engine.lock():
-        engine.command("ps", "--all", "--filter", f"label={PROJECT_LABEL}={settings.project_name}")
-        uis.print_status(engine)
+def print_containers(settings: Settings, engine: Engine) -> None:
+    engine.command("ps", "--all", "--filter", f"label={PROJECT_LABEL}={settings.project_name}")
+
+
+def print_models(settings: Settings, engine: Engine) -> None:
     if engine.llama_container_ids():
         print("Models (GET /models):")
         states = model_states(settings)

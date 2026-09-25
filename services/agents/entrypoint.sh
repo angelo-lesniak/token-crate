@@ -14,12 +14,14 @@ readonly SKILLS_ROOT="$RUN_DIR/skills"
 readonly STATIC_CONFIG="$PREFIX/etc/tokencrate/agent"
 readonly GENERATED_CONFIG="$PREFIX/etc/tokencrate/agent-generated"
 readonly FETCHED_SKILLS="$PREFIX/opt/tokencrate/skills"
-readonly REPO_SKILLS="$PREFIX/opt/tokencrate/skills-repo"
 readonly LOCAL_SKILLS="$PREFIX/opt/tokencrate/skills-local"
 # Owned by the image: the pi packages it ships (one absolute directory per
 # line) and the files it seeds into the agent home.
 readonly IMAGE_PACKAGES="$PREFIX/opt/tokencrate/pi-packages.txt"
 readonly HOME_SEED="$PREFIX/opt/tokencrate/home-seed"
+# Bound read-only by the `run -v` of a `--cloud` start (`agent pi --cloud`,
+# `ui <set> --cloud`), which also sets TOKENCRATE_CLOUD; absent otherwise.
+readonly CLOUD_KEYS="$PREFIX/etc/tokencrate/cloud-keys"
 
 die() {
   printf 'TokenCrate agent: %s\n' "$*" >&2
@@ -41,8 +43,8 @@ mkdir -p "$RUN_DIR"
 rm -rf "$SKILLS_ROOT"
 mkdir -p "$SKILLS_ROOT"
 
-# --- Skills: merge fetched sets, repository skills, and private skills into
-# --- one tmpfs directory linked at ~/.agents/skills (the cross-agent path).
+# --- Skills: merge fetched sets and private skills into one tmpfs
+# --- directory linked at ~/.agents/skills (the cross-agent path).
 link_skill() {
   local source=$1
   local name=${source##*/}
@@ -73,12 +75,11 @@ for skill_set in "${skill_sets[@]}"; do
     [[ -d "$skill_dir" ]] && link_skill "${skill_dir%/}"
   done
 done
-for root in "$REPO_SKILLS" "$LOCAL_SKILLS"; do
-  [[ -d "$root" ]] || continue
-  for skill_dir in "$root"/*/; do
+if [[ -d "$LOCAL_SKILLS" ]]; then
+  for skill_dir in "$LOCAL_SKILLS"/*/; do
     [[ -d "$skill_dir" ]] && link_skill "${skill_dir%/}"
   done
-done
+fi
 mkdir -p "$home/.agents"
 ln -s "$SKILLS_ROOT" "$home/.agents/skills"
 
@@ -125,18 +126,46 @@ case "$agent" in
 esac
 
 # --- Git identity: commits inside the container use the values from .env;
-# --- the mounted project is trusted even when its owner UID differs.
+# --- the mounted project is trusted even when its owner UID differs. git
+# --- writes the values, so a quote or line break in one cannot add a key.
 git_config="$RUN_DIR/gitconfig"
-{
-  printf '[safe]\n\tdirectory = *\n'
-  if [[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
-    printf '[user]\n\tname = %s\n\temail = %s\n' "$GIT_AUTHOR_NAME" "$GIT_AUTHOR_EMAIL"
-  fi
-} > "$git_config"
 export GIT_CONFIG_GLOBAL=$git_config
+git config --file "$git_config" safe.directory '*'
+if [[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
+  git config --file "$git_config" user.name "$GIT_AUTHOR_NAME"
+  git config --file "$git_config" user.email "$GIT_AUTHOR_EMAIL"
+fi
 [[ -n "${GIT_AUTHOR_NAME:-}" ]] || unset GIT_AUTHOR_NAME GIT_COMMITTER_NAME
 [[ -n "${GIT_AUTHOR_EMAIL:-}" ]] || unset GIT_AUTHOR_EMAIL GIT_COMMITTER_EMAIL
 export USER=agent LOGNAME=agent
+
+# --- Cloud-provider keys: only a `--cloud` start mounts this file, and only
+# --- it sets TOKENCRATE_CLOUD. It is read the way the wrapper reads .env:
+# --- one NAME=value line per key, matching quotes removed, nothing
+# --- expanded, blank and # lines skipped. The names this script sets
+# --- itself are refused; every other name is the user's choice.
+if [[ -n "${TOKENCRATE_CLOUD:-}" || -e "$CLOUD_KEYS" ]]; then
+  [[ -f "$CLOUD_KEYS" ]] || die "the cloud keys file is not mounted as a regular file at $CLOUD_KEYS"
+  number=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    number=$((number + 1))
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" != *$'\r'* ]] || die "cloud keys file line $number has a carriage return; use LF line endings"
+    name=${line%%=*}
+    [[ "$line" == *=* && "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "cloud keys file line $number is not NAME=value"
+    case "$name" in
+      PATH | HOME | USER | LOGNAME | IFS | BASH_ENV | ENV | TOKENCRATE_* | LD_* | GIT_CONFIG_GLOBAL | PI_CONFIG_FILES | PI_BASH_NO_LOGIN)
+        die "cloud keys file line $number sets $name, which the agent entrypoint owns" ;;
+    esac
+    value=${line#*=}
+    value=${value%"${value##*[![:space:]]}"}
+    if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+      value=${value:1:-1}
+    fi
+    export "$name=$value"
+  done < "$CLOUD_KEYS"
+  unset line name value number
+fi
 
 cd "$project"
 exec "$@"

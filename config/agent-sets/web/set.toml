@@ -3,6 +3,12 @@ description = "TypeScript 7.0.2, typescript-language-server 6.0.0, the Vue 3.3.1
 note = "node with typescript, typescript-language-server, vue-tsc, and js-debug-adapter (debug adapter, .ts and .js). npm install needs --egress. For .vue files run `vue-tsc --noEmit`."
 
 build = ["install -m 0755 js-debug-adapter /usr/local/bin/js-debug-adapter"]
+# The bridge must answer a DAP request over stdio from the container user.
+check = [
+  '''request='{"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"pwa-node"}}'''',
+  '''printf 'Content-Length: %d\r\n\r\n%s' "${#request}" "$request" | timeout 30 js-debug-adapter | grep -q '"command":"initialize"'''',
+  "echo 'js-debug answers a DAP initialize request over stdio'",
+]
 
 [npm]
 

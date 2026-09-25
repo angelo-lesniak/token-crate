@@ -32,11 +32,22 @@ as set in `ruff.toml`.
 | `env`, `names` | Settings, pins, and name validation |
 | `engine`, `runtime`, `localhttp` | Engine commands, stack lifecycle, and direct local HTTP requests |
 | `models`, `presets`, `agentmodels` | Model downloads, preset validation and rendering, and agent model lists |
-| `agents`, `agentsets`, `uis`, `skills` | Agent sessions, image selections, browser UIs, and skill sets |
+| `session` | What one agent container start is made of |
+| `agents`, `uis`, `agentsets`, `skills` | Terminal sessions and the containment check, browser UIs, image selections, and skill sets |
 | `doctor`, `probe`, `checkpins` | Host checks, API probes and benchmarks, and upstream pin lookups |
 
 Usage and error text in `cli.py` are part of the documented interface.
 `docs/cli.md` must show every usage line verbatim.
+
+`session.prepare` is the one pre-flight, mount, and render step: every
+wrapper start of an agent container calls it and names its profiles and
+`egress=` on each Compose call (a forgotten `egress=` fails closed: the
+check reports "no default route although --egress was requested"). Add a
+new way to start one there, so that no start can skip the mounts, the
+pre-flight, or the image. `session.cloud_keys_file` is the one check of
+the cloud keys file, `session.run_arguments` the one way it is mounted
+(on the `run` of `agent --cloud` and `ui --cloud`), and the wrapper
+never reads that file.
 
 ## Tests
 
@@ -48,16 +59,19 @@ bash tests/static.sh
 
 - `bash -n` and ShellCheck over the shell files it lists;
 - `node --check` over the two JavaScript files;
-- the unit tests (`python3 -m unittest discover -s tests -t .`, every
-  `tests/test_*.py`; the entrypoint and forwarder tests run Node.js). The
-  CLI tests run the package against the fake engine under
-  `tests/fixtures/engine-bin` in a temporary copy of the checkout;
+- an import of each `tokencrate` module on its own, which catches import
+  cycles;
+- the unit tests, every `tests/test_*.py`. The entrypoint and forwarder
+  tests run Node.js. The CLI tests run the package against the fake engine
+  under `tests/fixtures/engine-bin` in a temporary copy of the checkout.
   `tests/test_project_contracts.py` holds the parsed repository contracts
   (the Compose files, the Dockerfiles, the agent settings) and the
-  documentation checks, and refuses to run without PyYAML;
+  documentation checks, and needs PyYAML;
 - Ruff (`ruff check` and `ruff format --check` over `tokencrate` and
   `tests`);
-- `tests/podman-compose.sh`;
+- `tests/podman-compose.sh`, which renders every file combination the
+  wrapper passes and checks each service's network placement from the
+  rendered `run` arguments;
 - a scan of the tracked files for machine-specific host paths;
 - a Compose render with every installed engine.
 
@@ -68,14 +82,14 @@ artifacts. After committing a change to the gate's inputs, extract a clean
 copy with `git archive HEAD | tar -x -C "$(mktemp -d)"` and run the gate
 there. CI also lints both Dockerfiles with hadolint.
 
-Run integration checks after changing the package, images, chat template,
-agents, or Compose files. They require a container engine, PyYAML, and
-network access for images, fixture models (0.4 GB on the first run), and
-GitHub skill sets. Allow several minutes.
+Run the integration checks after changing the package, images, chat
+template, agents, or Compose files. They need a container engine, PyYAML,
+and network access for images, fixture models (0.4 GB on the first run),
+and GitHub skill sets, and take several minutes.
 
 The run takes over this checkout's Compose project: `up` replaces a
-running stack, and cleanup stops it with `down`. Use a separate checkout
-and Compose project to keep an existing stack running.
+running stack, and cleanup stops it with `down`. To keep an existing stack
+running, use a separate checkout and Compose project.
 
 ```bash
 python3 tests/integration.py
@@ -96,24 +110,22 @@ The run calls `init` if `.env` is missing. It copies fixtures into
 `config/` and refuses to start if a fixture copy already exists there.
 Cleanup removes the resources created by the run.
 
-This unittest module is outside the static gate's `test_*` discovery.
 Use `-k <pattern>` to select checks by name; setup and `down` still run
-around them. CI runs integration weekly and for pull requests touching
-the paths in `.github/workflows/integration.yml`.
+around them. CI runs the integration checks weekly and for pull requests
+that touch the paths in `.github/workflows/integration.yml`.
 
 ## Documentation changes
 
 Write and review documentation with the `documentation-guidelines` skill
-from [SkillCrate](https://github.com/angelo-lesniak/skill-crate): TokenCrate
+from [SkillCrate](https://github.com/angelo-lesniak/skill-crate). TokenCrate
 agents load it from the `skill-crate` skill set; for another agent, copy
 `skills/documentation-guidelines` from that repository into its skills
-directory. `AGENTS.md` lists the pages of this repository and which page
-owns which facts.
+directory. `AGENTS.md` lists which page owns which facts.
 
-Prefer the existing canonical page over a duplicated explanation. The
-README's "Choose what to do next" table is the documentation index; a new
-page needs a row there. Keep a section in `docs/cli.md` for every command
-listed by `bin/tokencrate help`. `tests/test_project_contracts.py` checks
+Update the existing canonical page instead of duplicating an explanation.
+A new page needs a row in the README's "Choose what to do next" table.
+Keep a section in `docs/cli.md` for every command listed by
+`bin/tokencrate help`. `tests/test_project_contracts.py` checks
 that relative links and heading anchors resolve, that the README table
 links every page, and that every usage line of the help text appears in
 `docs/cli.md`; the facts in the prose are checked by hand.
@@ -130,10 +142,10 @@ value:
 2. `PIN_KEYS` in `tokencrate/env.py`: the wrapper reads exactly these keys
    and rejects any other, and `tests/test_project_contracts.py` imports
    the same tuple.
-3. The `args:` block of the service in `compose.yaml`, without a fallback
-   default; `pins.env` is the single source of pins.
-4. The Dockerfile `ARG` (no `=default`).
-5. For a pin that `pins check` resolves: `COMPONENTS` and
+3. For a pin an image build uses: the `args:` block of the service in
+   `compose.yaml` without a fallback default (`pins.env` is the single
+   source of pins), and the Dockerfile `ARG` (no `=default`).
+4. For a pin that `pins check` resolves: `COMPONENTS` and
    `resolve_component` in `tokencrate/checkpins.py`, plus
    `tests/test_checkpins.py`.
 
@@ -141,8 +153,8 @@ value:
 
 An agent set is a directory under `config/agent-sets/` with a `set.toml`
 ([Agent sets](docs/agent-sets.md) documents the keys and how to write
-one). Before pinning a pi extension, read its source at that version:
-it runs with pi's permissions inside the container. A shipped set also needs:
+one). Before pinning a pi extension, read its source at that version: it
+runs with pi's permissions inside the container. A shipped set also needs:
 
 - a row in the table of [Agent sets](docs/agent-sets.md#shipped-sets);
 - a row in `THIRD_PARTY_NOTICES.md` for what it installs beyond Debian
@@ -154,19 +166,25 @@ it runs with pi's permissions inside the container. A shipped set also needs:
 
 ## Model sets, presets, and skill sets
 
+Every manifest kind (agent sets, model sets, presets, skill sets) goes
+through the one reader in `tokencrate/names.py`: `schema = 1`, no unknown
+keys, a one-line description, and paths below the manifest's own
+directory made of letters, digits, and `._+@-`. A comma-separated list
+(`LLM_SKILL_SETS`, `LLM_AGENT_SETS`, `--sets`) goes
+through its one parser, which ignores spaces, empty entries, and repeats.
+
 Model-set entries must use immutable Hugging Face repository commits and
 include the exact remote filename, byte size, SHA-256 checksum, an immutable
-model-card link, and license links. Start a manifest with
-`bash bin/tokencrate models draft hf:<owner>/<repo>:<file.gguf>`, review the
-`TODO` lines, and run the model-set unit tests before changing a shipped
-pin; a wrong pin fails loudly at `models fetch`. Do not add tokens or
-downloaded weights to the repository.
+model-card link, and license links; `models draft` writes them
+([Adding a model](docs/models.md#adding-a-model) is the procedure). Run
+the model-set unit tests before changing a shipped pin; a wrong pin fails
+loudly at `models fetch`. Do not add tokens or downloaded weights to the
+repository.
 
 A preset change must state what it was measured with: attach a `bench` report
 from `reports/` and the `smoke` result for the affected preset. A model set
 whose architecture the pinned llama.cpp build lacks declares the build it
-waits for
-([Adding a model](docs/models.md#adding-a-model)).
+waits for ([Adding a model](docs/models.md#adding-a-model)).
 
 Skill-set entries must use a public credential-free HTTPS repository on an
 allowlisted host, a full commit, and the tree digest that
@@ -189,8 +207,8 @@ Do not commit models, `.env`, `build/`, `data/`, `local/`, or `reports/`.
 
 ## Settled decisions
 
-These decisions include their reasons and conditions for reconsideration.
-Challenge them with evidence against the stated reason.
+Each decision states its reason and when to reconsider it. Challenge one
+only with evidence against its stated reason.
 
 - **Agent sets:** pi's tools are selected and installed at build time.
   The image is the reviewed artifact, and the container has no route out.
@@ -198,27 +216,44 @@ Challenge them with evidence against the stated reason.
   vocabulary. Reconsider if pi drops local-directory packages or a set
   needs a new kind of step; extend the vocabulary before adding an image
   stage.
-- **Shared pi configuration:** sets add to `PATH`, the
-  tools note, pi-lens's configuration, and the package list; pi settings
-  and skills stay the same across selections, so the model uses a
-  consistent tool vocabulary. Reconsider if a set needs different pi
-  settings.
+- **Shared pi configuration:** sets add to `PATH`, the tools note,
+  pi-lens's configuration, and the package list; pi settings and skills
+  stay the same across selections, so the model sees one tool
+  vocabulary. Reconsider if a set needs different pi settings.
 - **Browser UI containers:** a UI runs as an agent set inside the pi
   container because it spawns or embeds pi. A separate forwarder publishes
   its port and joins `ui-publish`; Docker cannot publish a container
-  attached only to internal networks. This gives both engines the same
-  containment: no UI egress, no access from terminal containers, and no
-  cross-site access to the unauthenticated UI.
-  [Privacy and containment](docs/privacy.md#defaults-and-their-limits)
-  states which network each container joins, why a published port needs
-  the forwarder on Docker, and the three conditions it refuses on.
-  Reconsider if Docker publishes ports from internal networks or a UI
-  authenticates and checks origins itself.
+  attached only to internal networks. Both engines get the same
+  containment: no UI egress and no access from terminal containers
+  unless the UI is started with `--egress` or `--cloud`, and no
+  cross-site access to the unauthenticated UI
+  ([Privacy and containment](docs/privacy.md#defaults-and-their-limits)
+  gives the networks and the forwarder's checks). Reconsider if Docker
+  publishes ports from internal networks or a UI authenticates and checks
+  origins itself.
+- **UI egress is the simple variant:** `ui --egress` and `ui --cloud`
+  add the default network to the UI container, which stays on `ui` for
+  its forwarder, and mount the keys file exactly as `agent pi --cloud`
+  does; no per-UI network, no setting, no gate. The accepted
+  consequences (who can reach the UI, its route, and its keys while it
+  runs) are stated in [Cloud providers](docs/agents.md#cloud-providers)
+  rather than guarded by code. Reconsider when a per-UI network with a
+  guard is proven cheaper than those paragraphs.
+- **UIs launch with `compose run`:** both containers of a UI start the
+  way a terminal session does, under the fixed names
+  `tokencrate-ui-<set>` and `tokencrate-ui-forward-<set>`, with the
+  keys file, the egress overlay, and the labels delivered the same way.
+  podman-compose ignores `run -l`, so the labels are interpolated in
+  the Compose files (`TOKENCRATE_UI_SET`, and the overlay's own
+  `io.tokencrate.ui-egress`). The fixed names mean two Compose projects
+  cannot run one UI set at once. Reconsider if a provider stops
+  honouring `run --name` or `--service-ports`.
 - **Two agents:** pi with the `coding` set includes the oh-my-pi features
   expected to justify their cost on a local model. oh-my-pi remains an
   alternative, but its first request costs more than twice pi's
-  ([request sizes](docs/agents.md)). Its `bun install --global` has no
-  lockfile, so the version pin does not pin all dependencies. It also
+  ([Coding agents and skills](docs/agents.md)). Its `bun install
+  --global` has no lockfile, so the version pin does not pin all
+  dependencies. It also
   needs a second image, base pin, model-list dialect, entrypoint branch,
   configuration overlay, Compose service, and validation coverage.
   Reconsider if GPU results show no benefit over pi with `coding`, or if
@@ -235,18 +270,66 @@ Challenge them with evidence against the stated reason.
   `skills fetch` and its startup requirement from initial setup.
   Reconsider if those descriptions cost more context on a 27B model than
   their skills return in value.
+- **Cloud sessions are egress sessions, not filtered ones:** an
+  `agent --cloud` session has the full route out of `--egress`; no
+  per-provider allowlist narrows it. A Node client honours proxy variables
+  only when it opts in, so a real filter must work at the network level,
+  and a filter that does not filter is worse than stating what the
+  session can reach
+  ([Privacy and containment](docs/privacy.md#defaults-and-their-limits)).
+  Reconsider when a network-level allowlist is proven on both engines.
+- **Cloud keys in a file the wrapper never reads:** `agent --cloud`
+  and `ui --cloud` mount the file `LLM_CLOUD_KEYS_FILE` names and the
+  entrypoint exports its lines. The wrapper checks the file's place and
+  shape, not its contents, and keeps no provider table: pi reads its
+  provider variables from `pi-ai/dist/env-api-keys.js` in the pinned
+  package, some in pairs,
+  so a table drifts with every `PI_VERSION` and a filter would block what
+  pi needs. A sidecar that injects the credential and keeps the keys out
+  of the container would need a per-provider header dialect, rendered
+  base URLs, and a network of its own, so that offline sessions cannot
+  relay through it. Reconsider when such a sidecar is proven on both
+  engines with a real key.
+- **Cloud models through pi only:** `agent omp --cloud` is refused.
+  oh-my-pi fills unset provider settings, base URLs included, from the
+  project's `.env` files, so a cloned repository can send the key and
+  every prompt to a server of its choosing
+  ([record](docs/validation.md#oh-my-pi-and-project-env-files)); pi reads
+  no such file. Reconsider when a forwarder inside the container injects
+  the credential, so that no key is in the agent's environment for a
+  `.env` file to redirect.
+- **No repository skills:** every skill an agent sees is a pinned skill
+  set or a private skill below `LLM_LOCAL_SKILLS_DIR`; the checkout
+  ships none. Generic working advice belongs to a skill set, and a claim
+  about what leaves the machine belongs to the documentation, where
+  `--cloud` qualifies it. Reconsider for a set-specific instruction that
+  no manifest `note` can carry.
+- **No renderer entry for a cloud provider:** `tokencrate/agentmodels.py`
+  renders the local provider alone. Both pinned agents ship each
+  provider's endpoint, request dialect, and model catalogue, and offer a
+  provider when its key variable is set. pi keeps its built-in models
+  when a custom entry is added ("Merge semantics" in the pinned
+  package's `docs/models.md`), so an entry would carry only what the
+  bundle has, plus a base URL the wrapper would then have to pin.
+  Reconsider if an agent version drops its bundled catalogues.
 - **Print-only pin checks:** `pins check` automates version and image-digest
   lookups for five components and leaves `pins.env` edits to the maintainer.
   The resulting diff is the review. Driver requirements, the CUDA family,
   and agent-set versions remain manual. Remove the command if upgrades
   prove no faster with it than with a fully manual lookup.
 - **Compose settings:** `.env.example` documents each Compose setting
-  and its default; Compose reads these values without wrapper logic for
-  each one. Reconsider if a setting gains a second reader that can disagree
-  with Compose about its default.
+  and its default; Compose reads these values with no per-setting wrapper
+  logic, and the wrapper exports every documented key with its effective
+  value, so a Compose fallback for one is never used. The variables the
+  wrapper sets per call keep a fallback, because Compose interpolates
+  every service on every call and `up` sets none of the agent ones. The
+  two set on every call, `TOKENCRATE_ROOT` and `TOKENCRATE_HOME_OWNER`,
+  are required. Reconsider if a
+  setting gains a second reader that can disagree with Compose about its
+  default.
 - **llama-server router mode:** the router loads presets, routes requests
   by `model`, loads the default at startup, and serves the built-in chat
-  UI. It covers TokenCrate's model-switching needs. A separate proxy such
+  UI, which covers TokenCrate's model switching. A separate proxy such
   as llama-swap would add a pinned component, configuration format, and
   per-effort aliases; clients already send `reasoning_effort` per request.
   Reconsider if router mode loses a required feature.
@@ -259,7 +342,8 @@ Challenge them with evidence against the stated reason.
   GLM quantization would leave no memory margin on this split. The model
   sets use `[requires] llama_build` to wait for upstream `glm5next`
   support, keeping the pinned upstream image as the reviewed artifact.
-  There is no fork image, second llama image, or `.env` build switch.
+  There is no fork image, second llama image, `.env` build switch, or
+  image-name setting.
   When a release supports the architecture, record its build number in
   both GLM model sets and raise the pin. Remove GLM if its first measured
   tasks show no benefit over the 27B or 4-bit Flash-Next. Reconsider the

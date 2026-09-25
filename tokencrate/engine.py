@@ -153,13 +153,11 @@ class Engine:
     def env(self) -> dict[str, str]:
         return self.settings.subprocess_env()
 
-    def command(
-        self, *args: str, capture: bool = False, check: bool = True, env: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess:
+    def command(self, *args: str, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess:
         """Run an engine command (`podman ...` or `docker ...`)."""
         result = _run(
             [self.name, *args],
-            env or self.env,
+            self.env,
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None,
             text=True,
@@ -175,7 +173,6 @@ class Engine:
         egress: bool = False,
         capture: bool = False,
         check: bool = True,
-        files_extra: tuple[Path, ...] = (),
         **extra: str,
     ) -> subprocess.CompletedProcess:
         """Run `engine compose` with the wrapper's file list, from the repository root."""
@@ -188,8 +185,6 @@ class Engine:
             files += ["--file", "compose.docker.yaml"]
         if egress:
             files += ["--file", "compose.agent-egress.yaml"]
-        for path in files_extra:
-            files += ["--file", str(path)]
         for profile in profiles:
             files += ["--profile", profile]
         env = self.settings.subprocess_env(**extra)
@@ -250,9 +245,7 @@ class Engine:
                 if self.container_missing(inspected.stderr):
                     continue
                 raise TokenCrateError(f"could not inspect container {cid}: {(inspected.stderr or '').strip()}")
-            item = json.loads(inspected.stdout)
-            if (item.get("Config", {}).get("Labels") or {}).get(PROJECT_LABEL) == self.settings.project_name:
-                found.append(item)
+            found.append(json.loads(inspected.stdout))
         return found
 
     @staticmethod
@@ -279,10 +272,12 @@ class Engine:
                     time.sleep(0.1)
 
     def require_port(self, name: str, port: str) -> None:
-        """Accept an occupied port only when the named service publishes it."""
+        """Accept an occupied port only when the named service or container
+        publishes it (llama is one service; a UI forwarder is one container
+        of the shared `ui-forward` service)."""
         for item in self.containers(all_states=False):
             if publishes(item, port):
-                if item["Config"]["Labels"].get(SERVICE_LABEL) == name:
+                if name in (item["Config"]["Labels"].get(SERVICE_LABEL), (item.get("Name") or "").lstrip("/")):
                     return
                 raise TokenCrateError(f"host port {port} belongs to another container; choose another port")
         with socket.socket() as listener:
@@ -320,32 +315,41 @@ class Engine:
             raise TokenCrateError("multiple running llama containers were found for this Compose project")
         return ids[0]
 
-    def network_gateway(self, network: str, *, missing_ok: bool = False) -> str:
-        """The gateway address of one Compose network of this project as the
-        engine reports it (Docker: `IPAM.Config[].Gateway`; Podman:
-        `subnets[].gateway`), or an empty string when the network has none,
-        which is what Docker's isolated gateway mode leaves. With missing_ok,
-        a network the engine does not know counts as having none."""
+    def network_document(self, network: str, *, missing_ok: bool = False) -> dict | None:
+        """`network inspect` of one Compose network of this project, as the
+        engine reports it; with missing_ok, None for a network the engine
+        does not know."""
         name = f"{self.settings.project_name}_{network}"
         result = self.command("network", "inspect", "--format", "{{json .}}", name, capture=True, check=not missing_ok)
         if result.returncode != 0:
-            return ""
+            return None
         try:
-            document = json.loads(result.stdout)
+            return json.loads(result.stdout)
         except json.JSONDecodeError as error:
             raise TokenCrateError(f"{self.name} network inspect {name} returned invalid JSON") from error
-        subnets = (document.get("IPAM") or {}).get("Config") or document.get("subnets") or []
-        for subnet in subnets:
-            gateway = subnet.get("Gateway") or subnet.get("gateway") if isinstance(subnet, dict) else None
-            if gateway:
-                return str(gateway)
-        return ""
+
+    def network_gateway(self, network: str, *, missing_ok: bool = False) -> str:
+        """The gateway address of one Compose network of this project
+        (Docker: `IPAM.Config[].Gateway`; Podman: `subnets[].gateway`), or
+        an empty string when the network has none, which is what Docker's
+        isolated gateway mode leaves, or (with missing_ok) does not exist."""
+        return network_gateway(self.network_document(network, missing_ok=missing_ok) or {})
 
     def container_state(self, container_id: str) -> str:
-        """`.State.Status` of a container (running, exited, ...), or `removed`
-        when the engine no longer knows the container."""
+        """`.State.Status` of a container, by id or name (running, exited,
+        ...), or `removed` when the engine no longer knows the container."""
         result = self.command("inspect", "--format", "{{.State.Status}}", container_id, capture=True, check=False)
         return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "removed"
+
+
+def network_gateway(document: dict) -> str:
+    """The gateway address in a `network inspect` document of either engine."""
+    subnets = (document.get("IPAM") or {}).get("Config") or document.get("subnets") or []
+    for subnet in subnets:
+        gateway = subnet.get("Gateway") or subnet.get("gateway") if isinstance(subnet, dict) else None
+        if gateway:
+            return str(gateway)
+    return ""
 
 
 # The wording of the engine gate, shared so that `detect`, which refuses,

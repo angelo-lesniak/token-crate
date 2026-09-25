@@ -206,7 +206,7 @@ class ModelSetTests(unittest.TestCase):
                 models.read_manifest(manifest)
 
     def test_manifest_rejects_path_traversal(self):
-        with self.assertRaisesRegex(TokenCrateError, "safe relative path"):
+        with self.assertRaisesRegex(TokenCrateError, "source must be a relative path"):
             self.read(MANIFEST_HEAD + file_row("weights", "../secret"))
 
     def test_selection_rules(self):

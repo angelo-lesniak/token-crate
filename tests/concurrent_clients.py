@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from tokencrate import agents, engine, env, runtime, uis
+from tokencrate import engine, env, runtime, session, uis
 
 
 def request(url: str, body: dict | None = None, **headers) -> object:
@@ -155,7 +155,10 @@ def run(root: Path, project: Path) -> None:
         return cid, sorted((line.split()[0], line.split()[21]) for line in stats)
 
     def ui_ids(name):
-        return tuple(selected.container_ids(s)[0] for s in uis.services(name))
+        return tuple(
+            selected.command("inspect", "--format", "{{.Id}}", n, capture=True).stdout.strip()
+            for n in uis.container_names(name)
+        )
 
     def free_port():
         with socket.socket() as sock:
@@ -172,7 +175,7 @@ def run(root: Path, project: Path) -> None:
     assert first == ui_ids("pi-web")
     assert before == stable_identity()
     print(f"four-client start: router/processes={before}, pi-web={first}, paseo={second}, ports={ports}", flush=True)
-    home = agents.agent_home_directory(settings, "pi", project)
+    home = session.agent_home_directory(settings, "pi", project)
     config = json.loads((home / ".paseo/config.json").read_text())
     assert config["agents"]["providers"]["pi"]["additionalModels"][0]["id"] == "tokencrate/ci-small", config
     # Each HTTP forwarder refuses the sibling origin as well as foreign hosts.
@@ -269,14 +272,11 @@ exit "$fail"
         other = project.with_name(project.name + "-peer")
         other.mkdir(exist_ok=True)
         for name in ("pi", "omp"):
-            peer_home = agents.agent_home_directory(settings, name, other)
-            agents.prepare_mountpoints(peer_home, name)
-            extra = {
-                "LLM_AGENT_PROJECT_DIR": str(other),
-                "TOKENCRATE_AGENT_HOME": str(peer_home),
-                "TOKENCRATE_PRESET": "ci-small",
-                **agents.render_image(settings, name, "" if name == "pi" else None),
-            }
+            peer_home = session.agent_home_directory(settings, name, other)
+            session.prepare_mountpoints(peer_home, name)
+            extra = session.session_variables(other, peer_home, "ci-small")
+            if name == "pi":
+                extra.update(session.render_image(settings, []))
             for egress in (False, True):
                 selected.compose(
                     "run",
@@ -302,15 +302,14 @@ exit "$fail"
         try:
             (failing / "set.toml").write_text(
                 'schema = 1\ndescription = "Failure fixture"\n[ui]\ncommand = "false"\nport = 15555\n'
+                'state = ".concurrent-failure"\n'
             )
             failed = cli(
                 "ui", "concurrent-failure", "--sets", "", "--dir", str(other), "--port", free_port(), check=False
             )
             assert failed.returncode and "container is exited" in failed.stderr, failed
             assert first == ui_ids("pi-web") and second == ui_ids("paseo")
-            logs = selected.command(
-                "logs", selected.container_ids(uis.services("concurrent-failure")[0], all_states=True)[0], capture=True
-            )
+            logs = selected.command("logs", uis.container_names("concurrent-failure")[0], capture=True)
             assert logs.returncode == 0
             cli("ui", "stop", "concurrent-failure")
         finally:
@@ -324,7 +323,7 @@ exit "$fail"
         assert first == ui_ids("pi-web") and second == ui_ids("paseo")
         assert before == stable_identity()
         cli("ui", "stop", "pi-web")
-        assert not selected.container_ids(uis.services("pi-web")[0], all_states=True)
+        assert selected.container_state(uis.container_names("pi-web")[0]) == "removed"
         assert second == ui_ids("paseo") and before == stable_identity()
         cli("ui", "pi-web", "--sets", "", "--dir", str(project), "--port", ports["pi-web"])
         assert request(base + route + "/messages" + query), "PI WEB transcript was not retained"

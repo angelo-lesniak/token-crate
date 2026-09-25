@@ -2,7 +2,9 @@
 
 TokenCrate runs coding agents in containers that reach the local model
 without a route to the internet by default. Terminal sessions share their
-internal network with each other and the model. The agent sees exactly one
+internal network with each other and the model; a session started with
+`--egress` is on the default network instead, with the model but with no
+offline session. The agent sees exactly one
 project directory, mounted read-write at its host path, plus a temporary
 home with selected state from `LLM_AGENTS_DIR`. The root filesystem is
 read-only and Linux capabilities are dropped.
@@ -10,7 +12,7 @@ read-only and Linux capabilities are dropped.
 | Agent | Command | What it is |
 | --- | --- | --- |
 | pi | `bash bin/tokencrate agent pi` | A small coding agent with a fixed tool set, configured entirely from files, plus the [agent sets](agent-sets.md) you select |
-| oh-my-pi | `bash bin/tokencrate agent omp` | A fork of pi with language-server integration, subagents, and MCP support; more capable, more context per turn, and faster-moving releases |
+| oh-my-pi | `bash bin/tokencrate agent omp` | A fork of pi with language-server integration, subagents, and MCP support; more context per turn and faster-moving releases |
 
 Both agents read the same skills, the same `AGENTS.md` in your project,
 and the same model list, one entry per loadable preset. The preset in
@@ -34,21 +36,23 @@ slot) when a session runs out of context.
 
 - It can read and change every file below the project directory, including
   files ignored by Git. Do not use a directory that contains secrets or
-  unrelated data as a project. The wrapper refuses the TokenCrate checkout
-  and the storage directories named in `.env`, including projects inside
-  or containing those directories. The next start trusts their contents.
-- It can run any command installed in the image: Git, ripgrep, jq, and
-  Node.js with fd in the pi image, Bun in the oh-my-pi image, and whatever the
-  selected [agent sets](agent-sets.md) add. It cannot install system
-  packages; a set is how a package gets into the image.
-- It cannot reach the internet, resolve names, or reach a running browser
-  UI. Its other host inputs are read-only: agent settings, its generated
-  model-list file, and the skills described below.
-  `bash bin/tokencrate smoke --agent pi`
-  proves that those routes are absent, and on Docker that the bridge has
-  no host address ([Privacy and
-  containment](privacy.md#defaults-and-their-limits) has the engine
-  details).
+  unrelated data as a project, and not the engine's own state
+  (`~/.local/share/containers`, `~/.config/containers`, `~/.docker`),
+  which decides what your next container runs. The wrapper refuses a
+  project that is, contains, or lies inside the TokenCrate checkout or a
+  storage directory named in `.env`, because the next start trusts their
+  contents.
+- It can run any command installed in the image: Git, curl, ripgrep, and
+  jq, plus Node.js and fd in the pi image, Bun in the oh-my-pi image, and
+  whatever the selected [agent sets](agent-sets.md) add. It cannot install
+  system packages; a set is how a package gets into the image.
+- It cannot reach the internet, resolve internet names, or reach a running
+  browser UI. `bash bin/tokencrate smoke --agent pi` proves that those
+  routes are absent, and on Docker that the agents network has no
+  gateway address
+  ([Privacy and containment](privacy.md#defaults-and-their-limits) has the
+  engine details). Its other host inputs are read-only: agent settings,
+  its generated model-list file, and the skills described below.
 - It reads the skills and any `AGENTS.md` inside the project, so a cloned
   repository can instruct the agent; pi loads those context files whether
   or not the project is trusted. pi's project trust prompt
@@ -76,33 +80,110 @@ slot) when a session runs out of context.
 
 When a task needs the network, for example to install packages, start the
 session with `--egress`; no setting grants it. The wrapper prints a
-warning; the container then has the same network access as any other
-container on the default network.
+warning; the container is then on the default network instead of the
+`agents` network, with the same network access as any other container
+there, including host services bound to non-loopback addresses and a
+browser UI started with `--egress` or `--cloud`.
 
-The sets apply to the pi image only; oh-my-pi keeps its built-in tools.
-[Agent sets](agent-sets.md) lists every shipped set, what it adds, how to
-write one, and how the image is rendered.
+Agent sets apply to the pi image only; oh-my-pi keeps its built-in tools.
+[Agent sets](agent-sets.md) lists every shipped set and how to write one.
+
+## Cloud providers
+
+`agent pi --cloud` and `ui <set> --cloud` offer cloud models beside the
+local preset, with the same project and skills. The keys live in one
+file of your own, named by `LLM_CLOUD_KEYS_FILE` (default
+`local/cloud-keys.env`). The file holds
+one `NAME=value` line per key, using the variable names pi reads, for
+example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or
+`OPENROUTER_API_KEY`; pi's documentation lists every provider's. Its
+grammar is the container entrypoint's own: an upper-case name, matching
+quotes around a value removed, nothing expanded, blank lines and lines
+starting with `#` skipped, LF line endings. The wrapper mounts the file
+read-only into that one session or UI and never opens it. Start from the
+template, which lists the variable names, and keep the copy readable by
+your user only:
+
+```bash
+cp cloud-keys.env.example local/cloud-keys.env && chmod 600 local/cloud-keys.env
+bash bin/tokencrate agent pi --cloud --dir ~/src/my-project
+```
+
+Pick the cloud model with `/model`; pi then shows the provider's cost per
+message. pi ships each provider's endpoint and a model list bundled with
+the pinned package, so a provider is offered as soon as its key variable
+is set. One key can enable more than one provider: pi also offers the
+regional and plan variants that read the same variable (`moonshotai-cn`,
+`opencode-go`), and `HF_TOKEN` in the file enables its Hugging Face
+provider. Providers that need a login or a second variable, such as
+pi's ChatGPT subscription (`openai-codex`), are not set up by the
+wrapper; the file can carry any variable pi reads except the ones the
+entrypoint sets itself.
+
+Use `--cloud` only in a project you trust:
+
+- **The whole conversation leaves the machine.** A cloud model receives
+  every turn so far, the ones the local model answered included, with
+  their file contents and tool output. [Privacy and
+  containment](privacy.md#what-leaves-the-machine) lists the destinations.
+- **Every process in the session can read the keys.** They are
+  environment variables of the agent, its bash tool, package scripts, and
+  skills. The session has a route out for its lifetime, so a project
+  whose `AGENTS.md` or scripts ask for the keys can send them anywhere.
+  A key printed into a transcript stays in the project's agent home,
+  which later sessions and browser UIs of that project mount.
+- **A browser UI holds the keys for as long as it runs.** `ui <set>
+  --cloud` mounts the file into the UI container, whose daemon serves
+  every conversation until `ui stop`, `down`, or a launch of the set
+  without the flag. The UI has no password, so whoever reaches its port
+  can use the keys and the route out:
+  - every local process;
+  - an `--egress` or `--cloud` terminal session of any project;
+  - every other browser UI, over the shared `ui` network, and on Docker
+    a page that reaches the UI's address on the default network
+    ([Privacy and containment](privacy.md#defaults-and-their-limits)).
+
+  PI WEB's model list offers the keyed providers, and Paseo's daemon
+  passes the keys on to the pi it spawns
+  ([record](validation.md#browser-uis-with---egress-and---cloud)); pick
+  the cloud model as in a terminal session. Run one such UI or session
+  at a time, in a project you trust, and stop it when the work is done;
+  several at once is an evaluation, not daily work.
+- **Cloud models are offered through pi only.** oh-my-pi fills unset
+  provider settings, base URLs included, from `.env` files, so a project
+  could send a key and every prompt to a server of its choosing; the
+  wrapper refuses `agent omp --cloud`
+  ([record](validation.md#oh-my-pi-and-project-env-files)). The files it
+  reads are `~/.env`, the `.env` of its configuration root and agent
+  directory, and the project's `.env`, `.env.local`, `.env.development`,
+  and `.env.development.local`. An oh-my-pi session with `--egress` in a
+  project whose `.env` holds, for example, `OPENAI_API_KEY` offers and
+  reaches that provider, and `smoke --agent` cannot see that key. pi
+  reads provider settings only from its environment.
+
+`--cloud` is the only way a container receives a key. [`agent`](cli.md#agent)
+lists what `--cloud` refuses.
 
 ## Skills
 
 Skills follow the Agent Skills standard: a directory with a `SKILL.md` whose
 frontmatter carries `name` and `description`. Agents read the description at
-start and load the body only when a task matches. TokenCrate links three
+start and load the body only when a task matches. TokenCrate links two
 sources into `~/.agents/skills` inside every agent container:
 
 | Source | Location | Pinning |
 | --- | --- | --- |
 | Skill sets | `LLM_SKILLS_DIR/<set>/<skill>`, fetched by `skills fetch` | Repository, full commit, path, and tree digest in `config/skill-sets/<set>.toml` |
-| Repository skills | `config/skills/<skill>` | Versioned with TokenCrate |
 | Private skills | `LLM_LOCAL_SKILLS_DIR/<skill>` (default `local/skills`) | Yours; not committed |
 
 `LLM_SKILL_SETS` names the fetched sets to load (default
 `pocock-core,skill-crate`); `agent` refuses to start while a named set is
-unknown, not fetched, or incomplete. Repository and private skills are
-always loaded. The entire fetched-skills directory is mounted read-only,
-so unselected sets remain readable by agent tools. An empty selection
-links no fetched sets into the skills view. Skill names must be unique
-across the loaded sources; the container refuses to start otherwise.
+unknown, not fetched, or incomplete. Private skills are always loaded;
+a skill of your own, such as notes on working with the local model, goes
+below `LLM_LOCAL_SKILLS_DIR`. The entire fetched-skills directory is
+mounted read-only, so unselected sets remain readable by agent tools.
+Skill names must be unique across the loaded sources; the container
+refuses to start otherwise.
 The `coding` agent set adds four pi-lens skills from the image.
 
 Included:
@@ -115,9 +196,6 @@ Included:
   [SkillCrate](https://github.com/angelo-lesniak/skill-crate) (MIT): the
   documentation policy and workflow that TokenCrate's own pages follow,
   usable in any project.
-- `tokencrate-local-model`, the repository skill: how to work efficiently
-  with a local 27B model: small context, well-formed tool calls, thinking
-  levels.
 
 `skills status <set>` recomputes the digests of fetched skills. A digest
 mismatch means the files on disk changed; `skills fetch` refuses to install a
@@ -150,6 +228,10 @@ Compared with `agent pi`:
   do not load in Paseo sessions.
 - Each keeps its own state under the agent home (`~/.pi-web`, `~/.paseo`
   in the container), which persists with the project's sessions.
+- `ui <set> --egress` and `ui <set> --cloud` give the UI container what
+  the flags give a terminal session, and `status` marks such a UI
+  `egress` or `cloud`. [Cloud providers](#cloud-providers) says who can
+  use the route and the keys while it runs.
 
 **PI WEB** runs a session daemon and web server using the image's pi.
 It adds an `ask_user` tool and asks the model for a session title after
@@ -171,43 +253,17 @@ replace that configuration or the browser's selection.
 
 Paseo's web client treats a new identity at a known address as an
 unreachable host. The wrapper therefore keeps one daemon identity
-(a keypair and server ID) per UI set under
-`LLM_AGENTS_DIR/pi/<set>-identity/` and copies it into every project's
-home. The browser sees one host whose project changes.
+(a keypair and server ID) under `LLM_AGENTS_DIR/pi/paseo-identity/` and
+copies it into every project's home, so the browser sees one host whose
+project changes.
 
 ## Use four clients with one model
 
-Start the model once, then both UIs from the checkout; these commands
-return when ready. Run each terminal-agent command in its own terminal
-and keep those two open. The project directory must already exist and
-lie outside the TokenCrate checkout.
-
-```bash
-bash bin/tokencrate up
-bash bin/tokencrate ui pi-web --preset qwen3.8-27b-q4-mtp --dir ~/src/my-project
-bash bin/tokencrate ui paseo --preset qwen3.8-27b-q4-mtp --dir ~/src/my-project
-bash bin/tokencrate agent pi --preset qwen3.8-27b-q4-mtp --dir ~/src/my-project
-bash bin/tokencrate agent omp --preset qwen3.8-27b-q4-mtp --dir ~/src/my-project
-```
-
-Open the addresses printed by the UI commands. Create a separate
-conversation in each client and confirm `tokencrate/qwen3.8-27b-q4-mtp`
-is selected. Paseo retains provider and model settings: select the same
-model in its create-agent form or saved profile even after changing
-`--preset`. Existing conversations in either UI can also remember their
-model. Do not erase retained state to change the selection.
-
-Send prompts one after another, allowing PI WEB's automatic title request
-to finish before the next prompt. All four clients use `http://llama:8080`
-and the same loaded preset; opening a client creates no model server.
-The MTP preset still has one inference slot. Keeping clients open does
-not require simultaneous generation or a different preset. Use distinct
-conversations: shared pi transcripts do not make concurrent writes to
-one conversation safe. oh-my-pi keeps separate transcripts.
-
-The [`ui` reference](cli.md#ui) covers independent start, logs, stop, and
-port selection. Evidence and remaining checks are in
-[Validation](validation.md#status).
+A terminal pi, a terminal oh-my-pi, PI WEB, and Paseo can work on one
+project at once: start each with the same `--preset` and `--dir`, and give
+each client its own conversation, because shared pi transcripts do not
+make concurrent writes to one conversation safe. All four use the one
+loaded preset; on a preset with one slot, their requests queue.
 
 ## Agent configuration
 
@@ -250,18 +306,15 @@ The entrypoint writes these files into the fresh home at every start:
   configuration. The definitions are seeded without the `model:` line
   their upstream examples carry, so a subagent runs on the session's own
   model and thinking level;
-- oh-my-pi's `config.yml`: the repository file
+- oh-my-pi's `~/.omp/agent/config.yml`: the repository file
   `config/agents/omp/config.yml` with `modelRoles.default` set to the
-  selected preset, written to `~/.omp/agent/config.yml`. oh-my-pi reads
-  and rewrites that file, so a model chosen in the session applies and
-  the tmpfs drops it when the container stops. `PI_CONFIG_FILES` names
-  the repository file as an overlay as well, which keeps the keys it sets
-  above the home copy and the project: automatic skill learning stays
-  off, the bash tool keeps `/bin/bash`, no other provider is enabled, and
-  the onboarding wizard stays closed (it asks an interactive session to
-  sign in to a provider it cannot reach, and records its completion in
-  the home, which the next container drops). Changing one of those keys
-  in the session has no effect.
+  selected preset. oh-my-pi rewrites that file, so a model chosen in the
+  session applies until the container stops. `PI_CONFIG_FILES` also names
+  the repository file as an overlay, which keeps its keys above the home
+  copy and the project: automatic skill learning stays off, the bash tool
+  keeps `/bin/bash`, and the onboarding wizard, which asks to sign in to
+  a provider, stays closed. Changing one of those keys in the session has
+  no effect.
 
 The repository's `config/agents/omp/AGENTS.md` is mounted read-only at
 `~/.omp/agent/AGENTS.md` as oh-my-pi's global context.
@@ -269,7 +322,7 @@ The repository's `config/agents/omp/AGENTS.md` is mounted read-only at
 ## Bring your own client
 
 Any OpenAI-compatible client on the host can use the running stack at
-`http://127.0.0.1:4207/v1` with any model name listed by
+`http://127.0.0.1:4207/v1` (port `LLM_PORT`) with any model name listed by
 `http://127.0.0.1:4207/v1/models` (the rendered preset ids). Every request
 must name the preset in its `model` field: the router loads that preset on
 first use and unloads the one loaded before. Clients that run on the host

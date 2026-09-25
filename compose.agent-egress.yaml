@@ -1,9 +1,20 @@
-# Opt-in overlay: gives an agent container the default network as well, so it
-# can reach the internet for one session (for example to install packages).
-# The wrapper includes it for `agent --egress`, the only way to grant it.
-x-egress: &egress
-  networks: [agents, default]
-
+# Opt-in overlay: puts an agent container on the default network for one
+# start, so it can reach the internet (for example to install packages)
+# and still the model, which is on the default network too. A terminal
+# session moves there from the internal `agents` network, so it shares no
+# network with offline sessions and cannot relay for them. A browser UI
+# keeps the `ui` network, where its forwarder reaches it, and joins the
+# default network in addition; the label marks such a UI for `status` and
+# the containment check. The wrapper includes this file for `--egress` and
+# `--cloud` only, the only ways to grant a route out. The tag replaces the
+# base list instead of merging into it; it is written per service because
+# podman-compose cannot print a tag that survives in an extension anchor.
 services:
-  agent-pi: *egress
-  agent-omp: *egress
+  agent-pi:
+    networks: !override [default]
+  agent-omp:
+    networks: !override [default]
+  agent-ui:
+    networks: !override [ui, default]
+    labels:
+      io.tokencrate.ui-egress: "1"

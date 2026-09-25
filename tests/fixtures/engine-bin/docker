@@ -4,6 +4,8 @@ makes and records every `compose` invocation on stdout so tests can check the
 routing; no container ever runs. Behaves as `podman` or `docker` from its
 own file name. Controls (environment variables):
   FAKE_ENGINE_LLAMA_RUNNING=true    `ps` lists one running llama container
+  FAKE_ENGINE_UI_SET=<set>          `ps` lists that set's UI pair (FAKE_ENGINE_UI_PORT its published port,
+                                    FAKE_ENGINE_UI_EGRESS=1 the egress label on its UI container)
   FAKE_ENGINE_CONFIG_SHA256=<digest>  `inspect` reports this config label (default: rendered digest, or empty if absent)
   FAKE_ENGINE_STATE=<status>        `inspect` reports this .State.Status
   FAKE_ENGINE_NETWORK=<json>        `network inspect` prints this document (FAKE_ENGINE_NETWORK_<NAME> for one network)
@@ -25,14 +27,26 @@ if "HF_TOKEN" in os.environ:
     sys.exit(1)
 
 
+def credentials():
+    """Every non-empty credential-shaped variable in the engine environment,
+    where none may be, and the host path of the keys file an `agent
+    --cloud` run mounts with `run -v` (never read: only its path travels)."""
+    names = sorted(key for key, value in os.environ.items() if key.endswith(("_API_KEY", "_TOKEN")) and value)
+    mounted = ""
+    for flag, value in zip(arguments, arguments[1:], strict=False):
+        if flag == "-v" and value.endswith(":/etc/tokencrate/cloud-keys:ro"):
+            mounted = value.split(":", 1)[0]
+    return f"env_keys={','.join(names)} key_file={mounted}"
+
+
 def trace(kind):
     print(
         f"{kind} project={os.environ.get('LLM_AGENT_PROJECT_DIR', 'unset')} "
         f"home={os.environ.get('TOKENCRATE_AGENT_HOME', 'unset')} "
         f"preset={os.environ.get('TOKENCRATE_PRESET', 'unset')} "
         f"sha={os.environ.get('TOKENCRATE_CONFIG_SHA256', 'unset')} "
-        f"skill_sets={os.environ.get('LLM_SKILL_SETS', 'unset')} args="
-        + " ".join(shlex.quote(item) for item in arguments)
+        f"skill_sets={os.environ.get('LLM_SKILL_SETS', 'unset')} "
+        f"{credentials()} args=" + " ".join(shlex.quote(item) for item in arguments)
     )
 
 
@@ -65,20 +79,27 @@ elif first == "ps":
         print("fake-llama-container")
     ui = os.environ.get("FAKE_ENGINE_UI_SET", "")
     if ui:
-        suffix = hashlib.sha256(ui.encode()).hexdigest()[:16]
-        for role in ("agent-ui", "ui-forward"):
-            if service in ("", f"{role}-{suffix}"):
-                print(f"fake-{role}-{suffix}")
+        # The wrapper's fixed container names for the set's UI and forwarder.
+        for role, name in (("agent-ui", f"tokencrate-ui-{ui}"), ("ui-forward", f"tokencrate-ui-forward-{ui}")):
+            if service in ("", role):
+                print(name)
 elif first == "inspect":
     if arguments[2] == "{{json .}}":
         cid = arguments[-1]
-        service = "llama" if cid == "fake-llama-container" else cid.removeprefix("fake-")
+        if cid == "fake-llama-container":
+            service = "llama"
+        elif cid.startswith("tokencrate-ui-forward-"):
+            service = "ui-forward"
+        else:
+            service = "agent-ui"
         labels = {
             "com.docker.compose.project": os.environ.get("COMPOSE_PROJECT_NAME", "tokencrate"),
             "com.docker.compose.service": service,
         }
-        if service.startswith(("agent-ui-", "ui-forward-")):
+        if service != "llama":
             labels["io.tokencrate.ui-set"] = os.environ.get("FAKE_ENGINE_UI_SET", "")
+            if service == "agent-ui" and os.environ.get("FAKE_ENGINE_UI_EGRESS"):
+                labels["io.tokencrate.ui-egress"] = "1"
         port = (
             os.environ.get("FAKE_ENGINE_LLAMA_PORT", os.environ.get("LLM_PORT", "4207"))
             if service == "llama"
@@ -88,11 +109,12 @@ elif first == "inspect":
             json.dumps(
                 {
                     "Id": cid,
-                    "Config": {"Labels": labels},
+                    "Name": f"/{cid}",
+                    "Config": {"Labels": labels, "Env": ["TOKENCRATE_UI_PORT=8504"] if service == "agent-ui" else []},
                     "NetworkSettings": {
                         "Ports": {
                             "8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": port}]
-                            if service == "llama" or service.startswith("ui-forward-")
+                            if service in ("llama", "ui-forward")
                             else []
                         }
                     },
@@ -121,10 +143,13 @@ elif arguments[:2] == ["network", "inspect"]:
     # shape without a gateway (isolated mode), Podman's with one.
     # FAKE_ENGINE_NETWORK=missing: the engine does not know the network.
     network = arguments[-1].rsplit("_", 1)[-1].upper().replace("-", "_")
+    project = os.environ.get("COMPOSE_PROJECT_NAME", "tokencrate")
     default = (
-        '{"subnets": [{"subnet": "10.89.0.0/24", "gateway": "10.89.0.1"}]}'
+        f'{{"subnets": [{{"subnet": "10.89.0.0/24", "gateway": "10.89.0.1"}}], "internal": true, '
+        f'"labels": {{"com.docker.compose.project": "{project}"}}}}'
         if name == "podman"
-        else '{"IPAM": {"Config": [{"Subnet": "172.18.0.0/16"}]}}'
+        else f'{{"IPAM": {{"Config": [{{"Subnet": "172.18.0.0/16"}}]}}, "Internal": true, '
+        f'"Labels": {{"com.docker.compose.project": "{project}"}}}}'
     )
     document = os.environ.get(f"FAKE_ENGINE_NETWORK_{network}", os.environ.get("FAKE_ENGINE_NETWORK", default))
     if document == "missing":

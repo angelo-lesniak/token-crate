@@ -106,7 +106,8 @@ class SkillSetTests(unittest.TestCase):
         hosts = {"github.com"}
         manifest = self.workdir / "bad.toml"
         manifest.write_text(
-            'schema = 1\n[[skill]]\nname = "demo"\nrepository = "https://example.com/a/b"\ncommit = "'
+            'schema = 1\ndescription = "bad"\n[[skill]]\nname = "demo"\n'
+            'repository = "https://example.com/a/b"\ncommit = "'
             + "a" * 40
             + '"\npath = "skills/demo"\nsha256 = "'
             + "b" * 64
@@ -116,7 +117,8 @@ class SkillSetTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenCrateError, "allowed-git-hosts"):
             skills.read_manifest(manifest, hosts)
         manifest.write_text(
-            'schema = 1\n[[skill]]\nname = "demo"\nrepository = "https://github.com/a/b"\ncommit = "main"\n'
+            'schema = 1\ndescription = "bad"\n[[skill]]\nname = "demo"\nrepository = "https://github.com/a/b"\n'
+            'commit = "main"\n'
             'path = "skills/demo"\nsha256 = "' + "b" * 64 + '"\nlicense = "MIT"\n',
             encoding="utf-8",
         )
@@ -265,12 +267,6 @@ class SkillSetTests(unittest.TestCase):
         (root / "SKILL.md").write_text("---\nname: other\ndescription: x\n---\n", encoding="utf-8")
         with self.assertRaisesRegex(TokenCrateError, "must equal the directory name"):
             skills.validate_skill_document(root, "wrong")
-
-    def test_shipped_repository_skills_have_valid_frontmatter(self):
-        for skill_dir in sorted((PROJECT_ROOT / "config" / "skills").iterdir()):
-            if skill_dir.is_dir():
-                skills.validate_skill_document(skill_dir, skill_dir.name)
-                skills.tree_digest(skill_dir)
 
 
 if __name__ == "__main__":

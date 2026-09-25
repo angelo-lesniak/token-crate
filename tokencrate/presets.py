@@ -17,13 +17,13 @@ import json
 import os
 import re
 import tempfile
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import TokenCrateError, models
 from .agentmodels import AGENT_THINKING_LEVELS, omp_models, pi_models_json
-from .names import PRESET_NAME_RE
+from .names import PRESET_NAME_RE, load_catalog, read_toml
+from .names import description as read_description
 
 # The rendered router preset file; services/llama/Dockerfile boots it.
 CONFIG_FILE_NAME = "models.ini"
@@ -35,10 +35,6 @@ UI_CONFIG_IN_CONTAINER = "/etc/tokencrate/ui-config.json"
 # router loads the same file for the UI at the root; the UI reads whichever
 # /props it fetched last).
 SHARED_KEYS = (("jinja", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
-# A key of the router's preset file: a llama-server option name without the
-# dashes (long or short form). Typed preset keys map to it by replacing the
-# underscore.
-INI_KEY_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SECTION_RE = re.compile(r"^\[([^\]]+)\]$", re.MULTILINE)
 # The choices are the values the shipped presets use or a validation
 # record has measured; a value llama-server accepts but no preset has run
@@ -81,11 +77,13 @@ REQUIRES_KEYS = {"vram_gib", "ram_gib"}
 # The agents show the description as the model name, and presets list
 # prints it after the name, the set, and the requirements.
 DESCRIPTION_MAX = 120
-# The preset-file spellings of the typed keys; [server.extra] must use the
-# typed key instead, so a preset cannot set one option twice.
-TYPED_INI_KEYS = {
-    key.replace("_", "-") for key in (*INT_KEYS, *BOOL_KEYS, *CHOICE_KEYS, *SAMPLING_KEYS, "chat_template_kwargs")
-}
+# The options [server.extra] passes through to the router, by long name:
+# what the shipped presets, the fixtures, and the documentation use. Every
+# other option is refused, the typed keys' own spellings included, so a
+# preset cannot set one option twice. llama-server also takes options that
+# run tools, proxy MCP servers, serve files, or fetch models, and each
+# release adds some; a new option is added here after reading its help.
+EXTRA_KEYS = ("override-kv", "load-mode", "log-prompts-dir", "verbose")
 
 
 @dataclass(frozen=True)
@@ -147,20 +145,10 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
     name = path.stem
     if not PRESET_NAME_RE.fullmatch(name):
         raise TokenCrateError(f"unsafe preset filename: {path.name} (use lowercase letters, digits, dots, and dashes)")
-    try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
-        raise TokenCrateError(f"could not read {path}: {error}") from error
     context = f"preset {name}"
-    unknown = set(document) - {"schema", "description", "model_set", "server", "sampling", "requires"}
-    if unknown:
-        raise TokenCrateError(f"{context}: unknown field(s): {', '.join(sorted(unknown))}")
-    if document.get("schema") != 1:
-        raise TokenCrateError(f"{context}: schema must be 1")
-    description = document.get("description")
-    if not isinstance(description, str) or not description.strip():
-        raise TokenCrateError(f"{context}: description must be a non-empty string")
-    if len(description.strip()) > DESCRIPTION_MAX:
+    document = read_toml(path, {"schema", "description", "model_set", "server", "sampling", "requires"}, context)
+    description = read_description(document, context)
+    if len(description) > DESCRIPTION_MAX:
         raise TokenCrateError(
             f"{context}: description must be at most {DESCRIPTION_MAX} characters "
             "(the agents show it as the model name); the preset comments take the rest"
@@ -221,13 +209,9 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
     if not isinstance(extra, dict):
         raise TokenCrateError(f"{context}: [server.extra] must be a table of llama-server options")
     for key, value in extra.items():
-        if not INI_KEY_RE.fullmatch(key):
-            raise TokenCrateError(f"{context}: [server.extra] key {key} is not a llama-server option name")
-        if key in RENDERER_KEYS or key.startswith("models-"):
-            raise TokenCrateError(f"{context}: [server.extra] must not set {key}; the renderer owns this option")
-        if key in TYPED_INI_KEYS:
+        if key not in EXTRA_KEYS:
             raise TokenCrateError(
-                f"{context}: [server.extra] must not set {key}; use the typed key {key.replace('-', '_')}"
+                f"{context}: [server.extra] cannot set {key}; the renderer passes through {', '.join(EXTRA_KEYS)}"
             )
         if not isinstance(value, (str, int, float, bool)):
             raise TokenCrateError(f"{context}: [server.extra] {key} must be a string, number, or boolean")
@@ -245,34 +229,12 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
         raise TokenCrateError(f"{context}: a spec_type other than none needs spec_draft_n_max")
     if server.get("cache_type_v") not in (None, "f16", "bf16") and server.get("flash_attn") == "off":
         raise TokenCrateError(f"{context}: a quantized cache_type_v needs flash_attn on or auto")
-    return Preset(name, description.strip(), model_set, server, sampling, requires)
+    return Preset(name, description, model_set, server, sampling, requires)
 
 
 def load_presets(presets_dir: Path, model_sets: dict) -> list[Preset]:
-    """Read every preset under presets_dir, in preset-name order: sorting
-    file names would put `<name>-suffix` before `<name>`, because the dash
-    sorts before the dot of the extension."""
-    preset_paths = sorted(presets_dir.glob("*.toml"), key=lambda path: path.stem)
-    if not preset_paths:
-        raise TokenCrateError(f"no presets found in {presets_dir}")
-    return [read_preset(path, model_sets) for path in preset_paths]
-
-
-def load_all(config_dir: Path) -> tuple[dict, list[Preset]]:
-    """Load the model sets and presets below config_dir.
-
-    Every chat template a model set references must exist under
-    config_dir/chat-templates, because llama-server would only fail at load
-    time otherwise."""
-    model_sets = models.available_sets(config_dir / "model-sets")
-    chat_templates_dir = config_dir / "chat-templates"
-    for model_set in model_sets.values():
-        if model_set.chat_template_file and not (chat_templates_dir / model_set.chat_template_file).is_file():
-            raise TokenCrateError(
-                f"model set {model_set.name} references a missing chat template: {model_set.chat_template_file}"
-            )
-    presets = load_presets(config_dir / "presets", model_sets)
-    return model_sets, presets
+    """Every preset under presets_dir, in preset-name order."""
+    return list(load_catalog(presets_dir, lambda path: read_preset(path, model_sets), "preset").values())
 
 
 def model_path(destination: str) -> str:
@@ -286,57 +248,6 @@ def template_kwargs(preset: Preset) -> dict:
     if preset.server.get("reasoning_effort") is not None:
         kwargs["reasoning_effort"] = preset.server["reasoning_effort"]
     return kwargs
-
-
-# Options a preset must not set in [server.extra], by long name or short
-# form: the ones that tie a preset to the container layout and the router's
-# contract (model, projector, template, slots, address, alias, API key,
-# startup load, the router's own models-* options), the memory fit, and
-# remote RPC backends, and options that fetch model files. The container runs in
-# llama.cpp offline mode (LLAMA_ARG_OFFLINE in compose.yaml), which stops
-# URL and Hugging Face downloads; Docker Hub models are outside offline
-# mode, so their option is refused here too.
-RENDERER_KEYS = frozenset(
-    {
-        "model",
-        "m",
-        "mmproj",
-        "chat-template-file",
-        "ctx-size",
-        "c",
-        "parallel",
-        "np",
-        "alias",
-        "a",
-        "host",
-        "port",
-        "api-key",
-        "api-key-file",
-        "rpc",
-        "load-on-startup",
-        "fit",
-        "model-url",
-        "mu",
-        "mmproj-url",
-        "mmu",
-        "hf-repo",
-        "hf",
-        "hfr",
-        "hf-file",
-        "hff",
-        "hf-repo-draft",
-        "hfd",
-        "hfrd",
-        "spec-draft-hf",
-        "hf-repo-v",
-        "hfv",
-        "hfrv",
-        "hf-token",
-        "hft",
-        "docker-repo",
-        "dr",
-    }
-)
 
 
 def ini_line(key: str, value: object) -> str:
@@ -420,24 +331,36 @@ class Configuration:
 
     def wait(self, name: str) -> str:
         """build_wait for the named preset's model set; "" for an unknown
-        name, which the callers report in their own words."""
+        name. For a listing or a report; a command about to use the preset
+        calls `require`."""
         found = self.find(name)
         return build_wait(self.model_sets[found.model_set], self.pinned_build) if found else ""
 
+    def require(self, name: str) -> Preset:
+        """The named preset, which the pinned build can load: the one refusal
+        of a preset a command is about to use, for `--preset` and for
+        LLM_DEFAULT_PRESET alike."""
+        found = self.find(name)
+        if found is None:
+            raise TokenCrateError(f"unknown preset: {name} (run: bash bin/tokencrate presets list)")
+        wait = build_wait(self.model_sets[found.model_set], self.pinned_build)
+        if wait:
+            raise TokenCrateError(f"preset {name} {wait}; bash bin/tokencrate presets list shows the loadable ones")
+        return found
+
 
 def load(config_dir: Path, pinned_build: int) -> Configuration:
-    model_sets, all_presets = load_all(config_dir)
-    return Configuration(model_sets, tuple(all_presets), pinned_build)
-
-
-def wait_error(preset: str, wait: str) -> TokenCrateError:
-    return TokenCrateError(f"preset {preset} {wait}; bash bin/tokencrate presets list shows the loadable ones")
-
-
-def default_wait_error(default_preset: str, wait: str) -> TokenCrateError:
-    return TokenCrateError(
-        f"the default preset {default_preset} {wait}; set LLM_DEFAULT_PRESET to a preset the pinned build loads"
-    )
+    """The model sets and presets below config_dir. Every chat template a
+    model set references must exist under config_dir/chat-templates,
+    because llama-server would only fail at load time otherwise."""
+    model_sets = models.available_sets(config_dir / "model-sets")
+    chat_templates_dir = config_dir / "chat-templates"
+    for model_set in model_sets.values():
+        if model_set.chat_template_file and not (chat_templates_dir / model_set.chat_template_file).is_file():
+            raise TokenCrateError(
+                f"model set {model_set.name} references a missing chat template: {model_set.chat_template_file}"
+            )
+    return Configuration(model_sets, tuple(load_presets(config_dir / "presets", model_sets)), pinned_build)
 
 
 def missing_files(model_set, models_root: Path | None) -> list[str]:
@@ -511,15 +434,13 @@ def evaluate(configuration: Configuration, default_preset: str, models_root: Pat
     without one, no file is looked at and every other preset counts as
     loadable."""
     model_sets, presets, pinned_build = configuration.model_sets, configuration.presets, configuration.pinned_build
-    if default_preset and default_preset not in {preset.name for preset in presets}:
-        raise TokenCrateError(f"the default preset does not exist: {default_preset}")
+    if default_preset:
+        configuration.require(default_preset)
     rendered = []
     for preset in presets:
         wait = build_wait(model_sets[preset.model_set], pinned_build)
         missing = [] if wait else missing_files(model_sets[preset.model_set], models_root)
         rendered.append(RenderedPreset(preset, not (wait or missing), missing, wait))
-        if wait and preset.name == default_preset:
-            raise default_wait_error(default_preset, wait)
     for item in rendered:
         if item.wait:
             state = item.wait

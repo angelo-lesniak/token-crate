@@ -1,6 +1,10 @@
 schema = 1
 description = "Paseo, a daemon with a browser UI that runs several pi sessions at once; start it with `ui paseo`"
 build = ["install -m 0755 tokencrate-ui-paseo /usr/local/bin/tokencrate-ui-paseo"]
+check = [
+  "paseo --version >/dev/null",
+  'echo "paseo $(paseo --version | head -1) answers --version"',
+]
 
 [npm]
 
@@ -10,6 +14,8 @@ PATH = "/opt/tokencrate/sets/paseo/node_modules/.bin"
 [ui]
 command = "tokencrate-ui-paseo"
 port = 6767
+state = ".paseo"
+host_port = 4250
 # The daemon's keypair and server id: Paseo's web client treats a daemon
 # with another identity at the address it knows as unreachable, so the
 # wrapper hands every project the same one (docs/agents.md, Browser UIs).

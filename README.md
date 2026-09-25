@@ -19,16 +19,18 @@ Use it when you want to:
 - add coding extensions, a debugger, a browser, or C#, Node/Vue, and Odin
   toolchains to pi through reviewed agent sets, or write your own;
 - use pi in a browser with PI WEB or Paseo;
-- switch reasoning effort per request without reloading the model.
+- switch reasoning effort per request without reloading the model;
+- offer a [cloud model](docs/agents.md#cloud-providers) beside the local
+  one for a session or a browser UI you start with `--cloud`, with keys
+  from a file of your own.
 
 ## Start here
 
 The example below downloads the 17.6 GB Qwen3.8-27B Q4 model set and
 the llama.cpp server image. The first `agent` or `smoke --agent` command
-builds the agent image, downloading a few hundred megabytes of packages
-and taking several minutes. Allow tens of minutes for setup, mostly for
-the model download, and about 25 GB of disk: the model set, the
-llama.cpp server image, and the first agent image.
+builds the agent image, which downloads a few hundred megabytes of
+packages and takes several minutes. Allow tens of minutes, mostly for the
+model download, and about 25 GB of disk.
 
 Install these host tools:
 
@@ -63,9 +65,11 @@ cd tokencrate
 bash bin/tokencrate init
 ```
 
-`init` creates the storage directories and `.env` with mode `0600`.
-Edit `.env`: set `LLM_MODELS_DIR` if you need to store models on another
-disk, and `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` for the agent's commits.
+`init` creates the storage directories and a `.env` with mode `0600`
+that holds only a comment. Every setting and its default is in
+`.env.example`; a line copied into `.env` changes it. Set
+`LLM_MODELS_DIR` if you need to store models on another disk, and
+`GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` for the agent's commits.
 
 If both Docker and Podman are installed, TokenCrate selects Podman first;
 set `CONTAINER_ENGINE=docker` or `CONTAINER_ENGINE=podman` in `.env` for a
@@ -100,9 +104,9 @@ bash bin/tokencrate smoke --agent pi
 bash bin/tokencrate agent pi --dir ~/src/my-project
 ```
 
-The agent check must reach the model endpoint from inside the container.
-Its request to `https://example.com` and its DNS lookup must fail. pi
-starts with the default preset and the pinned skills loaded.
+The agent check must reach the model endpoint from inside the container
+and find no route through a gateway and no name resolution. pi starts
+with the default preset and the pinned skills loaded.
 
 The project is mounted read-write at its host path. It and the retained
 transcript directories under `LLM_AGENTS_DIR` are the only host directories
@@ -168,7 +172,7 @@ context or quantization
 
 The API is published on `127.0.0.1` only; no setting exposes it elsewhere.
 Agent containers have no route to the internet unless you enable access
-for a session. TokenCrate disables known telemetry switches in its bundled
+for a session or a browser UI. TokenCrate disables known telemetry switches in its bundled
 components.
 
 These defaults reduce accidental exposure. They do not make an unreviewed

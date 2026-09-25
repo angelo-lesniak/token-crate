@@ -13,10 +13,11 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import TokenCrateError
+from . import TokenCrateError, agentsets, skills
 from .engine import (
     COMPOSE_PLUGIN_DROPS_CDI,
     INSTALL_PODMAN_COMPOSE,
@@ -25,20 +26,23 @@ from .engine import (
     Engine,
     EngineFacts,
     publishes,
-    run_tool,
     select,
     tool_output,
     unsupported_engine,
 )
 from .env import Settings
+from .names import parse_list
 
 DEFAULT_GPU_DEVICE = "nvidia.com/gpu=all"
 # Gateway mode `isolated` (compose.docker.yaml) keeps host services off the
 # internal networks; older Engines cannot create such a network.
 DOCKER_MIN_MAJOR = 28
-# Podman 6 (netavark 2) keeps bridge networks apart, which the network
-# layout relies on for an --egress session; older Podman forwards between
-# bridges.
+# The oldest Podman every record in docs/validation.md was measured on
+# (netavark 2), so an older one is a warning, not a failure: neither
+# Podman nor Docker documents what `internal` means for traffic from another
+# network, so no version implies that a session holding a second network
+# cannot reach an internal peer. `smoke --agent <pi|omp> --egress` is what
+# proves that on a given host.
 PODMAN_MIN_MAJOR = 6
 # Where nvidia-ctk writes CDI specifications; a spec names the driver's libcuda.
 CDI_DIRECTORIES = ("/etc/cdi", "/var/run/cdi")
@@ -83,10 +87,11 @@ class HostFacts:
     ram_kb: int | None = None
     # (label, path, exists, writable or, for local-skills, readable)
     storage: list[tuple[str, str, bool, bool]] = field(default_factory=list)
+    # (setting, what is wrong with it): a list setting that names a set no
+    # catalogue has, or a list that cannot be read.
+    set_problems: list[tuple[str, str]] = field(default_factory=list)
     port: str = "4207"
-    # None when the port could not be checked; port_check_cause says why.
-    port_in_use: bool | None = False
-    port_check_cause: str = ""
+    port_in_use: bool = False
     own_container_holds_port: bool = False
 
 
@@ -161,11 +166,36 @@ def _storage_facts(settings: Settings) -> list[tuple[str, str, bool, bool]]:
     return facts
 
 
-def _port_in_use(port: str, env: dict[str, str]) -> tuple[bool | None, str]:
-    """(in use, cause): the cause says why the check could not be made,
-    which is not always a missing `ss`."""
-    output, cause = run_tool(["ss", "-H", "-ltn", f"sport = :{port}"], env)
-    return (None, cause) if output is None else (bool(output.strip()), "")
+def _set_problems(settings: Settings) -> list[tuple[str, str]]:
+    """The names in LLM_AGENT_SETS and LLM_SKILL_SETS that no catalogue
+    has. Fetched or not is the start's business, not the host's."""
+    lookups = (
+        ("LLM_AGENT_SETS", lambda name: bool(agentsets.set_directories(settings.root, name)), "agent-sets list"),
+        ("LLM_SKILL_SETS", lambda name: name in skills.catalog(settings.config_dir), "skills list"),
+    )
+    problems = []
+    for key, known, listing in lookups:
+        try:
+            unknown = [name for name in parse_list(settings.get(key), key) if not known(name)]
+        except TokenCrateError as error:
+            problems.append((key, str(error)))
+            continue
+        if unknown:
+            problems.append((key, f"names no known set: {', '.join(unknown)} (run: bash bin/tokencrate {listing})"))
+    return problems
+
+
+def _port_in_use(port: str) -> bool:
+    """The same loopback bind `up` and `ui` make before publishing a port,
+    so `doctor` and the start cannot disagree; a listener on another
+    address only does not block a loopback publish."""
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind(("127.0.0.1", int(port)))
+        except OSError:
+            return True
+    return False
 
 
 def _own_container_holds_port(engine: EngineFacts | None, settings: Settings) -> bool:
@@ -189,7 +219,6 @@ def gather(settings: Settings) -> HostFacts:
     env = settings.subprocess_env()
     path = env.get("PATH")
     selection = select(env, settings.get("CONTAINER_ENGINE"))
-    port_in_use, port_check_cause = _port_in_use(settings.port, env)
     facts = HostFacts(
         git_present=shutil.which("git", path=path) is not None,
         uname=(tool_output(["uname", "-sm"], env) or "").strip(),
@@ -198,9 +227,9 @@ def gather(settings: Settings) -> HostFacts:
         unsupported_engine=selection.unsupported or None,
         ram_kb=_memory_total_kb(),
         storage=_storage_facts(settings),
+        set_problems=_set_problems(settings),
         port=settings.port,
-        port_in_use=port_in_use,
-        port_check_cause=port_check_cause,
+        port_in_use=_port_in_use(settings.port),
         own_container_holds_port=_own_container_holds_port(selection.chosen, settings),
     )
     if settings.gpu:
@@ -265,9 +294,11 @@ def _engine_findings(engine: EngineFacts, gpu_wanted: bool) -> list[Finding]:
     findings.append(
         _check(
             major is not None and major >= PODMAN_MIN_MAJOR,
-            f"Podman {major} keeps bridge networks apart: an --egress session cannot reach the UI networks",
-            f"Podman {engine.version_line} is older than {PODMAN_MIN_MAJOR}; its bridges forward to each other, "
-            "so an --egress session could reach a running browser UI",
+            f"Podman {major} meets the tested minimum ({PODMAN_MIN_MAJOR})",
+            f"Podman {engine.version_line} is older than {PODMAN_MIN_MAJOR}, "
+            "which is the oldest version TokenCrate is tested on; "
+            "run bash bin/tokencrate smoke --agent pi --egress while a browser UI runs to check the network boundary",
+            level="warn",
         )
     )
     findings.append(
@@ -428,9 +459,13 @@ def _storage_findings(facts: HostFacts) -> list[Finding]:
     return findings
 
 
+def _setting_findings(facts: HostFacts) -> list[Finding]:
+    """Warnings: the stack starts without agent or skill sets; the first
+    agent start refuses a name it cannot find."""
+    return [Finding("warn", f"{key} {problem}") for key, problem in facts.set_problems]
+
+
 def _network_findings(facts: HostFacts) -> list[Finding]:
-    if facts.port_in_use is None:
-        return [Finding("warn", f"could not check whether host port {facts.port} is in use ({facts.port_check_cause})")]
     if facts.port_in_use and not facts.own_container_holds_port:
         return [Finding("fail", f"host port {facts.port} is already in use")]
     return []
@@ -468,6 +503,7 @@ def evaluate(
     if gpu_wanted:
         findings += _cdi_findings(facts, device)
     findings += _storage_findings(facts)
+    findings += _setting_findings(facts)
     findings += _network_findings(facts)
     return findings
 

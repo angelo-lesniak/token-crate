@@ -14,6 +14,12 @@ build = [
   "sed -i '1,/^---$/{/^model:/d}' /opt/tokencrate/home-seed/.pi/agent/agents/*.md",
   "! grep -l '^model:' /opt/tokencrate/home-seed/.pi/agent/agents/*.md",
 ]
+# The seeded subagent definitions, none pinned to another model.
+check = [
+  'test -f "$HOME/.pi/agent/agents/scout.md"',
+  '! grep -q "^model:" "$HOME"/.pi/agent/agents/*.md',
+  'echo "$(ls "$HOME"/.pi/agent/agents/*.md | wc -l) subagent definitions seeded, none pinned to another model"',
+]
 pi_packages = [
   "node_modules/pi-lens",
   "node_modules/pi-hashline-edit-pro",

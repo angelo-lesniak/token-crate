@@ -16,8 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TokenCrateError(Exception):
-    """A safe, user-facing error message. An OSError is reported by the
-    dispatcher the same way; no function converts it."""
+    """A safe, user-facing error message. The dispatcher reports an OSError
+    the same way, as a failed filesystem operation."""
 
 
 def warn(message: str) -> None:

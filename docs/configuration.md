@@ -1,32 +1,43 @@
 # Configuration
 
 `.env` holds settings for one machine and is not committed to Git.
-[`.env.example`](../.env.example), copied by `init`, is the reference for
-settings and defaults.
+[`.env.example`](../.env.example) is the reference for settings and
+defaults; `init` writes a `.env` that holds only a comment, so a line is
+copied into it to change a setting.
 
 Precedence is the shell environment, then `.env`, then `.env.example`.
-The wrapper reads `.env.example` at every start and refuses to run
-without it. Omitting a key from `.env` uses the example's default; it
-does not make the value empty. Change local settings in `.env` or the
-shell. Editing `.env.example` changes the defaults for every checkout.
+The wrapper refuses to run without `.env.example`. A key omitted from
+`.env` takes the example's default, not an empty value. Change local
+settings in `.env` or the shell; editing `.env.example` changes the
+defaults for every checkout.
 
 The wrapper reads `.env` as `KEY=VALUE` lines:
 
-- a line that starts with `#` is a comment;
+- a line that starts with `#` is a comment, and a byte-order mark at
+  the start of the file is skipped;
 - matching quotes around a value are removed, and nothing is expanded or
   executed;
-- a value with an unquoted `$`, a leading `~`, or a ` #` after it is
-  refused with `values are used literally`: write the full path, or quote
-  the value to use it literally;
-- a key that `.env.example` does not list is reported as unknown; the
-  wrapper and the Compose files ignore it, but it still reaches the
-  engine's environment.
+- an unquoted value with a `$`, a leading `~`, or a ` #` is refused
+  with `values are used literally`: write the full path, put the comment
+  on its own line, or quote the value;
+- a key set twice is refused;
+- a key that `.env.example` does not list, even as a comment, is reported
+  as ignored at every start; neither the wrapper, the Compose files, nor
+  the engine client receives it.
 
-Paths given in `.env` without a leading `/` are resolved from the
-repository root, whichever directory you run the wrapper from.
-`pins.env` at the repository root holds the checked-in pins. Presets, model
-sets, and skill sets under `config/` are reviewed data; see
+Relative paths (`LLM_*_DIR` and `LLM_CLOUD_KEYS_FILE`) are resolved from
+the repository root, whichever directory the wrapper runs from. Every
+path is resolved to its real path, so a linked directory is used under
+its real name. A storage directory must not be or contain the checkout,
+whose `.env` would otherwise be mounted into every agent container. Presets, model
+sets, and skill sets are files under `config/`, not settings; see
 [Models and presets](models.md) and [Coding agents and skills](agents.md).
+The comma-separated lists (`LLM_SKILL_SETS`, `LLM_AGENT_SETS`, and
+`--sets`) ignore spaces around a name, empty entries, and repeats; a name
+with characters other than letters, digits, `.`, `_`, and `-` is
+refused. `COMPOSE_PROJECT_NAME` takes lowercase letters, digits, `-`,
+and `_`, starting with a letter or digit, which is what Compose keeps of
+a name; the wrapper refuses another name.
 
 Shell environment variables override `.env` for one command:
 
@@ -34,52 +45,47 @@ Shell environment variables override `.env` for one command:
 LLM_PORT=4307 bash bin/tokencrate up
 ```
 
-The values in `pins.env` cannot be overridden this way; the wrapper removes
-any shell or `.env` copy of a pin key from the environment it hands to
-Compose, which reads the file itself.
+[Pins](#pins) cannot be overridden this way: the wrapper removes any shell
+or `.env` copy of a pin key, and Compose reads `pins.env` itself.
 
-The container engine must run on the same machine as the wrapper.
-`CONTAINER_ENGINE` selects the client program; it does not override that
-client's connection settings. Docker contexts, `DOCKER_HOST`,
-`DOCKER_CONTEXT`, and Podman's connection settings still apply. Select a
-local connection before running TokenCrate. Mounted paths and published
-loopback ports belong to the engine's host; TokenCrate checks paths and
-calls ports on the wrapper's host. Remote engines are unsupported.
+The container engine must run on the same machine as the wrapper;
+remote engines are unsupported. `CONTAINER_ENGINE` (`podman` or
+`docker`) selects the client program, not its connection: Docker
+contexts, `DOCKER_HOST`, `DOCKER_CONTEXT`, and Podman's connection
+settings still apply, so select a local connection first.
 
 ## When a change takes effect
 
 | Setting | Takes effect at |
 | --- | --- |
-| `LLM_GPU`, `GPU_DEVICE`, `NVIDIA_DRIVER_CAPABILITIES`, `LLM_TMPFS_SIZE`, `LLM_PIDS_LIMIT`, `STOP_GRACE_PERIOD`, `RESTART_POLICY`, `TOKENCRATE_IMAGE` | The next `up`, which recreates the llama container when its configuration changed |
-| `COMPOSE_PROJECT_NAME` | The next command selects the new Compose project; it does not rename or stop the old stack. Run `down` before changing the name; otherwise the old stack remains and can occupy the ports the new one needs |
+| `LLM_GPU`, `GPU_DEVICE`, `LLM_TMPFS_SIZE`, `LLM_PIDS_LIMIT`, `RESTART_POLICY` | The next `up`, which recreates the llama container when its configuration changed |
+| `COMPOSE_PROJECT_NAME` | The next command, which selects a new Compose project and leaves the old stack running on its ports. Run `down` before changing the name |
 | `LLM_PORT` | The next `up` for the published port; `status`, `smoke`, and `bench` use the new value at once, so run `up` first |
 | `LLM_DEFAULT_PRESET` | The next `up` for the preset the router loads at start; the next `agent`, `ui`, `smoke`, `bench`, or `doctor` for the preset they use without `--preset` |
-| `LLM_SKILL_SETS`, `LLM_AGENT_SETS`, `LLM_PROJECT_ROOTS`, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `UMASK`, `LLM_AGENT_TMPFS_SIZE`, `TOKENCRATE_AGENT_PI_IMAGE`, `TOKENCRATE_AGENT_OMP_IMAGE` | The next `agent`, `ui`, or `smoke --agent` start; running sessions keep their values |
-| `LLM_PI_WEB_PORT`, `LLM_PASEO_PORT` | The next start of the corresponding UI; other running UIs keep their configuration |
+| `LLM_SKILL_SETS`, `LLM_AGENT_SETS`, `LLM_PROJECT_ROOTS`, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `UMASK`, `LLM_AGENT_TMPFS_SIZE` | The next `agent`, `ui`, or `smoke --agent` start; running sessions keep their values |
+| `LLM_CLOUD_KEYS_FILE` and the file's contents | The next `agent --cloud` or `ui --cloud` start; a running session or UI keeps the keys it was given |
+| `LLM_UI_PORT_<SET>` (for example `LLM_UI_PORT_PI_WEB`) | The next start of that UI; other running UIs keep their configuration |
 | `LLM_MODELS_DIR`, `LLM_AGENTS_DIR`, `LLM_SKILLS_DIR`, `LLM_LOCAL_SKILLS_DIR`, `CONTAINER_ENGINE` | The next command; `init` creates missing directories, and a running llama container keeps its mounts until `up` recreates it |
 | `HF_TOKEN` | The next `models fetch`, `models draft`, or `up --model-set` |
 
-The repository agent settings (`config/agents/pi/settings.json`,
-`config/agents/omp/config.yml`) are not `.env` settings;
-[Agent configuration](agents.md#agent-configuration) says which of their
-defaults reach the next container.
+The agent settings files (`config/agents/pi/settings.json`,
+`config/agents/omp/config.yml`) are described in
+[Agent configuration](agents.md#agent-configuration).
 
 ## Built-in chat UI
 
 [`config/llama/ui-config.json`](../config/llama/ui-config.json) sets defaults
-for the built-in llama chat UI on `LLM_PORT`. The shipped file uses the
-first non-empty message line for conversation titles without an extra
-model request, excludes previous reasoning from later requests, and
-disables the JavaScript sandbox tool.
+for the built-in llama chat UI on `LLM_PORT`. The shipped file titles
+conversations with the first message line instead of a model request,
+excludes previous reasoning from later requests, and disables the
+JavaScript sandbox tool.
 
 llama-server reads the file at startup. After editing it, run `down`, then
-`up` to apply the change; [`down`](cli.md#down) also stops running agent
-and UI sessions. Reload the browser afterwards.
+`up`; [`down`](cli.md#down) also stops running agent and UI sessions.
 
-The defaults apply on the browser's first visit. Existing browsers retain
-their saved preferences; change individual settings in the UI, or use
-**Reset to default** in its settings to replace all preferences with the
-current server defaults.
+The defaults apply on a browser's first visit. A browser that has
+visited keeps its saved preferences; use **Reset to default** in the UI
+settings to replace them with the current server defaults.
 
 ## Storage layout
 
@@ -92,25 +98,22 @@ current server defaults.
 | `build/models.ini` | Generated router presets for `llama-server --models-preset` |
 | `build/agents/pi/models.json` | Generated pi model list |
 | `build/agents/pi/<digest>/Dockerfile` | Generated pi image: base stage plus selected agent sets |
-| `build/agents/pi/<digest>/{pi-packages.txt,AGENTS.md,pi-lens.json}` | Generated set configuration, copied into the image |
+| `build/agents/pi/<digest>/{pi-packages.txt,AGENTS.md,pi-lens.json,checks/}` | Generated set configuration and the sets' check scripts, copied into the image |
 | `build/agents/omp/models.yml` | Generated oh-my-pi model list, stored as JSON text |
-| `build/locks/<engine>-<project-hash>.lock` | Lock for model/UI startup and shutdown |
+| `build/locks/<engine>-<project-hash>.lock` | Lock for model/UI startup and shutdown; two checkouts with one `COMPOSE_PROJECT_NAME` on one engine share the stack but not the lock |
+| `local/cloud-keys.env` | The cloud keys file (`LLM_CLOUD_KEYS_FILE`), copied from `cloud-keys.env.example`; mounted only by `agent --cloud` and `ui --cloud` |
 | `reports/` | Smoke and benchmark reports |
 
 In the model library, `<source>` is the manifest's path: a filename, or
 a quantization directory and filename for a split set.
 
-UI launches resolve Compose settings into a private temporary directory
-for the build and start. The files are removed when the command finishes;
-later lifecycle commands discover containers by their labels. Do not
-delete a lifecycle lock file while a TokenCrate command is running.
+Do not delete a lock file while a TokenCrate command is running.
 
 Each agent-set selection keeps its own `build/agents/pi/<digest>/`
-directory and its own image, and neither is removed when the selection
-stops being used. They are small next to the models, but they
-accumulate: `rm -rf build/agents/pi/<digest>` and the engine's own
-image removal are safe for a selection you no longer build, and the
-next `agent` or `ui` renders what it needs again.
+directory and image; the digest is of the rendered files, so a directory
+that exists is complete and is not rewritten. Neither is removed
+automatically. For a selection you do not use, deleting both is safe;
+the next `agent` or `ui` renders what it needs again.
 
 `data/`, `local/`, `build/`, and `reports/` are ignored by Git. To keep the
 model library on another disk, point `LLM_MODELS_DIR` at it; symbolic links
@@ -126,41 +129,37 @@ host directory are bound read-write at the same relative paths below
 | pi terminal and UI | `.pi/agent/sessions` | Transcripts shared by terminal and browser sessions |
 | oh-my-pi | `.omp/agent/sessions`, `.omp/agent/blobs` | Transcripts and their externalized images |
 | oh-my-pi | `.omp/agent/terminal-sessions`, `.omp/agent/custom-session-files` | Continue-selection breadcrumbs and references to custom session files for blob cleanup |
-| pi UI only | `.pi-web`, `.paseo` | UI configuration, session state, and Paseo identity |
+| pi UI only | The UI set's `state` directory: `.pi-web` or `.paseo` | UI configuration, session state, and Paseo identity |
 
-Each agent has three separate tmpfs mounts: the home and the two nested
-directories above its transcript directory. Each is limited to 256 MiB,
-allocated as used, with no combined cap. They are writable by the host
-user and allow execution for toolchains. The agent's `/tmp` has its own
-limit, `LLM_AGENT_TMPFS_SIZE`.
-
-Other home contents, including downloaded tools, logs, caches, themes,
-and keybindings, disappear when the container stops. Save work in the
+The home and the two directories above the transcript directory
+(`.pi` and `.pi/agent`, or `.omp` and `.omp/agent`) are separate tmpfs
+mounts of 256 MiB each, allocated as used and allowing execution. The
+agent's `/tmp` is limited by `LLM_AGENT_TMPFS_SIZE`. Everything else in
+the home, including downloaded tools, logs, caches, themes, and
+keybindings, disappears when the container stops. Save work in the
 project.
 
-Paseo's shared identity store at `LLM_AGENTS_DIR/pi/paseo-identity/`
-stays outside the container mounts. [Agent
+Paseo's shared identity store, `LLM_AGENTS_DIR/pi/paseo-identity/`, is
+not mounted into containers. [Agent
 configuration](agents.md#agent-configuration) says what a session can
 change for a later one through the retained directories.
 
-Retained mount sources and every ancestor must be real paths. The
-wrapper refuses detected symbolic links before creating retained
-directories. If `LLM_AGENTS_DIR` uses a link to another disk, set it to
-the real directory instead. Inspect a linked retained path and move it
-aside before retrying. Paseo identity copies also skip linked source or
-destination paths, including the home and identity-store roots.
+Below `LLM_AGENTS_DIR`, which the wrapper resolves to its real path,
+the retained mount sources and their ancestors must be real paths; the
+wrapper refuses a symbolic link there, because a session writes its
+home. Move a linked retained path aside after inspecting it, then retry.
+Paseo identity copies skip linked paths. Each per-project directory is
+readable by your user only.
 
 Deleting the per-project directory removes its saved sessions and UI
 state permanently.
 
 ## Removing TokenCrate
 
-Deleting `LLM_AGENTS_DIR` permanently removes saved agent sessions.
-Keep any sessions and model files needed later before removing storage.
-
 Run `down`, remove the `tokencrate/*` images listed under [Pins](#pins)
 with `podman image rm` or `docker image rm`, and prune the build cache.
-Then delete the storage directories listed in `.env` and the checkout.
+Copy any sessions under `LLM_AGENTS_DIR` and model files you still need,
+then delete the storage directories named in `.env` and the checkout.
 
 ## Pins
 
@@ -193,7 +192,8 @@ required pin is missing. Each base image is pulled as
 base image. Builds also check that llama.cpp, Node, and Bun report the
 versions named by their tags.
 
-Image names are defined in `compose.yaml` and the Dockerfiles:
+Image names are fixed in `compose.yaml`; two checkouts on one engine share
+the images of equal pins and selections:
 
 | Image | Tag |
 | --- | --- |
@@ -202,12 +202,11 @@ Image names are defined in `compose.yaml` and the Dockerfiles:
 | `tokencrate/agent-omp` | `<OMP_VERSION>-bun<BUN_TAG>` |
 
 `<selection>` is a digest of the selected [agent sets](agent-sets.md),
-printed by `agent pi`. Different pins and selections can coexist in the
-engine.
+printed by `agent pi`. Images of different pins and selections coexist.
 
-Use full release tags such as `26.9.0-bookworm-slim`. `pins check`
-preserves the tag's version depth, so a moving major-only tag such as
-`26-bookworm-slim` would never show a newer version.
+Use full release tags such as `26.9.0-bookworm-slim`: `pins check` keeps
+the tag's version depth, so it never offers a newer version for a
+major-only tag such as `26-bookworm-slim`.
 
 ### Upgrading
 
@@ -246,10 +245,8 @@ preserves the tag's version depth, so a moving major-only tag such as
 1. Run `git pull`, then `bash bin/tokencrate init` to create missing
    directories while keeping `.env`.
 2. Review `.env.example` and copy any settings to override into `.env`.
-   Omitted settings take the example's new defaults. Keys no longer
-   listed in the example are reported as unknown at every start.
-   Run `down` before changing the engine or `COMPOSE_PROJECT_NAME` so
-   shutdown can still find the old stack.
+   Omitted settings take the example's new defaults; keys the example
+   does not list are reported as ignored.
 3. Run `skills fetch` for the sets in `LLM_SKILL_SETS` to apply changed
    pins and remove obsolete skills.
 4. Run `down`, then `up` to apply the new configuration.

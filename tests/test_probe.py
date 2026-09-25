@@ -11,7 +11,7 @@ import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from tokencrate import TokenCrateError, probe
+from tokencrate import TokenCrateError, localhttp, probe
 
 
 class FakeRouter(BaseHTTPRequestHandler):
@@ -325,7 +325,7 @@ else:
         self.assertEqual(results["reply terminates"].detail, "no completion to judge")
         # The completions wait longer than the other probes: the first one
         # loads the model, and the answer budget at a slow preset takes minutes.
-        self.assertGreater(probe.COMPLETION_TIMEOUT, probe.LOAD_TIMEOUT)
+        self.assertGreater(probe.COMPLETION_TIMEOUT, localhttp.LOAD_TIMEOUT)
 
     def test_request_failures_are_user_facing_errors(self):
         with self.assertRaises(TokenCrateError) as caught:

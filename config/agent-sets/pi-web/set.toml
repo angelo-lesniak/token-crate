@@ -12,6 +12,15 @@ build = [
   "install -m 0755 tokencrate-ui-pi-web /usr/local/bin/tokencrate-ui-pi-web",
 ]
 
+# The daemon must load the image's pi (the scope directory of the set is a
+# link to the global install, never a second copy) and node-pty from its
+# prebuild.
+check = [
+  'test "$(readlink -f /opt/tokencrate/sets/pi-web/node_modules/@earendil-works/pi-coding-agent)" = /usr/local/lib/node_modules/@earendil-works/pi-coding-agent',
+  '''cd /opt/tokencrate/sets/pi-web && node -e 'import("@earendil-works/pi-ai").then(() => import("@earendil-works/pi-coding-agent")).then(() => import("node-pty")).then(() => process.exit(0), (error) => { console.error(error.message); process.exit(1); })'''',
+  "echo \"pi-web $(pi-web --version | head -1) resolves the image's pi and node-pty\"",
+]
+
 [npm]
 omit_peer = true
 
@@ -21,3 +30,5 @@ PATH = "/opt/tokencrate/sets/pi-web/node_modules/.bin"
 [ui]
 command = "tokencrate-ui-pi-web"
 port = 8504
+state = ".pi-web"
+host_port = 4224

@@ -2,9 +2,10 @@ name: "${COMPOSE_PROJECT_NAME:-tokencrate}"
 
 # Shared hardening for interactive coding-agent containers. Agents reach only
 # the model through the internal `agents` network; compose.agent-egress.yaml
-# adds the default network for one session when the user asks for it. A
-# browser UI has its own internal network (`ui`), so a terminal agent of any
-# project can neither resolve nor reach a running UI.
+# moves one session to the default network instead when the user asks for
+# it (the model is there too). A browser UI has its own internal network
+# (`ui`), so a terminal agent of any project can neither resolve nor reach a
+# running UI unless the UI was started with a route out as well.
 x-agent-common: &agent-common
   read_only: true
   init: true
@@ -58,16 +59,23 @@ x-agent-mounts:
     source: "${LLM_SKILLS_DIR:-./data/skills}"
     target: /opt/tokencrate/skills
     read_only: true
-  repo-skills: &agent-repo-skills-mount
-    type: bind
-    source: "${TOKENCRATE_ROOT:-.}/config/skills"
-    target: /opt/tokencrate/skills-repo
-    read_only: true
   local-skills: &agent-local-skills-mount
     type: bind
     source: "${LLM_LOCAL_SKILLS_DIR:-./local/skills}"
     target: /opt/tokencrate/skills-local
     read_only: true
+
+# The pi image, shared by the terminal and the browser-UI services. The
+# Dockerfile is rendered by the wrapper into a directory named by the
+# selection's digest: the pi stage of services/agents/Dockerfile plus the
+# selected agent sets. The tag carries the digest, so images of different
+# selections coexist; a build without the wrapper finds no Dockerfile.
+x-agent-pi-image: &agent-pi-image
+  image: "tokencrate/agent-pi:${PI_VERSION:?pin it in pins.env}-node${NODE_TAG:?pin it in pins.env}-${TOKENCRATE_AGENT_SETS_TAG:-unrendered}"
+  build:
+    <<: *agent-build
+    dockerfile: "build/agents/pi/${TOKENCRATE_AGENT_SETS_TAG:-unrendered}/Dockerfile"
+    target: agent
 
 x-agent-pi-tmpfs: &agent-pi-tmpfs
   - *agent-tmp
@@ -84,16 +92,15 @@ x-agent-pi-volumes: &agent-pi-volumes
     target: /home/agent/.pi/agent/sessions
   - &pi-etc-tokencrate-agent
     type: bind
-    source: "${TOKENCRATE_ROOT:-.}/config/agents/pi"
+    source: "${TOKENCRATE_ROOT:?set by bin/tokencrate}/config/agents/pi"
     target: /etc/tokencrate/agent
     read_only: true
   - &pi-etc-tokencrate-agent-generated
     type: bind
-    source: "${TOKENCRATE_ROOT:-.}/build/agents/pi/models.json"
+    source: "${TOKENCRATE_ROOT:?set by bin/tokencrate}/build/agents/pi/models.json"
     target: /etc/tokencrate/agent-generated/models.json
     read_only: true
   - *agent-skills-mount
-  - *agent-repo-skills-mount
   - *agent-local-skills-mount
 
 x-agent-environment: &agent-environment
@@ -119,7 +126,7 @@ x-agent-environment: &agent-environment
 services:
   llama:
     # Every image tag is interpolated from pins.env (--env-file).
-    image: "${TOKENCRATE_IMAGE:-tokencrate/llama}:${LLAMA_CPP_TAG:?pin it in pins.env}"
+    image: "tokencrate/llama:${LLAMA_CPP_TAG:?pin it in pins.env}"
     build:
       context: .
       dockerfile: services/llama/Dockerfile
@@ -130,7 +137,8 @@ services:
     read_only: true
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     restart: "${RESTART_POLICY:-no}"
-    stop_grace_period: "${STOP_GRACE_PERIOD:-60s}"
+    # Model servers unload in seconds; a minute covers a busy one.
+    stop_grace_period: 60s
     pids_limit: "${LLM_PIDS_LIMIT:-1024}"
     cap_drop: ["ALL"]
     security_opt:
@@ -169,7 +177,12 @@ services:
       # starts: model files come from the mounted library only, never from a
       # URL or Hugging Face at start (the renderer refuses those options too).
       LLAMA_ARG_OFFLINE: "1"
-      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+      # The API answers a browser only from a loopback origin: a page of
+      # another site cannot read responses (it can still send a request
+      # the server acts on, which docs/privacy.md states). The built-in UI
+      # is same-origin and needs no CORS.
+      LLAMA_ARG_CORS_ORIGINS: localhost
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
       # The CUDA backend runs every fp32 GEMM as TF32 unless told otherwise;
       # on GLM-5.3-Flash that dropped top-1 agreement from 0.9995 to 0.896
       # (llama.cpp pull request 27754). Harmless for the presets that run today.
@@ -184,17 +197,32 @@ services:
       io.tokencrate.config-sha256: "${TOKENCRATE_CONFIG_SHA256:-}"
 
   agent-pi:
-    <<: *agent-common
+    <<: [*agent-common, *agent-pi-image]
     profiles: ["agent-pi"]
-    # The Dockerfile is rendered by the wrapper into a directory named by the
-    # selection's digest: the pi stage of services/agents/Dockerfile plus the
-    # selected agent sets. The tag carries the digest, so images of different
-    # selections coexist; a build without the wrapper finds no Dockerfile.
-    image: "${TOKENCRATE_AGENT_PI_IMAGE:-tokencrate/agent-pi}:${PI_VERSION:?pin it in pins.env}-node${NODE_TAG:?pin it in pins.env}-${TOKENCRATE_AGENT_SETS_TAG:-unrendered}"
-    build:
-      <<: *agent-build
-      dockerfile: "build/agents/pi/${TOKENCRATE_AGENT_SETS_TAG:-unrendered}/Dockerfile"
-      target: agent
+    environment:
+      <<: *agent-environment
+      TOKENCRATE_AGENT: pi
+    tmpfs: *agent-pi-tmpfs
+    volumes: *agent-pi-volumes
+
+  # A browser UI for pi (`ui <set>`): the agent-pi image with a UI command
+  # from the selected agent set instead of `pi`, on the internal `ui`
+  # network, shared with the model and all browser UI pairs; the egress
+  # overlay adds the default network for `ui --egress` and `ui --cloud`.
+  # The host reaches it through ui-forward. The wrapper starts one pair
+  # per UI set with `compose run` under fixed container names; the label
+  # names the set, which is how `ui stop`, `ui logs`, and `status` find
+  # the pair (a render without the wrapper leaves it empty: no UI).
+  agent-ui:
+    <<: [*agent-common, *agent-pi-image]
+    profiles: ["ui"]
+    networks: [ui]
+    labels: &ui-label
+      io.tokencrate.ui-set: "${TOKENCRATE_UI_SET:-}"
+    # The UI launchers stop their daemon on TERM, and Paseo gives that
+    # stop 8 seconds; the 10-second default would cut it short.
+    stop_grace_period: 20s
+    command: ["${TOKENCRATE_UI_COMMAND:-tokencrate-ui}"]
     environment:
       <<: *agent-environment
       TOKENCRATE_AGENT: pi
@@ -203,51 +231,25 @@ services:
       # is written once, in the manifest.
       TOKENCRATE_UI_PORT: "${TOKENCRATE_UI_PORT:-}"
     tmpfs: *agent-pi-tmpfs
-    volumes: *agent-pi-volumes
-
-  # Templates: the wrapper resolves these services and extends them under
-  # one distinct pair of names per UI set. It never starts these generic names.
-  # A browser UI for pi (`ui <set>`): the agent-pi image with a UI command
-  # from the selected agent set instead of `pi`, detached, on the internal
-  # `ui` network only, shared with the model and all browser UI pairs.
-  # The host reaches it through ui-forward.
-  agent-ui:
-    <<: *agent-common
-    profiles: ["ui"]
-    networks: [ui]
-    # The UI launchers stop their daemon on TERM, and Paseo gives that
-    # stop 8 seconds; the 10-second default would cut it short.
-    stop_grace_period: 20s
-    image: "${TOKENCRATE_AGENT_PI_IMAGE:-tokencrate/agent-pi}:${PI_VERSION:?pin it in pins.env}-node${NODE_TAG:?pin it in pins.env}-${TOKENCRATE_AGENT_SETS_TAG:-unrendered}"
-    build:
-      <<: *agent-build
-      dockerfile: "build/agents/pi/${TOKENCRATE_AGENT_SETS_TAG:-unrendered}/Dockerfile"
-      target: agent
-    command: ["${TOKENCRATE_UI_COMMAND:-tokencrate-ui}"]
-    environment:
-      <<: *agent-environment
-      TOKENCRATE_AGENT: pi
-      TOKENCRATE_UI_PORT: "${TOKENCRATE_UI_PORT:-}"
-    tmpfs: *agent-pi-tmpfs
     volumes:
       - *agent-project-mount
       - *pi-sessions
       - *pi-etc-tokencrate-agent
       - *pi-etc-tokencrate-agent-generated
       - *agent-skills-mount
-      - *agent-repo-skills-mount
       - *agent-local-skills-mount
+      # The UI set's state directory (`state` in its manifest), the one UI
+      # path bound from the host; the fallback lets a render without the
+      # wrapper resolve, `ui` always sets the real one.
       - type: bind
-        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/.pi-web"
-        target: /home/agent/.pi-web
-      - type: bind
-        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/.paseo"
-        target: /home/agent/.paseo
+        source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/${TOKENCRATE_UI_STATE:-.ui-state}"
+        target: "/home/agent/${TOKENCRATE_UI_STATE:-.ui-state}"
 
   # Publishes the UI on loopback. A container that sits only on an internal
   # network cannot publish a port on Docker, so this one also joins
   # `ui-publish`, a network of its own that no agent can reach (an `--egress`
-  # session joins `default`, not this one), and forwards to agent-ui; the
+  # session joins `default`, not this one), and forwards to the set's UI
+  # container by its name (`uis.container_names`); the
   # script also refuses requests for another host name, from another web
   # origin, or from another site (services/agents/ui-forward.js).
   ui-forward:
@@ -261,8 +263,10 @@ services:
       - no-new-privileges:true
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     networks: [ui-publish, ui]
+    labels: *ui-label
     ports:
       # Loopback only, like the llama port. The container listens on 8080.
+      # A `run` publishes it with --service-ports.
       - "127.0.0.1:${TOKENCRATE_UI_HOST_PORT:-4224}:8080"
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=16m"
@@ -270,17 +274,18 @@ services:
       HOME: /tmp
     volumes:
       - type: bind
-        source: "${TOKENCRATE_ROOT:-.}/services/agents/ui-forward.js"
+        source: "${TOKENCRATE_ROOT:?set by bin/tokencrate}/services/agents/ui-forward.js"
         target: /etc/tokencrate/ui-forward.js
         read_only: true
-    # The fallback is a port nothing listens on, so that the static gate can
-    # render this profile without the wrapper; `ui` always sets the real one.
-    command: ["node", "/etc/tokencrate/ui-forward.js", "${TOKENCRATE_UI_SERVICE:-agent-ui}", "${TOKENCRATE_UI_PORT:-0}", "8080", "${TOKENCRATE_UI_HOST_PORT:-4224}"]
+    # The fallbacks name a port nothing listens on and an empty set, so
+    # that the static gate can render this profile without the wrapper;
+    # `ui` always sets the real ones.
+    command: ["node", "/etc/tokencrate/ui-forward.js", "tokencrate-ui-${TOKENCRATE_UI_SET:-}", "${TOKENCRATE_UI_PORT:-0}", "8080", "${TOKENCRATE_UI_HOST_PORT:-4224}"]
 
   agent-omp:
     <<: *agent-common
     profiles: ["agent-omp"]
-    image: "${TOKENCRATE_AGENT_OMP_IMAGE:-tokencrate/agent-omp}:${OMP_VERSION:?pin it in pins.env}-bun${BUN_TAG:?pin it in pins.env}"
+    image: "tokencrate/agent-omp:${OMP_VERSION:?pin it in pins.env}-bun${BUN_TAG:?pin it in pins.env}"
     build:
       <<: *agent-build
       dockerfile: services/agents/Dockerfile
@@ -326,7 +331,6 @@ services:
         target: /etc/tokencrate/agent-generated/models.yml
         read_only: true
       - *agent-skills-mount
-      - *agent-repo-skills-mount
       - *agent-local-skills-mount
 
 networks:
