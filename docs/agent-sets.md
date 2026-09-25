@@ -44,6 +44,43 @@ tool schema is sent with every request; select them where an adapter or a
 browser exists
 ([request-size record](validation.md#request-size-of-the-coding-set)).
 
+## Common selections
+
+Each example starts where [Start here](../README.md#start-here) ends,
+with the stack up and the skill sets fetched. `--sets` applies to one
+launch; put a selection in `LLM_AGENT_SETS` to make it the default for
+`agent pi` and `ui`. [Validation](validation.md#status) states which
+selections are validated.
+
+**A .NET backend with a Vue frontend in PI WEB.** The first launch builds
+the image, which downloads the .NET SDK and the npm packages:
+
+```bash
+bash bin/tokencrate ui pi-web --sets coding,debug,dotnet,web,browser --dir ~/src/my-project
+```
+
+Open <http://127.0.0.1:4224/>. The container has no route out, so
+`npm install` fails and NuGet restores only the packages of the warmed
+templates. Relaunch with `--egress` for new packages; NuGet also needs an
+explicit source and `NUGET_PACKAGES` set to a writable directory in the
+project. `ui stop pi-web` stops the UI and keeps its sessions.
+
+**Odin with Claude beside the local model.** With `--cloud`, the whole
+conversation, including file contents and tool output, goes to Anthropic
+once you pick a Claude model, and every process in the session can read
+the key. Use it only in a project you trust ([Cloud
+providers](agents.md#cloud-providers)). Copy the keys template, set
+`ANTHROPIC_API_KEY` in `local/cloud-keys.env`, and start pi:
+
+```bash
+cp cloud-keys.env.example local/cloud-keys.env && chmod 600 local/cloud-keys.env
+bash bin/tokencrate agent pi --sets coding,debug,odin --cloud --dir ~/src/my-project
+```
+
+pi starts on the local preset; `/model` switches to a Claude model and
+back. The container has no display; SDL uses its dummy drivers, and code
+that opens a window cannot run there.
+
 ## Writing a set
 
 Create a directory containing `set.toml` under `config/agent-sets/<name>/`

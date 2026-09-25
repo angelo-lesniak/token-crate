@@ -91,7 +91,8 @@ bash bin/tokencrate smoke
 prints the address when the default preset, `qwen3.8-27b-q4-mtp`, is loaded.
 Every row of the `smoke` table must say `pass`.
 
-Open <http://127.0.0.1:4207/> for the built-in chat UI.
+Open <http://127.0.0.1:4207/> for the built-in chat UI. If the chat UI
+is all you need, stop here; the rest of this section adds a coding agent.
 
 Fetch the two skill sets named in `LLM_SKILL_SETS` from github.com, check
 the agent's network access, and open pi in a project. `agent` refuses to
@@ -140,6 +141,7 @@ If a command fails, start with the
 | Run the built-in chat UI and an agent on one model, or pick another preset | [Models and presets](docs/models.md#included-presets) |
 | Add a new GGUF model | [Adding a model](docs/models.md#adding-a-model) |
 | Use oh-my-pi, private skills, or give an agent network access | [Coding agents and skills](docs/agents.md) |
+| Set up pi for .NET and Vue in PI WEB, or for Odin with Claude beside the local model | [Common selections](docs/agent-sets.md#common-selections) |
 | Add a toolchain, extensions, or packages to the pi image | [Agent sets](docs/agent-sets.md) |
 | Use pi from a browser | [Browser UIs](docs/agents.md#browser-uis) |
 | Understand what leaves the machine | [Privacy and containment](docs/privacy.md) |
