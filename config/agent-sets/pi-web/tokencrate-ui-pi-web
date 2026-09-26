@@ -14,7 +14,8 @@ readonly SOCKET=/run/tokencrate/pi-web-sessiond.sock
 export PI_WEB_HOST=0.0.0.0 PI_WEB_PORT=$PORT
 export PI_WEB_DATA_DIR=$DATA_DIR PI_WEB_SESSIOND_SOCKET=$SOCKET
 # No release check and no model-catalog refresh: the container has no
-# route out, and the failures would only fill the log.
+# route out unless the UI was started with --egress or --cloud, and the
+# failures would only fill the log.
 export PI_WEB_OFFLINE=1 PI_WEB_SKIP_VERSION_CHECK=1
 # Keep the model's tool vocabulary the same as in the terminal: no
 # PI WEB session-spawning tools (the coding set has a subagent tool) and

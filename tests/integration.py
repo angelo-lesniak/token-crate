@@ -38,8 +38,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tokencrate import agents, agentsets, env  # noqa: E402
+from tests.support import home_tmpfs_directories  # noqa: E402
 from tokencrate import engine as engines  # noqa: E402
+from tokencrate import env, session, uis  # noqa: E402
 
 FIXTURES = ROOT / "tests/fixtures"
 MODEL_SETS = ("ci-tiny", "ci-small")
@@ -50,11 +51,11 @@ SELECTIONS = ("coding", "coding,debug,dotnet,web,browser", "coding,debug,odin")
 # A prompt the agent never answers has nothing to wake it: a lost model
 # response leaves the process in its event loop with no request open, and
 # the agent has no timeout of its own. The bound is generous because the
-# fixture model runs on the CPU and oh-my-pi's first request is about
-# 19,000 tokens: one turn is most of a minute there, and a stuck agent
-# idles for many minutes, so the two are far apart.
+# fixture models run on the CPU. oh-my-pi's first request on ci-small is
+# about 16,000 tokens and takes over ten minutes there without a cached
+# prompt, so only the concurrent clients test prompts it, with its own bound.
 PROMPT_TIMEOUT = float(os.environ.get("PROMPT_TIMEOUT", "600"))
-HOME = agents.HOME_IN_CONTAINER
+HOME = session.HOME_IN_CONTAINER
 README_TEXT = "# Integration project\n\nA scratch project for the agent checks.\n"
 
 
@@ -127,8 +128,8 @@ class IntegrationTests(unittest.TestCase):
         for report in cls.reports:
             Path(report).unlink(missing_ok=True)
         if hasattr(cls, "settings"):
-            for agent in agents.AGENTS:
-                shutil.rmtree(agents.agent_home_directory(cls.settings, agent, cls.project), ignore_errors=True)
+            for agent in session.AGENTS:
+                shutil.rmtree(session.agent_home_directory(cls.settings, agent, cls.project), ignore_errors=True)
         shutil.rmtree(cls.scratch, ignore_errors=True)
 
     # --- Helpers ---------------------------------------------------------
@@ -163,14 +164,14 @@ class IntegrationTests(unittest.TestCase):
         # must not silently select a different effective model.
         project = self.scratch / "concurrent-project"
         project.mkdir()
-        identity = agents.ui_identity_store(self.settings, "paseo")
+        identity = uis.ui_identity_store(self.settings, "paseo")
         had_identity = identity.exists()
         try:
             run(ROOT, project)
         finally:
             for directory in (project, project.with_name(project.name + "-peer")):
-                for agent in agents.AGENTS:
-                    shutil.rmtree(agents.agent_home_directory(self.settings, agent, directory), ignore_errors=True)
+                for agent in session.AGENTS:
+                    shutil.rmtree(session.agent_home_directory(self.settings, agent, directory), ignore_errors=True)
             if not had_identity:
                 shutil.rmtree(identity, ignore_errors=True)
 
@@ -214,14 +215,6 @@ class IntegrationTests(unittest.TestCase):
                 self.assertNotRegex(result.stdout, r"(?i)failed to load|error loading")
         self.assert_project_untouched()
 
-    def test_omp_answers(self) -> None:
-        result = self.prompt(
-            "oh-my-pi", "omp", "--dir", str(self.project), "--", "-p", "Reply with the single word hello."
-        )
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("hello", result.stdout.lower())
-        self.assert_project_untouched()
-
     def test_thinking_level_reaches_the_template(self) -> None:
         """The ci-think server writes every formatted prompt below /tmp/prompts
         in the llama container; the prompt that carries the marker must render
@@ -229,7 +222,7 @@ class IntegrationTests(unittest.TestCase):
         is what a request without a usable level would render. The toy model
         never closes its think block, so the agent's exit status is not checked."""
         llama = self.engine.running_llama_id()
-        for agent in agents.AGENTS:
+        for agent in session.AGENTS:
             with self.subTest(agent=agent):
                 marker = f"TOKENCRATE-THINK-{agent}-{os.getpid()}"
                 self.prompt(
@@ -279,27 +272,25 @@ class IntegrationTests(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp(prefix=f"home-lifecycle-{ui or agent}-", dir=self.scratch))
         home, project = scratch / "home", scratch / "project"
         project.mkdir()
-        agents.prepare_mountpoints(home, agent, ui=bool(ui))
+        sets, entry = uis.ui_selection(settings, None, ui) if ui else (None, None)
+        state = entry.ui["state"] if entry else None
+        session.prepare_mountpoints(home, agent, state)
         # Host files outside the retained directories stay on disk and never enter the home.
         (home / "host-unlisted").write_text("host data")
         (home / f".{agent}/agent/host-marker").write_text("host data")
-        retained = agents.persistent_directories(agent, ui=bool(ui))
-        extra = {
-            "LLM_AGENT_PROJECT_DIR": str(project),
-            "TOKENCRATE_AGENT_HOME": str(home),
-            "TOKENCRATE_PRESET": "ci-small",
-        }
+        retained = session.persistent_directories(agent, state)
+        extra = session.session_variables(project, home, "ci-small")
         if ui:
-            sets, entry = agents.ui_selection(settings, None, ui)
-            tag = agentsets.render(ROOT, settings.build_dir, sets)
             extra.update(
-                TOKENCRATE_AGENT_SETS_TAG=tag,
+                session.render_image(settings, sets),
                 TOKENCRATE_UI_COMMAND=entry.ui["command"],
                 TOKENCRATE_UI_PORT=str(entry.ui["port"]),
+                TOKENCRATE_UI_STATE=state,
             )
             service_name, profiles, port = "agent-ui", ("ui",), entry.ui["port"]
         else:
-            extra.update(agents.render_image(settings, agent, None))
+            if agent == "pi":
+                extra.update(session.render_image(settings, session.selected_sets(settings, None)))
             service_name, profiles, port = f"agent-{agent}", (f"agent-{agent}",), None
         engine.compose("build", service_name, profiles=profiles, **extra)
         rendered = engine.compose("config", profiles=profiles, capture=True, **extra)
@@ -314,7 +305,7 @@ class IntegrationTests(unittest.TestCase):
         # Terminal and UI containers share transcript storage, never live settings.
         peer = copy.deepcopy(service)
         peer["command"] = ["sleep", "600"]
-        peer["volumes"] = [m for m in peer["volumes"] if m["target"] not in (f"{HOME}/.pi-web", f"{HOME}/.paseo")]
+        peer["volumes"] = [m for m in peer["volumes"] if not (state and m["target"] == f"{HOME}/{state}")]
         compose_file = scratch / "compose.json"
         compose_file.write_text(json.dumps({"services": {"first": service, "peer": peer}}))
         name = scratch.name
@@ -378,7 +369,7 @@ class IntegrationTests(unittest.TestCase):
             ready(cid)
             absent(cid, "host-unlisted", f".{agent}/agent/host-marker", "planted")
             execute(cid, f"test -L {HOME}/.agents/skills")
-            for relative in agents.home_tmpfs_directories(agent):
+            for relative in home_tmpfs_directories(agent):
                 target = str(Path(HOME) / relative)
                 self.assertEqual(
                     execute(cid, f"stat -c '%u:%g:%a' {target}"), f"{os.getuid()}:{os.getgid()}:750", target
@@ -449,6 +440,35 @@ class IntegrationTests(unittest.TestCase):
             raise
         finally:
             compose("down", "--timeout", "2")
+
+
+# CI runs the suite as parallel jobs, each with its own stack. Every test
+# names its job here, so a new test cannot drop out of CI unnoticed.
+CI_JOBS = {
+    "test_agent_checks_pass": "clients",
+    "test_concurrent_clients": "clients",
+    "test_home_lifecycle_pi": "clients",
+    "test_home_lifecycle_omp": "clients",
+    "test_home_lifecycle_pi_web": "clients",
+    "test_home_lifecycle_paseo": "clients",
+    "test_pi_runs_each_selection": "pi",
+    "test_probes_swap_the_loaded_model": "probes",
+    "test_thinking_level_reaches_the_template": "probes",
+}
+
+
+def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: str | None) -> unittest.TestSuite:
+    """With TOKENCRATE_CI_JOB set, only that job's tests run."""
+    every = set(unittest.TestLoader().getTestCaseNames(IntegrationTests))
+    if every != CI_JOBS.keys():
+        raise RuntimeError(f"CI_JOBS does not match the tests: {sorted(every ^ CI_JOBS.keys())}")
+    job = os.environ.get("TOKENCRATE_CI_JOB")
+    if not job:
+        return tests
+    if job not in CI_JOBS.values():
+        raise RuntimeError(f"TOKENCRATE_CI_JOB={job} names no job in CI_JOBS")
+    selected = [name for name in loader.getTestCaseNames(IntegrationTests) if CI_JOBS[name] == job]
+    return unittest.TestSuite(IntegrationTests(name) for name in selected)
 
 
 if __name__ == "__main__":

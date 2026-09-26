@@ -20,7 +20,8 @@ SHIPPED_PRESETS = shipped("presets")
 # A preset whose model set waits for a llama.cpp build no release carries
 # (the GLM presets) never reaches the router. The tests pass the build
 # number they compare against (10920) themselves.
-_MODEL_SETS, _PRESETS = presets.load_all(CONFIG)
+_CONFIGURATION = presets.load(CONFIG, 10920)
+_MODEL_SETS, _PRESETS = _CONFIGURATION.model_sets, _CONFIGURATION.presets
 GATED_PRESETS = [p.name for p in _PRESETS if _MODEL_SETS[p.model_set].llama_build == models.UNRELEASED_BUILD]
 LOADABLE_PRESETS = [name for name in SHIPPED_PRESETS if name not in GATED_PRESETS]
 # Every preset of the gpt-oss set: the tests that gate that set or leave
@@ -108,7 +109,17 @@ class PresetTests(unittest.TestCase):
                 rendered = presets.render(configuration, **arguments)
         return rendered, stdout.getvalue(), output
 
-    def test_shipped_presets_render_a_complete_configuration(self):
+    def config_with_cases(self, **cases: str) -> Path:
+        """A copy of the shipped configuration plus one preset per case."""
+        config_dir = self.workdir() / "config"
+        shutil.copytree(CONFIG, config_dir)
+        for name, body in cases.items():
+            (config_dir / "presets" / f"{name}.toml").write_text(replace_restated_keys(body), encoding="utf-8")
+        return config_dir
+
+    def test_every_shipped_preset_renders_and_the_router_file_keeps_its_shape(self):
+        # The shipped values live in the preset files and are gated by the
+        # bench rule; this proves the shape and what holds between presets.
         rendered, stdout, output = self.render()
         text = (output / "models.ini").read_text(encoding="utf-8")
         config = read_ini(output / "models.ini")
@@ -116,120 +127,139 @@ class PresetTests(unittest.TestCase):
         # Every child inherits the shared section; the router adds host, port,
         # and alias itself, so no section names them.
         self.assertEqual(config["*"], {"jinja": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"})
-        self.assertNotIn("host", text)
-        self.assertNotIn("port", text)
-        self.assertNotIn("alias", text)
-        qwen = config["qwen3.8-27b-q4"]
-        self.assertEqual(
-            qwen,
-            {
-                "model": "/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-                "chat-template-file": "/etc/tokencrate/chat-templates/qwen3.8-27b-agent.jinja",
-                "load-on-startup": "true",
-                "ctx-size": "65536",
-                "n-predict": "16384",
-                "parallel": "2",
-                "gpu-layers": "99",
-                "flash-attn": "auto",
-                "cache-type-k": "q8_0",
-                "cache-type-v": "q8_0",
-                "ctx-checkpoints": "8",
-                "chat-template-kwargs": '{"reasoning_effort":"xhigh"}',
-                "fit": "off",
-                "temperature": "1.0",
-                "top-p": "0.95",
-                "top-k": "20",
-                "min-p": "0.0",
-                "presence-penalty": "0.0",
-            },
-        )
+        for forbidden in ("host", "port", "alias"):
+            self.assertNotIn(forbidden, text)
         # Only the default preset loads at start; the file is plain `key = value` lines.
         self.assertEqual(text.count("load-on-startup = true"), 1)
-        self.assertIn("\n[qwen3.8-27b-q4]\nmodel = /models/unsloth/", text)
-        gpt_oss = config["gpt-oss-20b-fast"]
-        self.assertNotIn("load-on-startup", gpt_oss)
-        self.assertNotIn("chat-template-file", gpt_oss)
-        self.assertEqual((gpt_oss["batch-size"], gpt_oss["ubatch-size"]), ("2048", "2048"))
-        # The returned records carry the loadable state, the efforts, and the
-        # host requirements.
+        self.assertIn("\n[qwen3.8-27b-q4]\nmodel = /models/", text)
         records = {item.preset.name: item for item in rendered}
         self.assertEqual(list(records), SHIPPED_PRESETS)
-        qwen_record = records["qwen3.8-27b-q4"]
-        self.assertTrue(qwen_record.loadable)
-        self.assertEqual(qwen_record.missing, [])
-        self.assertEqual(qwen_record.preset.reasoning_efforts, ["low", "medium", "xhigh"])
-        self.assertEqual(qwen_record.preset.requires, {"vram_gib": 24})
-        self.assertTrue(qwen_record.preset.description.startswith("Qwen3.8-27B Q4"))
-        self.assertEqual(records["gpt-oss-20b-fast"].preset.reasoning_efforts, ["low", "medium", "high"])
-        self.assertIn("qwen3.8-27b-q4: loadable\n", stdout)
-        self.assertIn(f"Rendered {len(LOADABLE_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into {output}.\n", stdout)
-        # The Flash-Next presets keep most expert layers in system memory and
-        # reuse the 27B's patched template, which their file embeds.
-        flash = config["qwen3.8-flash-next-q4"]
-        self.assertEqual((flash["n-cpu-moe"], flash["ctx-size"], flash["ctx-checkpoints"]), ("38", "131072", "16"))
-        self.assertEqual((flash["batch-size"], flash["ubatch-size"]), ("2048", "2048"))
-        self.assertEqual(flash["chat-template-file"], qwen["chat-template-file"])
-        self.assertNotIn("spec-type", flash)
-        self.assertEqual(records["qwen3.8-flash-next-q4"].preset.requires, {"vram_gib": 30, "ram_gib": 96})
-        self.assertEqual(presets.rendered_model_ids(output), set(LOADABLE_PRESETS))
+        for name in LOADABLE_PRESETS:
+            self.assertTrue(records[name].loadable, name)
+            self.assertEqual(records[name].missing, [], name)
+            self.assertIn(f"{name}: loadable\n", stdout)
         for name in GATED_PRESETS:
             self.assertEqual((records[name].loadable, records[name].wait), (False, UNRELEASED_WAIT))
             self.assertIn(f"{name}: {UNRELEASED_WAIT}\n", stdout)
-            self.assertEqual(records[name].preset.requires, {"vram_gib": 30, "ram_gib": 96})
-        mtp = config["qwen3.8-27b-q4-mtp"]
-        self.assertEqual((mtp["spec-type"], mtp["spec-draft-n-max"], mtp["parallel"]), ("draft-mtp", "3", "1"))
-        # The two MTP variants differ from the default in one thing each: the
-        # KV cache type, and the model file (with the same patched template).
-        f16kv = config["qwen3.8-27b-q4-mtp-f16kv"]
+        self.assertIn(f"Rendered {len(LOADABLE_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into {output}.\n", stdout)
+        self.assertEqual(presets.rendered_model_ids(output), set(LOADABLE_PRESETS))
+        # The MTP variants differ from the default in one thing each: the
+        # KV cache type, the model file (with the same patched template), and
+        # the slot; the uncensored long preset is the long one on that file.
+        variants = ("mtp", "mtp-f16kv", "uncensored-mtp", "mtp-long", "uncensored-mtp-long")
+        mtp, f16kv, uncensored, mtp_long, uncensored_long = (config[f"qwen3.8-27b-q4-{name}"] for name in variants)
         self.assertEqual({key for key in mtp if mtp[key] != f16kv.get(key)}, {"cache-type-k", "cache-type-v"})
-        self.assertEqual((f16kv["cache-type-k"], f16kv["cache-type-v"]), ("f16", "f16"))
-        uncensored = config["qwen3.8-27b-q4-mtp-uncensored"]
         self.assertEqual({key for key in mtp if mtp[key] != uncensored.get(key)}, {"model"})
-        self.assertEqual(uncensored["chat-template-file"], mtp["chat-template-file"])
-        self.assertIn(
-            "uncensored (abliterated by huihui-ai)", records["qwen3.8-27b-q4-mtp-uncensored"].preset.description
-        )
+        self.assertEqual({key for key in mtp if mtp[key] != mtp_long.get(key)}, {"ctx-size", "ctx-checkpoints"})
+        self.assertEqual({key for key in mtp_long if mtp_long[key] != uncensored_long.get(key)}, {"model"})
+        # The two 128K presets differ only in drafting.
+        long = config["qwen3.8-27b-q4-long"]
+        self.assertEqual({key for key in mtp_long if mtp_long[key] != long.get(key)}, {"spec-type", "spec-draft-n-max"})
+        # The Flash-Next presets reuse the 27B's patched template, which
+        # their file embeds, and never draft with MTP.
+        flash = config["qwen3.8-flash-next-q4"]
+        self.assertEqual(flash["chat-template-file"], config["qwen3.8-27b-q4"]["chat-template-file"])
+        self.assertNotIn("spec-type", flash)
+        # One entry per loadable preset in each agent's list, no per-effort
+        # entries: the agents switch effort per turn.
         pi_models = read_json(output / "agents" / "pi" / "models.json")
-        pi_entries = {model["id"]: model for model in pi_models["providers"]["tokencrate"]["models"]}
-        self.assertIn("qwen3.8-27b-q4", pi_entries)
-        # The agents switch effort per turn; no per-effort model entries exist.
-        self.assertNotIn("qwen3.8-27b-q4:low", pi_entries)
         self.assertEqual(pi_models["providers"]["tokencrate"]["api"], "openai-completions")
-        qwen = pi_entries["qwen3.8-27b-q4"]
-        self.assertEqual(qwen["input"], ["text"])
-        self.assertEqual(qwen["compat"]["thinkingFormat"], "chat-template")
-        self.assertEqual(qwen["compat"]["chatTemplateKwargs"]["enable_thinking"], {"$var": "thinking.enabled"})
-        self.assertEqual(
-            qwen["compat"]["chatTemplateKwargs"]["reasoning_effort"], {"$var": "thinking.effort", "omitWhenOff": True}
-        )
-        self.assertEqual(qwen["thinkingLevelMap"], {"minimal": None, "high": None, "xhigh": "xhigh", "max": None})
-        gpt_oss = pi_entries["gpt-oss-20b-fast"]
-        self.assertNotIn("enable_thinking", gpt_oss["compat"]["chatTemplateKwargs"])
-        self.assertEqual(gpt_oss["thinkingLevelMap"], {"off": None, "minimal": None, "xhigh": None, "max": None})
-        # oh-my-pi reads models.yml as YAML; the file is JSON text.
         omp_models = read_json(output / "agents" / "omp" / "models.yml")
         self.assertEqual(omp_models["providers"]["tokencrate"]["baseUrl"], "http://llama:8080/v1")
-        omp_entries = {model["id"]: model for model in omp_models["providers"]["tokencrate"]["models"]}
-        self.assertNotIn("qwen3.8-27b-q4:low", omp_entries)
-        self.assertEqual(omp_entries["qwen3.8-27b-q4"]["compat"]["thinkingFormat"], "qwen-chat-template")
+        for document in (pi_models, omp_models):
+            ids = [model["id"] for model in document["providers"]["tokencrate"]["models"]]
+            self.assertEqual(ids, LOADABLE_PRESETS)
+
+    def test_the_renderer_maps_every_preset_key_to_its_router_option(self):
+        # One preset that sets every typed key: its section holds each key's
+        # router spelling and value, the model set's file and template, and
+        # no start-up load (it is not the default).
+        case = PRESET_HEAD + (
+            'parallel = 1\nspec_type = "draft-mtp"\nspec_draft_n_max = 3\nn_cpu_moe = 38\n'
+            "batch_size = 2048\nubatch_size = 2048\nctx_checkpoints = 8\n"
+            'reasoning_effort = "xhigh"\nreasoning_efforts = ["low", "xhigh"]\n'
+            "[sampling]\ntemperature = 1.0\ntop_p = 0.95\ntop_k = 20\nmin_p = 0.0\npresence_penalty = 0.0\n"
+            "[requires]\nvram_gib = 24\nram_gib = 96\n"
+        )
+        rendered, _, output = self.render(self.config_with_cases(case=case))
+        config = read_ini(output / "models.ini")
+        section = config["case"]
+        sibling = config["qwen3.8-27b-q4"]
         self.assertEqual(
-            omp_entries["qwen3.8-27b-q4"]["thinking"],
+            (section["model"], section["chat-template-file"]), (sibling["model"], sibling["chat-template-file"])
+        )
+        self.assertNotIn("load-on-startup", section)
+        for key, value in {
+            "ctx-size": "8192",
+            "n-predict": "16384",
+            "parallel": "1",
+            "gpu-layers": "99",
+            "flash-attn": "auto",
+            "cache-type-k": "f16",
+            "cache-type-v": "f16",
+            "spec-type": "draft-mtp",
+            "spec-draft-n-max": "3",
+            "n-cpu-moe": "38",
+            "batch-size": "2048",
+            "ubatch-size": "2048",
+            "ctx-checkpoints": "8",
+            "chat-template-kwargs": '{"reasoning_effort":"xhigh"}',
+            "temperature": "1.0",
+            "top-p": "0.95",
+            "top-k": "20",
+            "min-p": "0.0",
+            "presence-penalty": "0.0",
+        }.items():
+            self.assertEqual(section.get(key), value, key)
+        record = {item.preset.name: item for item in rendered}["case"]
+        self.assertEqual(record.preset.requires, {"vram_gib": 24, "ram_gib": 96})
+        self.assertEqual(record.preset.reasoning_efforts, ["low", "xhigh"])
+        self.assertEqual(record.preset.description, "case")
+
+    def test_the_model_list_dialects_follow_the_thinking_shape(self):
+        # A preset whose template takes the thinking toggle and one that
+        # switches it off: each agent's list spells the two shapes its own way.
+        think = PRESET_HEAD + 'reasoning_effort = "xhigh"\nreasoning_efforts = ["low", "medium", "xhigh"]\n'
+        plain = PRESET_HEAD.replace("qwen3.8-27b-ud-q4-k-xl", "gpt-oss-20b-mxfp4") + (
+            'reasoning_effort = "medium"\nreasoning_efforts = ["low", "medium", "high"]\nthinking_toggle = false\n'
+        )
+        _, _, output = self.render(self.config_with_cases(think=think, plain=plain))
+        pi_models = read_json(output / "agents" / "pi" / "models.json")
+        pi_entries = {model["id"]: model for model in pi_models["providers"]["tokencrate"]["models"]}
+        self.assertNotIn("think:low", pi_entries)
+        think_entry = pi_entries["think"]
+        self.assertEqual(think_entry["input"], ["text"])
+        self.assertEqual(think_entry["compat"]["thinkingFormat"], "chat-template")
+        self.assertEqual(think_entry["compat"]["chatTemplateKwargs"]["enable_thinking"], {"$var": "thinking.enabled"})
+        self.assertEqual(
+            think_entry["compat"]["chatTemplateKwargs"]["reasoning_effort"],
+            {"$var": "thinking.effort", "omitWhenOff": True},
+        )
+        self.assertEqual(
+            think_entry["thinkingLevelMap"], {"minimal": None, "high": None, "xhigh": "xhigh", "max": None}
+        )
+        plain_entry = pi_entries["plain"]
+        self.assertNotIn("enable_thinking", plain_entry["compat"]["chatTemplateKwargs"])
+        self.assertEqual(plain_entry["thinkingLevelMap"], {"off": None, "minimal": None, "xhigh": None, "max": None})
+        # oh-my-pi reads models.yml as YAML; the file is JSON text.
+        omp_models = read_json(output / "agents" / "omp" / "models.yml")
+        omp_entries = {model["id"]: model for model in omp_models["providers"]["tokencrate"]["models"]}
+        self.assertNotIn("think:low", omp_entries)
+        self.assertEqual(omp_entries["think"]["compat"]["thinkingFormat"], "qwen-chat-template")
+        self.assertEqual(
+            omp_entries["think"]["thinking"],
             {"mode": "effort", "efforts": ["low", "medium", "high", "xhigh"], "requiresEffort": False},
         )
-        self.assertEqual(omp_entries["qwen3.8-27b-q4"]["compat"]["reasoningDisableMode"], "qwen-template-false")
+        self.assertEqual(omp_entries["think"]["compat"]["reasoningDisableMode"], "qwen-template-false")
+        self.assertTrue(omp_entries["think"]["compat"]["qwenTemplateReasoningEffort"])
         self.assertEqual(
-            omp_entries["gpt-oss-20b-fast"]["thinking"], {"mode": "effort", "efforts": ["low", "medium", "high"]}
+            omp_entries["think"]["compat"]["reasoningEffortMap"], {"minimal": "low", "high": "xhigh", "max": "xhigh"}
         )
-        self.assertNotIn("reasoningDisableMode", omp_entries["gpt-oss-20b-fast"]["compat"])
-        self.assertTrue(omp_entries["qwen3.8-27b-q4"]["compat"]["qwenTemplateReasoningEffort"])
+        self.assertEqual(omp_entries["plain"]["thinking"], {"mode": "effort", "efforts": ["low", "medium", "high"]})
+        self.assertNotIn("reasoningDisableMode", omp_entries["plain"]["compat"])
+        self.assertNotIn("thinkingFormat", omp_entries["plain"]["compat"])
         self.assertEqual(
-            omp_entries["qwen3.8-27b-q4"]["compat"]["reasoningEffortMap"],
-            {"minimal": "low", "high": "xhigh", "max": "xhigh"},
-        )
-        self.assertNotIn("thinkingFormat", omp_entries["gpt-oss-20b-fast"]["compat"])
-        self.assertEqual(
-            omp_entries["gpt-oss-20b-fast"]["compat"]["reasoningEffortMap"],
-            {"minimal": "low", "xhigh": "high", "max": "high"},
+            omp_entries["plain"]["compat"]["reasoningEffortMap"], {"minimal": "low", "xhigh": "high", "max": "high"}
         )
 
     def test_require_files_skips_presets_whose_files_are_missing(self):
@@ -267,8 +297,8 @@ class PresetTests(unittest.TestCase):
         self.assertEqual([item.preset.name for item in rendered], SHIPPED_PRESETS)
         self.assertFalse(output.exists())
 
-    def test_load_all_reads_the_shipped_configuration(self):
-        model_sets, loaded = presets.load_all(CONFIG)
+    def test_load_reads_the_shipped_configuration(self):
+        model_sets, loaded = _MODEL_SETS, _PRESETS
         self.assertEqual(sorted(model_sets), sorted(SHIPPED_MODEL_SETS))
         self.assertEqual([preset.name for preset in loaded], SHIPPED_PRESETS)
         for preset in loaded:
@@ -287,8 +317,7 @@ class PresetTests(unittest.TestCase):
         # The GLM template takes low, high, and max with no thinking switch;
         # the presets are gated, so the maps are checked on the entries the
         # renderer would write once the gate opens.
-        _, loaded = presets.load_all(CONFIG)
-        glm = next(preset for preset in loaded if preset.name == "glm-5.3-flash-q2")
+        glm = next(preset for preset in _PRESETS if preset.name == "glm-5.3-flash-q2")
         self.assertEqual((glm.reasoning_efforts, glm.server["reasoning_effort"]), (["low", "high", "max"], "high"))
         [model] = presets.agent_models([presets.RenderedPreset(glm, True)])
         self.assertEqual((model["thinking_toggle"], model["reasoning"], model["context"]), (False, True, 131072))
@@ -342,7 +371,7 @@ class PresetTests(unittest.TestCase):
             self.render(config_dir, default_preset="gpt-oss-20b-fast")
         self.assertEqual(
             str(caught.exception),
-            f"the default preset gpt-oss-20b-fast {wait}; set LLM_DEFAULT_PRESET to a preset the pinned build loads",
+            f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list shows the loadable ones",
         )
         # A build number gates until the pin reaches it.
         gpt_oss = models.available_sets(self.gated_config("b10921") / "model-sets")["gpt-oss-20b-mxfp4"]
@@ -353,13 +382,13 @@ class PresetTests(unittest.TestCase):
         self.assertIn(f"Rendered {len(LOADABLE_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into", stdout)
         self.assertEqual(presets.build_wait(self.model_sets["gpt-oss-20b-mxfp4"], 1), "")
 
-    def test_load_all_rejects_a_missing_chat_template(self):
+    def test_load_rejects_a_missing_chat_template(self):
         config_dir = self.workdir() / "config"
         shutil.copytree(CONFIG / "model-sets", config_dir / "model-sets")
         shutil.copytree(CONFIG / "presets", config_dir / "presets")
         (config_dir / "chat-templates").mkdir()
         with self.assertRaises(TokenCrateError) as caught:
-            presets.load_all(config_dir)
+            presets.load(config_dir, 10920)
         self.assertIn("references a missing chat template: qwen3.8-27b-agent.jinja", str(caught.exception))
 
     def test_load_presets_requires_at_least_one_preset(self):
@@ -371,7 +400,7 @@ class PresetTests(unittest.TestCase):
     def test_unknown_default_preset_is_rejected(self):
         with self.assertRaises(TokenCrateError) as caught:
             self.render(default_preset="nope")
-        self.assertEqual(str(caught.exception), "the default preset does not exist: nope")
+        self.assertEqual(str(caught.exception), "unknown preset: nope (run: bash bin/tokencrate presets list)")
 
     def preset_error(self, body: str, message: str, filename: str = "case.toml"):
         path = self.workdir() / filename
@@ -385,20 +414,13 @@ class PresetTests(unittest.TestCase):
         self.preset_error(head + 'parallel = 2\nspec_type = "draft-mtp"\n', "requires parallel = 1")
         self.preset_error(head + "cache_reuse = 256\n", "unknown [server] key(s): cache_reuse")
         self.preset_error(head + 'extra = ["--verbose"]\n', "must be a table")
-        self.preset_error(head + "[server.extra]\nBad_Flag = 1\n", "is not a llama-server option name")
-        self.preset_error(head + "[server.extra]\nlora = [1]\n", "must be a string, number, or boolean")
-        # The renderer owns the options that tie a preset to the container and
-        # the router, and the ones that download model files past the
-        # manifests (by long name or short form, including the Docker Hub
-        # option that offline mode does not stop); the router's own models-*
-        # options are refused with them.
-        for key in ("host", "port", "m", "alias", "api-key", "ctx-size", "np", "mmproj", "load-on-startup", "fit"):
-            self.preset_error(head + f'[server.extra]\n{key} = "x"\n', f"must not set {key};")
-        for key in ("hf", "hf-repo", "model-url", "mmu", "docker-repo", "dr", "spec-draft-hf", "models-max", "rpc"):
-            self.preset_error(head + f'[server.extra]\n{key} = "x"\n', f"must not set {key};")
-        # A typed setting has one spelling: the typed key.
-        for key, typed in (("min-p", "min_p"), ("n-predict", "n_predict"), ("flash-attn", "flash_attn")):
-            self.preset_error(head + f'[server.extra]\n{key} = "x"\n', f"must not set {key}; use the typed key {typed}")
+        self.preset_error(head + "[server.extra]\nverbose = [1]\n", "must be a string, number, or boolean")
+        # Only the listed options pass through: not the ones that tie a
+        # preset to the container and the router, download model files,
+        # run tools, proxy MCP servers, or spell a typed key, and not an
+        # option the list does not know.
+        for key in ("host", "m", "api-key", "ctx-size", "hf-repo", "docker-repo", "rpc", "tools", "agent", "min-p"):
+            self.preset_error(head + f'[server.extra]\n{key} = "x"\n', f"cannot set {key}; the renderer passes through")
         self.preset_error(
             head.replace('flash_attn = "auto"', 'flash_attn = "off"').replace(
                 'cache_type_v = "f16"', 'cache_type_v = "q8_0"'
@@ -424,7 +446,7 @@ class PresetTests(unittest.TestCase):
         self.preset_error(head.replace("schema = 1", "schema = 2"), "schema must be 1")
         self.preset_error(head.replace('"case"', '"' + "x" * 121 + '"'), "description must be at most 120 characters")
         self.preset_error(head + "unexpected = 1\n", "unknown [server] key(s): unexpected")
-        self.preset_error("extra = 1\n" + head, "unknown field(s): extra")
+        self.preset_error("extra = 1\n" + head, "unknown key(s): extra")
         self.preset_error(head, "unsafe preset filename", filename="Bad_Name.toml")
         self.preset_error(
             'schema = 1\ndescription = "case"\nmodel_set = "missing"\n[server]\nctx_size = 8192\n',
@@ -439,23 +461,16 @@ class PresetTests(unittest.TestCase):
         path = self.workdir() / "extra.toml"
         path.write_text(
             PRESET_HEAD + 'reasoning_effort = "low"\nenable_thinking = false\n'
-            "[server.extra]\nverbose = true\nseed = -1\nlv = 2\ndry-multiplier = 0.8\n"
-            'override-kv = "a=int:1"\nno-webui = false\n',
+            '[server.extra]\nverbose = true\nload-mode = "none"\n'
+            'override-kv = "a=int:1"\nlog-prompts-dir = "/tmp/prompts"\n',
             encoding="utf-8",
         )
         preset = presets.read_preset(path, self.model_sets)
         section = presets.preset_section(preset, self.model_sets["qwen3.8-27b-ud-q4-k-xl"], startup=False)
         self.assertEqual(section[0], "[extra]")
         self.assertEqual(
-            section[-6:],
-            [
-                "verbose = true",
-                "seed = -1",
-                "lv = 2",
-                "dry-multiplier = 0.8",
-                "override-kv = a=int:1",
-                "no-webui = false",
-            ],
+            section[-4:],
+            ["verbose = true", "load-mode = none", "override-kv = a=int:1", "log-prompts-dir = /tmp/prompts"],
         )
         self.assertIn('chat-template-kwargs = {"enable_thinking":false,"reasoning_effort":"low"}', section)
         self.assertNotIn("load-on-startup = true", section)
@@ -486,13 +501,15 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(presets.ini_line("min-p", 1e-07), "min-p = 1e-07")
         config_dir = self.workdir() / "config"
         shutil.copytree(CONFIG, config_dir)
+        # A model file name with such a character never reaches the renderer:
+        # the manifest's path rule refuses it first.
         manifest = config_dir / "model-sets" / "qwen3.8-27b-ud-q4-k-xl.toml"
         manifest.write_text(
             manifest.read_text().replace("Qwen3.8-27B-UD-Q4_K_XL.gguf", "Qwen#1.gguf"), encoding="utf-8"
         )
         with self.assertRaises(TokenCrateError) as caught:
             self.render(config_dir, check=True)
-        self.assertIn("cannot be written to the preset file", str(caught.exception))
+        self.assertIn("source must be a relative path", str(caught.exception))
 
     def test_rendered_model_ids_reads_the_rendered_preset_file(self):
         output = self.workdir() / "build"

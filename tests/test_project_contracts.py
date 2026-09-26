@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -22,7 +22,8 @@ except ImportError:
         "(a silent skip would hollow out the gate, so the dependency is mandatory)"
     ) from None
 
-from tokencrate import PROJECT_ROOT, agents, agentsets, env, presets
+from tests.support import home_tmpfs_directories
+from tokencrate import PROJECT_ROOT, agentsets, env, presets, session, uis
 from tokencrate.cli import USAGE
 from tokencrate.env import PIN_KEYS
 
@@ -62,11 +63,34 @@ def read_text(relative: str) -> str:
     return (PROJECT_ROOT / relative).read_text(encoding="utf-8")
 
 
+class ComposeLoader(yaml.SafeLoader):
+    """The Compose merge tags an overlay may carry; `!override` replaces the
+    base value instead of merging into it (both Compose parsers honour it)."""
+
+
+ComposeLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node))
+ComposeLoader.add_constructor("!reset", lambda loader, node: None)
+
+
 def load_yaml(relative: str) -> dict:
-    document = yaml.safe_load(read_text(relative))
+    document = yaml.load(read_text(relative), Loader=ComposeLoader)
     if not isinstance(document, dict):
         raise AssertionError(f"{relative} did not parse to a YAML mapping")
     return document
+
+
+def markdown_pages() -> list[Path]:
+    """The tracked Markdown files: what ships, not a reviewer's notes or a
+    report left in the checkout. A `git archive` extract has no work tree
+    (the gate runs there too), so it scans the directory instead."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.md"], cwd=PROJECT_ROOT, capture_output=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        skipped = {".git", "data", "local", "build", "reports"}
+        return sorted(path for path in PROJECT_ROOT.rglob("*.md") if not skipped & set(path.parts))
+    return sorted(path for path in (PROJECT_ROOT / p for p in listed.decode().split("\0") if p) if path.is_file())
 
 
 def walk_strings(node):
@@ -179,11 +203,6 @@ class ProjectContractTests(unittest.TestCase):
         compose = load_yaml("compose.yaml")
         llama = self.service(compose, "llama")
         self.assert_hardened("llama", llama)
-        self.assertEqual(
-            llama.get("networks"),
-            ["default", *INTERNAL_NETWORKS],
-            "the llama service must join exactly the default, agents, and ui networks",
-        )
         self.assertNotIn(
             "devices", llama, "the GPU device request belongs in compose.gpu.yaml so CPU-only checks can run"
         )
@@ -260,11 +279,8 @@ class ProjectContractTests(unittest.TestCase):
 
     def assert_agent_service(self, name: str, service: dict, dockerfile: str) -> None:
         self.assert_hardened(name, service)
-        network = "ui" if name == "agent-ui" else "agents"
-        self.assertEqual(service.get("networks"), [network], f"{name} must join only the internal {network} network")
         for target in (
             "/opt/tokencrate/skills",
-            "/opt/tokencrate/skills-repo",
             "/opt/tokencrate/skills-local",
             "/etc/tokencrate/agent",
         ):
@@ -288,12 +304,15 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(generated["read_only"])
         self.assertTrue(generated["source"].endswith(f"/build/agents/{agent}/{filename}"))
         self.assertIsNone(find_mount(service, "/etc/tokencrate/agent-generated"))
-        self.assertIn(agent, agents.AGENTS, f"{name} is not an agent of agents.AGENTS")
+        self.assertIn(agent, session.AGENTS, f"{name} is not an agent of session.AGENTS")
         # The home is a per-container tmpfs. The retained directories and the
         # configuration files are its only binds, and every ancestor of a
         # bind has an owned tmpfs of its own.
-        home = agents.HOME_IN_CONTAINER
-        retained = agents.persistent_directories(agent, ui=name == "agent-ui")
+        home = session.HOME_IN_CONTAINER
+        # The UI state directory is the set's own; compose.yaml carries the
+        # variable, whose fallback only lets a render without the wrapper resolve.
+        state = "${TOKENCRATE_UI_STATE:-.ui-state}" if name == "agent-ui" else None
+        retained = session.persistent_directories(agent, state)
         configuration = CONFIGURATION_FILES[agent]
         home_mounts = {
             mount["target"]: mount
@@ -317,7 +336,7 @@ class ProjectContractTests(unittest.TestCase):
         )
         self.assertEqual(
             set(home_tmpfs),
-            {str(Path(home) / relative) for relative in agents.home_tmpfs_directories(agent)},
+            {str(Path(home) / relative) for relative in home_tmpfs_directories(agent)},
             f"{name} must provide a tmpfs for the home and every ancestor of a home bind, nothing else",
         )
         for target, options in home_tmpfs.items():
@@ -338,17 +357,52 @@ class ProjectContractTests(unittest.TestCase):
         # executes a ~/.profile written into the home during the session.
         self.assertEqual(str(environment.get("PI_BASH_NO_LOGIN")), "1", f"{name} must set PI_BASH_NO_LOGIN=1")
 
-    def test_only_the_egress_overlay_adds_the_default_network(self) -> None:
+    def test_every_service_sits_on_exactly_its_networks(self) -> None:
+        # The placement the privacy model rests on: terminal agents on the
+        # internal agents network alone, a browser UI on the internal ui
+        # network alone, the forwarder on ui and its published ui-publish,
+        # llama on all three of default, agents, and ui. tests/podman-compose.sh
+        # proves the same from the rendered `run` arguments.
+        compose = load_yaml("compose.yaml")
+        expected = {
+            "llama": ["default", "agents", "ui"],
+            "agent-pi": ["agents"],
+            "agent-omp": ["agents"],
+            "agent-ui": ["ui"],
+            "ui-forward": ["ui-publish", "ui"],
+        }
+        for name, networks in expected.items():
+            self.assertEqual(self.service(compose, name).get("networks"), networks, f"{name} must sit on {networks}")
+
+    def test_only_the_egress_overlay_moves_a_session_to_the_default_network(self) -> None:
+        # The overlay replaces the network list (`!override`, which the
+        # loader honours): an egress session is on the default network only,
+        # so it shares none with offline sessions and cannot relay for them.
         egress = load_yaml("compose.agent-egress.yaml").get("services", {})
         for name in AGENT_SERVICES:
             self.assertEqual(
                 egress.get(name, {}).get("networks"),
-                ["agents", "default"],
-                f"compose.agent-egress.yaml must add the default network to {name}",
+                ["default"],
+                f"compose.agent-egress.yaml must put {name} on the default network only",
             )
-        self.assertNotIn(
-            "agent-ui", egress, "compose.agent-egress.yaml must not grant the UI container egress; ui has no --egress"
-        )
+        # A browser UI keeps the ui network for its forwarder and joins the
+        # default network; the overlay marks it for status and the check.
+        ui = egress.get("agent-ui", {})
+        self.assertEqual(ui.get("networks"), ["ui", "default"], "compose.agent-egress.yaml must add default to the UI")
+        self.assertEqual(ui.get("labels"), {uis.EGRESS_LABEL: "1"}, "the overlay must label an egress UI")
+        self.assertNotIn("ui-forward", egress, "the forwarder never gets a route out")
+
+    def test_no_compose_file_carries_the_cloud_keys(self) -> None:
+        # The keys reach a container only as the file the `run -v` of
+        # `agent --cloud` binds read-only and the entrypoint exports; no
+        # Compose file names the file, its setting, or its mount target, so
+        # no other service can receive it.
+        self.assertIn(session.KEYS_MOUNT_TARGET, read_text("services/agents/entrypoint.sh"))
+        for relative in COMPOSE_FILES:
+            text = read_text(relative)
+            for needle in (session.KEYS_MOUNT_TARGET, "LLM_CLOUD_KEYS_FILE", "TOKENCRATE_CLOUD"):
+                self.assertNotIn(needle, text, f"{relative} names {needle}; the keys travel only as the run's mount")
+        self.assertIn("LLM_CLOUD_KEYS_FILE", env.documented_keys(PROJECT_ROOT / ".env.example"))
 
     def test_the_ui_services_publish_the_selected_ui_on_loopback_through_the_forwarder(self) -> None:
         compose = load_yaml("compose.yaml")
@@ -359,17 +413,19 @@ class ProjectContractTests(unittest.TestCase):
             "the agent-ui service must pass the selected UI manifest port to its launcher",
         )
         self.assertEqual(ui.get("profiles"), ["ui"], "the agent-ui service must be in the ui profile")
+        for name in UI_SERVICES:
+            self.assertEqual(
+                self.service(compose, name).get("labels"),
+                {uis.UI_LABEL: "${TOKENCRATE_UI_SET:-}"},
+                f"{name} must carry the UI set label the wrapper finds its containers by",
+            )
         self.assertTrue(
             str(ui.get("command", [""])[0]).startswith("${TOKENCRATE_UI_COMMAND"),
             "the agent-ui service must run the wrapper's TOKENCRATE_UI_COMMAND",
         )
         forward = self.service(compose, "ui-forward")
         self.assert_hardened("ui-forward", forward)
-        self.assertEqual(
-            (forward.get("networks"), forward.get("profiles")),
-            (["ui-publish", "ui"], ["ui"]),
-            "the ui-forward service must join the ui-publish and ui networks in the ui profile",
-        )
+        self.assertEqual(forward.get("profiles"), ["ui"], "the ui-forward service must be in the ui profile")
         ports = [str(port) for port in forward.get("ports") or []]
         self.assertTrue(
             ports and ports[0].startswith("127.0.0.1:${TOKENCRATE_UI_HOST_PORT"),
@@ -379,7 +435,7 @@ class ProjectContractTests(unittest.TestCase):
             "ui-forward",
             forward,
             "/etc/tokencrate/ui-forward.js",
-            "${TOKENCRATE_ROOT:-.}/services/agents/ui-forward.js",
+            "${TOKENCRATE_ROOT:?set by bin/tokencrate}/services/agents/ui-forward.js",
             read_only=True,
         )
         self.assertNotIn("depends_on", forward, "the template must not start a generic UI dependency")
@@ -428,18 +484,16 @@ class ProjectContractTests(unittest.TestCase):
         # forwarder; a launcher that writes the number itself could drift
         # from the manifest, and the mismatch would show only as the `ui`
         # start timeout.
-        for manifest in sorted((PROJECT_ROOT / "config" / "agent-sets").glob(f"*/{agentsets.MANIFEST}")):
-            ui = (tomllib.loads(manifest.read_text(encoding="utf-8")) or {}).get("ui") or {}
-            port = str(ui.get("port") or "")
-            if not port:
+        for entry in agentsets.catalog(PROJECT_ROOT).values():
+            if entry.ui is None:
                 continue
-            for script in sorted(manifest.parent.iterdir()):
-                if script.is_file() and script.name != agentsets.MANIFEST:
-                    self.assertNotIn(
-                        port,
-                        script.read_text(encoding="utf-8", errors="replace"),
-                        f"{script.relative_to(PROJECT_ROOT)} writes the port {port} that {manifest.name} declares",
-                    )
+            launcher = entry.directory / entry.ui["command"]
+            self.assertTrue(launcher.is_file(), f"{entry.name} must ship its launcher {entry.ui['command']}")
+            self.assertNotIn(
+                str(entry.ui["port"]),
+                launcher.read_text(encoding="utf-8"),
+                f"{launcher.relative_to(PROJECT_ROOT)} writes the port that {entry.name}'s manifest declares",
+            )
 
     def test_compose_fallbacks_agree_with_the_documented_defaults(self) -> None:
         # The wrapper exports every key it defaults with its effective value,
@@ -454,11 +508,12 @@ class ProjectContractTests(unittest.TestCase):
                         fallback, defaults[key], f"{relative} falls back to {key}={fallback!r}; .env.example differs"
                     )
 
-    def test_the_ui_forward_fallback_port_is_the_documented_pi_web_port(self) -> None:
+    def test_the_ui_forward_fallback_port_is_the_pi_web_host_port(self) -> None:
         # TOKENCRATE_UI_HOST_PORT is set per launch, so it has no line in
         # .env.example and the fallback test above cannot reach it; the
-        # fallback still copies LLM_PI_WEB_PORT and would mislead a reader.
-        expected = env.parse_env_file(PROJECT_ROOT / ".env.example")["LLM_PI_WEB_PORT"]
+        # fallback still copies the pi-web manifest's host_port and would
+        # mislead a reader if it differed.
+        expected = str(agentsets.load_set(PROJECT_ROOT, "pi-web").ui["host_port"])
         fallbacks = {
             fallback
             for key, fallback in COMPOSE_FALLBACK_RE.findall(read_text("compose.yaml"))
@@ -467,8 +522,19 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(
             fallbacks,
             {expected},
-            "compose.yaml must fall back to .env.example's LLM_PI_WEB_PORT for the forwarder port",
+            "compose.yaml must fall back to the pi-web manifest's host_port for the forwarder port",
         )
+
+    def test_the_shipped_ui_ports_are_documented_as_the_setting_pattern(self) -> None:
+        # The setting is one key per UI set; .env.example shows the two
+        # shipped ones, commented out, with the manifest's host_port.
+        documented = env.documented_keys(PROJECT_ROOT / ".env.example")
+        for name in ("pi-web", "paseo"):
+            key = env.ui_port_key(name)
+            self.assertIn(key, documented, f".env.example must show {key}")
+            self.assertIn(
+                f"# {key}={agentsets.load_set(PROJECT_ROOT, name).ui['host_port']}\n", read_text(".env.example")
+            )
 
     def test_every_npm_agent_set_gets_security_updates(self) -> None:
         # A set whose package.json is not listed gets no advisory, and nothing
@@ -484,43 +550,6 @@ class ProjectContractTests(unittest.TestCase):
             for path in (PROJECT_ROOT / "config/agent-sets").glob("*/package.json")
         }
         self.assertEqual(listed, present, ".github/dependabot.yml must list every agent set with a package.json")
-
-    def test_every_agent_set_is_classified_by_the_containment_check(self) -> None:
-        # services/agents/agent-check.sh probes a set through the binary it
-        # installs; nothing else ties the two together, so a new set would be
-        # checked by nobody. Give it a probe, or name it here as one that
-        # ships no runnable binary of its own.
-        probes = {
-            "browser": "tokencrate-chromium",
-            "coding": "pi-packages.txt",
-            "dotnet": "dotnet",
-            "odin": "odin",
-            "paseo": "tokencrate-ui-paseo",
-            "pi-web": "tokencrate-ui-pi-web",
-            "web": "js-debug-adapter",
-            # The debug set adds a pi extension, not a binary; the pi package
-            # count of the coding probe covers that it was installed.
-            "debug": "",
-        }
-        shipped = {path.name for path in (PROJECT_ROOT / "config/agent-sets").iterdir() if path.is_dir()}
-        self.assertEqual(set(probes), shipped, "every shipped agent set must be classified here")
-        check = read_text("services/agents/agent-check.sh")
-        for name, token in sorted(probes.items()):
-            if token:
-                self.assertIn(token, check, f"agent-check.sh has no probe for the {name} set ({token})")
-
-    def test_the_ui_mounts_stay_absolute_for_podman_compose(self) -> None:
-        # uis.snapshot round-trips the UI services through `compose config`,
-        # and podman-compose leaves a relative bind relative, so a `./` source
-        # on a UI service would break browser UIs on podman-compose only.
-        compose = load_yaml("compose.yaml")
-        for name in UI_SERVICES:
-            for mount in self.service(compose, name).get("volumes") or []:
-                source = mount["source"] if isinstance(mount, dict) else str(mount).split(":")[0]
-                self.assertFalse(
-                    str(source).startswith(("./", "../")),
-                    f"the {name} service binds {source}; UI mounts must resolve to an absolute source",
-                )
 
     def test_every_shipped_item_is_named_on_its_owner_page(self) -> None:
         # CONTRIBUTING.md asks a maintainer to add the row; this names the
@@ -538,12 +567,24 @@ class ProjectContractTests(unittest.TestCase):
             for name in names:
                 self.assertIn(f"`{name}`", text, f"{kind} {name} is not named in docs/{page}.md")
 
+    def test_the_cloud_keys_template_holds_no_value(self) -> None:
+        # Every line is a comment: a copy exports nothing until edited, and
+        # the names are pi's, spelled the way the entrypoint accepts them.
+        for line in read_text("cloud-keys.env.example").splitlines():
+            self.assertTrue(not line.strip() or line.startswith("#"), f"cloud-keys.env.example line: {line}")
+        names = re.findall(r"^# ([A-Z][A-Z0-9_]*)=", read_text("cloud-keys.env.example"), re.MULTILINE)
+        self.assertIn("ANTHROPIC_API_KEY", names)
+
+    def test_the_validation_environment_names_the_pinned_versions(self) -> None:
+        # The records are measurements of the pins under test; a raised pin
+        # without a new record would otherwise keep the old line.
+        text = read_text("docs/validation.md")
+        for key, value in env.load_pins(PROJECT_ROOT / "pins.env").items():
+            if key not in env.DIGEST_KEYS:
+                self.assertIn(f"`{key}={value}`", text, f"docs/validation.md#environment must name {key}={value}")
+
     def test_the_documentation_links_resolve_and_index_every_page_and_usage_line(self) -> None:
-        pages = {}
-        for path in sorted(PROJECT_ROOT.rglob("*.md")):
-            if ".git" in path.parts or "data" in path.parts or "local" in path.parts or "build" in path.parts:
-                continue
-            pages[path] = path.read_text(encoding="utf-8")
+        pages = {path: path.read_text(encoding="utf-8") for path in markdown_pages()}
         for path, text in pages.items():
             for match in MARKDOWN_LINK_RE.finditer(text):
                 raw_target = match.group("target").strip().strip("<>")

@@ -27,6 +27,11 @@ build = [
   "odin run /tmp/hello.odin -file -out:/tmp/hello",
   "rm -f /tmp/hello /tmp/hello.odin",
 ]
+check = [
+  '''printf 'package main\nimport "core:fmt"\nmain :: proc() { fmt.println("ok") }\n' > "$CHECK_DIR/hello.odin"''',
+  'odin run "$CHECK_DIR/hello.odin" -file -out:"$CHECK_DIR/hello" | grep -q "^ok$"',
+  'echo "$(odin version | head -1) builds and runs a program"',
+]
 note = """odin (ODIN_ROOT=/opt/odin; vendor raylib and lua are prebuilt there), ols (language server), odinfmt, clang (linker), lldb-dap (debug adapter: pass adapter lldb-dap after `odin build -debug`).
 SDL2, Vulkan headers and loader, glslc. There is no display: SDL uses its dummy drivers; window-creating code cannot be run here."""
 

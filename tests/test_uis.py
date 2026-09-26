@@ -1,40 +1,37 @@
-"""UI ownership, temporary launch definitions, ports and lifecycle failures."""
+"""UI ownership, ports, the launch through `compose run`, and lifecycle failures."""
 
 from __future__ import annotations
 
 import contextlib
 import io
 import json
-import os
-import shutil
 import socket
-import subprocess
 import threading
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
-import yaml
-
-from tests.support import SOURCE_ROOT, Scratch, free_port
-from tokencrate import TokenCrateError, agents, agentsets, engine, env, uis
+from tests.support import Scratch, free_port
+from tokencrate import TokenCrateError, engine, env, uis
 
 
-def container(name: str, role: int = 0, port: str = "4224", project: str = "tokencrate") -> dict:
-    service = uis.services(name)[role]
+def container(name: str, role: int = 0, port: str = "4224", project: str = "tokencrate", access: str = "") -> dict:
+    """One UI container as `inspect` shows it: role 0 is the UI, 1 its
+    forwarder; `access` is `egress` or `cloud` on a UI started so."""
+    service = ("agent-ui", "ui-forward")[role]
+    labels = {engine.PROJECT_LABEL: project, engine.SERVICE_LABEL: service, uis.UI_LABEL: name}
+    if access:
+        labels[uis.EGRESS_LABEL] = "1"
     return {
-        "Id": service,
+        "Id": uis.container_names(name)[role],
+        "Name": "/" + uis.container_names(name)[role],
         "Config": {
-            "Labels": {
-                engine.PROJECT_LABEL: project,
-                engine.SERVICE_LABEL: service,
-                uis.UI_LABEL: name,
-            },
-            "Env": ["TOKENCRATE_UI_PORT=8504"],
+            "Labels": labels,
+            "Env": ["TOKENCRATE_UI_PORT=8504"] + (["TOKENCRATE_CLOUD=1"] if access == "cloud" else []),
         },
         "NetworkSettings": {
             "Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": port}]} if role else {},
-            "Networks": {"ui": {"IPAddress": "10.89.0.5"}},
+            "Networks": {"tokencrate_ui": {"IPAddress": "10.89.0.5"}}
+            | ({"tokencrate_default": {"IPAddress": "10.89.1.7"}} if access and not role else {}),
         },
     }
 
@@ -47,24 +44,35 @@ class UiTests(unittest.TestCase):
         self.engine = engine.Engine("docker", self.settings)
 
     def test_defaults_and_overrides(self):
+        # --port for one launch, then LLM_UI_PORT_<SET>, then the manifest's
+        # host_port; a set without one needs one of the other two.
         fresh = env.load(self.scratch.root, self.scratch.environment(LLM_PORT=None))
         self.assertEqual(fresh.port, "4207")
-        self.assertEqual(fresh.ui_port("pi-web"), "4224")
-        self.assertEqual(fresh.ui_port("paseo"), "4250")
+        self.assertEqual(fresh.ui_port("pi-web", default=4224), "4224")
         self.assertEqual(fresh.ui_port("custom", "54224"), "54224")
-        with self.assertRaisesRegex(TokenCrateError, "explicit --port"):
+        with self.assertRaisesRegex(
+            TokenCrateError, "custom declares no host_port; pass --port or set LLM_UI_PORT_CUSTOM"
+        ):
             fresh.ui_port("custom")
+        self.assertEqual(env.ui_port_key("custom.UI"), "LLM_UI_PORT_CUSTOM_UI")
         local = self.scratch.root / ".env"
-        local.write_text("LLM_PI_WEB_PORT=4444\nLLM_PASEO_PORT=4445\n")
-        configured = env.load(self.scratch.root, self.scratch.environment())
-        self.assertEqual(configured.ui_port("pi-web"), "4444")
-        self.assertEqual(configured.ui_port("paseo"), "4445")
-        for name in ("pi-web", "paseo"):
+        keys = "LLM_UI_PORT_PI_WEB=4444\nLLM_UI_PORT_PASEO=4445\nLLM_UI_PORT_CUSTOM_UI=4446\n"
+        local.write_text(keys)
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            configured = env.load(self.scratch.root, self.scratch.environment())
+        self.assertEqual(stderr.getvalue(), "", "a UI port key follows the documented pattern; no warning")
+        self.assertEqual(configured.ui_port("pi-web", default=4224), "4444")
+        self.assertEqual(configured.ui_port("paseo", default=4250), "4445")
+        self.assertEqual(configured.ui_port("custom.UI"), "4446")
+        for name in ("pi-web", "paseo", "custom.UI"):
             self.assertEqual(configured.ui_port(name, "5555"), "5555")
-        self.assertEqual(local.read_text(), "LLM_PI_WEB_PORT=4444\nLLM_PASEO_PORT=4445\n")
-        for invalid in ("", "0", "65536", "-1", "localhost:4224", "1.5", " 4224"):
-            with self.assertRaises(TokenCrateError):
-                env.validate_port(invalid, "--port")
+        self.assertEqual(local.read_text(), keys)
+        for invalid in ("0", "65536", "-1", "localhost:4224", "1.5", " 4224"):
+            with self.assertRaisesRegex(TokenCrateError, "--port requires a port"):
+                fresh.ui_port("pi-web", invalid, 4224)
+        local.write_text("LLM_UI_PORT_PI_WEB=70000\n")
+        with self.assertRaisesRegex(TokenCrateError, "LLM_UI_PORT_PI_WEB requires a port"):
+            env.load(self.scratch.root, self.scratch.environment()).ui_port("pi-web", default=4224)
 
     def test_occupied_port_belongs_only_to_its_actual_forwarder(self):
         port = str(free_port())
@@ -72,15 +80,15 @@ class UiTests(unittest.TestCase):
             listener.bind(("127.0.0.1", int(port)))
             with patch.object(self.engine, "containers", return_value=[]):
                 with self.assertRaisesRegex(TokenCrateError, "cannot use host port"):
-                    self.engine.require_port(uis.services("pi-web")[1], port)
+                    self.engine.require_port(uis.container_names("pi-web")[1], port)
             with patch.object(self.engine, "containers", return_value=[container("pi-web", 1, port)]):
-                self.engine.require_port(uis.services("pi-web")[1], port)
+                self.engine.require_port(uis.container_names("pi-web")[1], port)
                 with self.assertRaisesRegex(TokenCrateError, "belongs to another container"):
-                    self.engine.require_port(uis.services("paseo")[1], port)
+                    self.engine.require_port(uis.container_names("paseo")[1], port)
                 # Owning another port never excuses a conflict on this port.
                 with self.assertRaisesRegex(TokenCrateError, "cannot use host port"):
                     with patch.object(self.engine, "containers", return_value=[container("pi-web", 1, "1")]):
-                        self.engine.require_port(uis.services("pi-web")[1], port)
+                        self.engine.require_port(uis.container_names("pi-web")[1], port)
 
     def test_port_preflight_allows_recently_closed_connections_but_not_live_listeners(self):
         with socket.socket() as server:
@@ -90,14 +98,14 @@ class UiTests(unittest.TestCase):
             port = str(server.getsockname()[1])
             with patch.object(self.engine, "containers", return_value=[]):
                 with self.assertRaisesRegex(TokenCrateError, "cannot use host port"):
-                    self.engine.require_port(uis.services("pi-web")[1], port)
+                    self.engine.require_port(uis.container_names("pi-web")[1], port)
             with socket.create_connection(("127.0.0.1", int(port))) as client:
                 accepted, _ = server.accept()
                 # The server closes first, leaving this port in TIME_WAIT.
                 accepted.close()
                 self.assertEqual(client.recv(1), b"")
         with patch.object(self.engine, "containers", return_value=[]):
-            self.engine.require_port(uis.services("pi-web")[1], port)
+            self.engine.require_port(uis.container_names("pi-web")[1], port)
 
     def test_port_permission_errors_keep_their_actual_cause(self):
         with (
@@ -106,27 +114,36 @@ class UiTests(unittest.TestCase):
         ):
             socket_type.return_value.__enter__.return_value.bind.side_effect = PermissionError(13, "Permission denied")
             with self.assertRaisesRegex(TokenCrateError, "cannot use host port 80: .*Permission denied"):
-                self.engine.require_port(uis.services("pi-web")[1], "80")
+                self.engine.require_port(uis.container_names("pi-web")[1], "80")
 
-    def test_status_reports_the_project_from_the_agent_container(self):
+    def test_status_reports_the_project_and_the_access_from_the_agent_container(self):
         owned = [container("pi-web", role) for role in (0, 1)]
+        owned += [container("paseo", role, "4250", access="cloud") for role in (0, 1)]
         owned[0]["Config"]["Env"].append("TOKENCRATE_PROJECT_DIR=/projects/selected")
+        owned[1]["State"] = {"Status": "running"}
         with patch.object(uis, "containers", return_value=owned), contextlib.redirect_stdout(io.StringIO()) as output:
             uis.print_status(self.engine)
-        self.assertIn("project=/projects/selected", output.getvalue())
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[0], "UI paseo: forwarder unknown http://127.0.0.1:4250/ project=unknown cloud")
+        self.assertEqual(lines[1], "UI pi-web: forwarder running http://127.0.0.1:4224/ project=/projects/selected")
+        self.assertEqual(uis.access(container("web", access="egress")), "egress")
+        # A UI whose forwarder never started (the second `run` failed) still
+        # holds its project and, with --cloud, the keys: it must show.
+        orphan = [container("custom", access="cloud")]
+        with patch.object(uis, "containers", return_value=orphan), contextlib.redirect_stdout(io.StringIO()) as output:
+            uis.print_status(self.engine)
+        self.assertEqual(output.getvalue(), "UI custom: forwarder missing project=unknown cloud\n")
 
-    def test_label_discovery_preserves_unrelated_containers(self):
+    def test_label_discovery_keeps_the_ui_containers_of_the_project(self):
+        # The engine lists the project's containers; the UI label picks the
+        # UI pairs out of them.
         ours = container("pi-web")
-        unrelated = container("paseo", project="other")
         llama = {
             "Id": "llama",
             "Config": {"Labels": {engine.PROJECT_LABEL: "tokencrate", engine.SERVICE_LABEL: "llama"}},
         }
         self.engine.command = Mock(
-            side_effect=[
-                Mock(stdout="a b c"),
-                *[Mock(stdout=json.dumps(x), returncode=0) for x in (ours, unrelated, llama)],
-            ]
+            side_effect=[Mock(stdout="a b"), *[Mock(stdout=json.dumps(x), returncode=0) for x in (ours, llama)]]
         )
         self.assertEqual(uis.containers(self.engine), [ours])
 
@@ -148,17 +165,18 @@ class UiTests(unittest.TestCase):
     def test_targeted_stop_stop_all_and_logs_need_no_manifest_or_launch_environment(self):
         owned = [container(name, role) for name in ("pi-web", "paseo") for role in (0, 1)]
         self.engine.command = Mock(return_value=Mock(returncode=0))
-        with patch.object(uis, "containers", return_value=owned):
+        with patch.object(uis, "containers", return_value=owned), contextlib.redirect_stdout(io.StringIO()):
             uis.stop(self.engine, "pi-web")
             self.assertEqual(
                 [call.args[1] for call in self.engine.command.call_args_list if call.args[0] == "stop"],
-                list(uis.services("pi-web")),
+                list(uis.container_names("pi-web")),
             )
             self.engine.command.reset_mock()
             with self.assertRaisesRegex(TokenCrateError, "several UIs"):
                 uis.logs(self.engine)
             uis.logs(self.engine, "paseo")
-            self.engine.command.assert_called_once_with("logs", "--follow", uis.services("paseo")[0], check=False)
+            ui_name = uis.container_names("paseo")[0]
+            self.engine.command.assert_called_once_with("logs", "--follow", ui_name, check=False)
             self.engine.command.reset_mock()
             uis.stop(self.engine)
             self.assertEqual(
@@ -169,52 +187,51 @@ class UiTests(unittest.TestCase):
             self.assertEqual(uis.logs(self.engine), 0)
 
     def test_failed_build_does_not_start_containers_and_failed_start_keeps_them(self):
-        candidate = self.scratch.tmp / "candidate.json"
+        running = [container("paseo", role) for role in (0, 1)]
+        sibling = [container("pi-web", role) for role in (0, 1)]
         with (
-            patch.object(uis, "containers", return_value=[]),
+            patch.object(uis, "containers", return_value=running + sibling),
             patch.object(self.engine, "require_port"),
-            patch.object(agents, "prepare_session", return_value={}),
-            patch.object(agents, "wait_for_ui", side_effect=TokenCrateError("failed readiness")),
-            patch.object(uis, "snapshot", side_effect=lambda *_: contextlib.nullcontext(candidate)),
+            patch.object(self.engine, "remove_containers") as removed,
+            patch.object(uis, "prepare", return_value={}),
+            patch.object(uis, "wait_for_ui", side_effect=TokenCrateError("failed readiness")),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             self.engine.compose = Mock(side_effect=TokenCrateError("failed build"))
             with self.assertRaisesRegex(TokenCrateError, "failed build"):
-                agents.run_ui(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+                uis.start(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
             self.assertEqual(len(self.engine.compose.call_args_list), 1)
             self.assertEqual(self.engine.compose.call_args.args[0], "build")
+            removed.assert_not_called()
             self.engine.compose = Mock()
             with self.assertRaisesRegex(TokenCrateError, "failed readiness"):
-                agents.run_ui(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+                uis.start(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+            # The set's own pair is replaced after the build; the UI and the
+            # forwarder start under their fixed names, the UI alone under
+            # the overlay when asked; a failed pair stays for logs.
+            removed.assert_called_once_with(running)
             calls = self.engine.compose.call_args_list
-            self.assertEqual(calls[1].args, ("up", "--no-build", "--detach", "--no-deps", *uis.services("paseo")))
+            ui_name, forward_name = uis.container_names("paseo")
+            self.assertEqual(calls[1].args, ("run", "--detach", "--no-deps", "-T", "--name", ui_name, "agent-ui"))
+            self.assertFalse(calls[1].kwargs["egress"])
+            self.assertEqual(
+                calls[2].args,
+                ("run", "--detach", "--no-deps", "-T", "--service-ports", "--name", forward_name, "ui-forward"),
+            )
+            self.assertNotIn("egress", calls[2].kwargs)
             self.assertFalse(any("down" in call.args for call in calls))
+            self.assertEqual(calls[1].kwargs["TOKENCRATE_UI_SET"], "paseo")
 
-    def test_launch_files_are_removed_on_success_and_failure(self):
-        self.engine.compose = Mock(return_value=Mock(stdout="services: {}\n"))
-        for fail in (False, True):
-            with self.subTest(fail=fail):
-                try:
-                    with uis.snapshot(self.engine, "pi-web", {}) as candidate:
-                        self.assertTrue(candidate.is_file())
-                        self.assertEqual(candidate.parent.stat().st_mode & 0o777, 0o700)
-                        frozen = json.loads(candidate.read_text())["services"][uis.services("pi-web")[0]]["extends"][
-                            "file"
-                        ]
-                        self.assertTrue(Path(frozen).is_file())
-                        if fail:
-                            raise RuntimeError("launch failed")
-                except RuntimeError:
-                    pass
-                self.assertFalse(candidate.parent.exists())
-
-    def test_readiness_checks_both_containers(self):
-        self.engine.container_ids = Mock(side_effect=[["ui"], ["forward"]])
+    def test_readiness_checks_both_containers_by_name(self):
         self.engine.container_state = Mock(side_effect=["running", "exited"])
-        with patch("tokencrate.runtime.http_get", return_value="ok") as get:
-            with self.assertRaisesRegex(TokenCrateError, "container is exited"):
-                agents.wait_for_ui(self.engine, "pi-web", "4224", 0)
+        with patch("tokencrate.uis.http_get", return_value="ok") as get:
+            with self.assertRaisesRegex(TokenCrateError, "the container tokencrate-ui-forward-pi-web is exited"):
+                uis.wait_for_ui(self.engine, "pi-web", "4224", 0)
             get.assert_not_called()
+        self.assertEqual(
+            [call.args for call in self.engine.container_state.call_args_list],
+            [(name,) for name in uis.container_names("pi-web")],
+        )
 
     def test_lock_serializes_close_launches_and_scopes_engine_project(self):
         entered = threading.Event()
@@ -235,98 +252,22 @@ class UiTests(unittest.TestCase):
         self.assertNotEqual(self.engine.lock_file, engine.Engine("podman", self.settings).lock_file)
 
     def test_all_ui_names_and_addresses_are_containment_targets(self):
-        with patch.object(self.engine, "containers", return_value=[container("custom.UI"), container("paseo", 1)]):
-            targets = uis.peer_targets(self.engine)
-        for target in (
-            f"{uis.services('custom.UI')[0]}:8504",
-            f"{uis.services('paseo')[1]}:8080",
-            "10.89.0.5:8504",
-            "10.89.0.5:8080",
-        ):
-            self.assertIn(target, targets)
-
-
-class ProviderTests(unittest.TestCase):
-    """Exercise actual parsers; fake only Podman's host probes, never Compose."""
-
-    def setUp(self):
-        UiTests.setUp(self)
-        # The checkout is not a mounted project: its path can contain dollars.
-        renamed = self.scratch.root.with_name("checkout$LITERAL")
-        self.scratch.root.rename(renamed)
-        self.scratch.root = renamed
-
-    @unittest.skipUnless(shutil.which("podman-compose"), "podman-compose parser is not installed")
-    def test_podman_frozen_ui_definitions(self):
-        self.check_provider("podman")
-
-    @unittest.skipUnless(shutil.which("docker"), "Docker CLI is not installed")
-    def test_docker_frozen_ui_definitions(self):
-        if subprocess.run(["docker", "compose", "version"], capture_output=True, check=False).returncode:
-            self.skipTest("Docker Compose is not installed")
-        self.check_provider("docker")
-
-    def check_provider(self, provider):
-        real_run = engine._run
-        settings = env.load(
-            self.scratch.root,
-            {**os.environ, **self.scratch.environment(), "PATH": os.environ["PATH"], "LLM_GPU": "false"},
+        # The UI of a set started with --egress or --cloud marks its name
+        # and its default-network address, and nothing else: its address on
+        # the ui network and its forwarder stay targets an egress session
+        # must not reach.
+        owned = [container("custom", access="egress"), container("custom", 1), container("paseo", 1)]
+        with patch.object(self.engine, "containers", return_value=owned):
+            targets = uis.peer_targets(self.engine).split()
+        self.assertEqual(
+            targets,
+            [
+                "egress:tokencrate-ui-custom:8504",
+                "10.89.0.5:8504",
+                "egress:10.89.1.7:8504",
+                "tokencrate-ui-forward-custom:8080",
+                "10.89.0.5:8080",
+                "tokencrate-ui-forward-paseo:8080",
+                "10.89.0.5:8080",
+            ],
         )
-        selected = engine.Engine(provider, settings)
-
-        def run(cmd, environ, provider=provider, **kwargs):
-            if provider == "podman":
-                cmd = [
-                    "podman-compose",
-                    "--podman-path",
-                    str(SOURCE_ROOT / "tests/fixtures/podman-compose-bin/podman"),
-                    *cmd[2:],
-                ]
-            return real_run(cmd, environ, **kwargs)
-
-        with patch("tokencrate.engine._run", side_effect=run), selected.lock():
-            tag = agentsets.render(settings.root, settings.build_dir, [])
-            for name, port, internal in (("pi-web", "4224", "8504"), ("custom.UI", "4250", "6767")):
-                extra = {
-                    "TOKENCRATE_AGENT_SETS_TAG": tag,
-                    "TOKENCRATE_UI_HOST_PORT": port,
-                    "TOKENCRATE_UI_PORT": internal,
-                    "TOKENCRATE_UI_SERVICE": uis.services(name)[0],
-                    "TOKENCRATE_PRESET": name,
-                    "TOKENCRATE_AGENT_HOME": str(self.scratch.storage / name),
-                    "LLM_AGENT_PROJECT_DIR": str(self.scratch.project),
-                    "GIT_AUTHOR_NAME": "literal $DOLLAR ${NO_EXPANSION}",
-                }
-                with uis.snapshot(selected, name, extra) as candidate:
-                    if provider == "docker":
-                        rendered = yaml.safe_load(
-                            selected.compose("config", profiles=("ui",), files_extra=(candidate,), capture=True).stdout
-                        )
-                        service = rendered["services"][uis.services(name)[0]]
-                        self.assertEqual(set(service["networks"]), {"ui"})
-                        self.assertEqual(service["environment"]["TOKENCRATE_PRESET"], name)
-                        self.assertIn("$$DOLLAR", service["environment"]["GIT_AUTHOR_NAME"])
-                        self.assertTrue(service["read_only"])
-                        self.assertTrue(
-                            all(Path(v["source"]).is_relative_to(self.scratch.tmp) for v in service["volumes"])
-                        )
-                    else:
-                        log = self.scratch.tmp / f"{name}.log"
-                        selected.compose(
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            "-T",
-                            uis.services(name)[0],
-                            profiles=("ui",),
-                            FAKE_PODMAN_LOG=str(log),
-                            files_extra=(candidate,),
-                            capture=True,
-                        )
-                        trace = log.read_text()
-                        self.assertIn("--network=tokencrate_ui", trace)
-                        self.assertNotIn("--network=tokencrate_agents", trace)
-                        self.assertIn("keep-id", trace)
-                        self.assertIn(f"TOKENCRATE_PRESET={name}", trace)
-                        self.assertIn("$DOLLAR", trace)
-                self.assertFalse(candidate.parent.exists())

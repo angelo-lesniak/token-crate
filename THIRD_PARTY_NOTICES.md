@@ -50,5 +50,4 @@ The shipped chat template under `config/chat-templates/` is a modified copy of
 the template embedded in the Qwen3.8 GGUF files (Apache License 2.0).
 
 Skill sets refer to third-party Agent Skills under their own licenses; the
-license identifier is recorded next to each pin. `config/skills/` contains
-skills authored in this repository (MIT).
+license identifier is recorded next to each pin.

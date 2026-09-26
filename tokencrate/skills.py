@@ -15,20 +15,19 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from . import TokenCrateError
-from .names import SET_NAME_RE, SHA256_RE, load_catalog
+from .names import SET_NAME_RE, SHA1_RE, SHA256_RE, load_catalog, read_toml, relative_path
+from .names import description as read_description
 
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 HOST_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 )
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_PATH_RE = re.compile(r"^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?$")
 LICENSE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$")
 FRONTMATTER_NAME_RE = re.compile(r"^name:\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
@@ -91,31 +90,12 @@ def validate_repository(value: object, allowed_hosts: set[str]) -> str:
     return normalized
 
 
-def safe_subpath(value: object, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise TokenCrateError(f"{context}: path must be a non-empty relative path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts) or "\\" in value:
-        raise TokenCrateError(f"{context}: path must be a safe relative path: {value!r}")
-    return path.as_posix()
-
-
 def read_manifest(path: Path, allowed_hosts: set[str]) -> SkillSet:
     name = path.stem
     if not SET_NAME_RE.fullmatch(name) or name == "all":
         raise TokenCrateError(f"unsafe skill-set filename: {path.name}")
-    try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
-        raise TokenCrateError(f"could not read skill-set manifest {path}: {error}") from error
-    unknown = set(document) - {"schema", "description", "skill"}
-    if unknown:
-        raise TokenCrateError(f"{name}: unknown field(s): {', '.join(sorted(unknown))}")
-    if document.get("schema") != 1:
-        raise TokenCrateError(f"{name}: schema must be 1")
-    description = document.get("description", "")
-    if not isinstance(description, str):
-        raise TokenCrateError(f"{name}: description must be a string")
+    document = read_toml(path, {"schema", "description", "skill"}, name)
+    description = read_description(document, name)
     raw_skills = document.get("skill")
     if not isinstance(raw_skills, list) or not raw_skills:
         raise TokenCrateError(f"{name}: at least one [[skill]] entry is required")
@@ -134,7 +114,7 @@ def read_manifest(path: Path, allowed_hosts: set[str]) -> SkillSet:
             raise TokenCrateError(f"{name}: duplicate skill name: {skill_name}")
         names.add(skill_name)
         commit = raw["commit"]
-        if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        if not isinstance(commit, str) or not SHA1_RE.fullmatch(commit):
             raise TokenCrateError(f"{context}: commit must be a full lowercase Git commit")
         digest = raw["sha256"]
         if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
@@ -147,16 +127,22 @@ def read_manifest(path: Path, allowed_hosts: set[str]) -> SkillSet:
                 name=skill_name,
                 repository=validate_repository(raw["repository"], allowed_hosts),
                 commit=commit,
-                path=safe_subpath(raw["path"], context),
+                path=relative_path(raw["path"], "path", context),
                 sha256=digest,
                 license=license_id,
             )
         )
-    return SkillSet(name, description.strip(), tuple(skills))
+    return SkillSet(name, description, tuple(skills))
 
 
 def available_sets(manifest_dir: Path, allowed_hosts: set[str]) -> dict[str, SkillSet]:
     return load_catalog(manifest_dir, lambda path: read_manifest(path, allowed_hosts), "skill set")
+
+
+def catalog(config_dir: Path) -> dict[str, SkillSet]:
+    """The shipped skill sets below config_dir, read against its host allowlist."""
+    hosts = load_allowed_hosts(config_dir / "skill-sets" / "allowed-git-hosts.txt")
+    return available_sets(config_dir / "skill-sets", hosts)
 
 
 # --- Git ---------------------------------------------------------------------
@@ -321,8 +307,7 @@ def fetch(selected: list[SkillSet], target: Path, *, verify_only: bool) -> int:
         set_dir = target / skill_set.name
         if set_dir.is_symlink():
             raise TokenCrateError(f"skill set directory must not be a symlink: {set_dir}")
-        if skill_set.description:
-            print(f"{skill_set.name}: {skill_set.description}")
+        print(f"{skill_set.name}: {skill_set.description}")
         for skill in skill_set.skills:
             destination = set_dir / skill.name
             state = installed_state(destination, skill)
@@ -378,9 +363,9 @@ def fetch(selected: list[SkillSet], target: Path, *, verify_only: bool) -> int:
 def digest_command(repository: str, commit: str, subpath: str, allowed_hosts: set[str]) -> str:
     """Return the tree digest of one pinned skill directory, for a new manifest row."""
     repository = validate_repository(repository, allowed_hosts)
-    if not COMMIT_RE.fullmatch(commit):
+    if not SHA1_RE.fullmatch(commit):
         raise TokenCrateError("commit must be a full lowercase Git commit")
-    subpath = safe_subpath(subpath, "digest")
+    subpath = relative_path(subpath, "path", "digest")
     with tempfile.TemporaryDirectory(prefix="tokencrate-skill-digest-") as raw_workdir:
         subtree = checkout_subtree(repository, commit, subpath, Path(raw_workdir))
         digest = tree_digest(subtree)

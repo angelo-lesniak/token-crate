@@ -11,7 +11,7 @@ different selections coexist.
 
 ```bash
 bash bin/tokencrate agent-sets list        # the shipped and private sets
-bash bin/tokencrate agent pi --dir ~/src/my-project          # LLM_AGENT_SETS
+bash bin/tokencrate agent pi --dir ~/src/my-project          # the sets in LLM_AGENT_SETS
 bash bin/tokencrate agent pi --sets coding,debug,odin --dir ~/src/my-project
 ```
 
@@ -44,6 +44,43 @@ tool schema is sent with every request; select them where an adapter or a
 browser exists
 ([request-size record](validation.md#request-size-of-the-coding-set)).
 
+## Common selections
+
+Each example starts where [Start here](../README.md#start-here) ends,
+with the stack up and the skill sets fetched. `--sets` applies to one
+launch; put a selection in `LLM_AGENT_SETS` to make it the default for
+`agent pi` and `ui`. [Validation](validation.md#status) states which
+selections are validated.
+
+**A .NET backend with a Vue frontend in PI WEB.** The first launch builds
+the image, which downloads the .NET SDK and the npm packages:
+
+```bash
+bash bin/tokencrate ui pi-web --sets coding,debug,dotnet,web,browser --dir ~/src/my-project
+```
+
+Open <http://127.0.0.1:4224/>. The container has no route out, so
+`npm install` fails and NuGet restores only the packages of the warmed
+templates. Relaunch with `--egress` for new packages; NuGet also needs an
+explicit source and `NUGET_PACKAGES` set to a writable directory in the
+project. `ui stop pi-web` stops the UI and keeps its sessions.
+
+**Odin with Claude beside the local model.** With `--cloud`, the whole
+conversation, including file contents and tool output, goes to Anthropic
+once you pick a Claude model, and every process in the session can read
+the key. Use it only in a project you trust ([Cloud
+providers](agents.md#cloud-providers)). Copy the keys template, set
+`ANTHROPIC_API_KEY` in `local/cloud-keys.env`, and start pi:
+
+```bash
+cp cloud-keys.env.example local/cloud-keys.env && chmod 600 local/cloud-keys.env
+bash bin/tokencrate agent pi --sets coding,debug,odin --cloud --dir ~/src/my-project
+```
+
+pi starts on the local preset; `/model` switches to a Claude model and
+back. The container has no display; SDL uses its dummy drivers, and code
+that opens a window cannot run there.
+
 ## Writing a set
 
 Create a directory containing `set.toml` under `config/agent-sets/<name>/`
@@ -53,7 +90,8 @@ cannot write to the host's `local/` directory.
 
 The directory name is the set name. The wrapper rejects duplicate names
 across the two locations, unknown manifest keys, and paths that leave the
-set directory.
+set directory or carry characters other than letters, digits, and
+`._+@-` (the rule every manifest kind shares).
 
 A manifest runs as root during the image build, with the build's network
 access. Its `env` and `into` keys can affect any image path; the manifest
@@ -80,7 +118,8 @@ shipped set needs beyond that. Manifest keys:
 | `apt` (list) | Debian packages, installed with `--no-install-recommends`. Versions come from the base image's Debian release at build time, without per-package pins |
 | `asset` (array of tables) | A release asset: `url` (https, without credentials), exactly one of `sha256` or `sha512`, `into` (absolute). A `.tar.gz` or `.tgz` is extracted into `into` (`strip` drops leading path components), a `.zip` is unzipped into it, any other file is installed at `into` with `mode` (default `0644`) |
 | `npm` (table) | Install `package.json` and `package-lock.json` of the set directory with `npm ci --ignore-scripts` and `npm audit signatures`; `omit_peer = true` for pi extensions (pi provides their peers) |
-| `build` (list) | Lines of one Bash script run with `errexit` and `pipefail` in the set directory, as one layer, after its files are copied into the image. Inline comments and shell variables work across lines. Files of the set directory are installed from here (`install -m 0755 wrapper /usr/local/bin/wrapper`), and so is a Git checkout at a commit (see the `debug` set) |
+| `build` (list) | Lines of one Bash script, run with `errexit` and `pipefail` in the set directory as one layer after its files are copied into the image. Shell variables carry across lines; a line can end with a comment but cannot be one. Files of the set directory are installed from here (`install -m 0755 wrapper /usr/local/bin/wrapper`), and so is a Git checkout at a commit (see the `debug` set) |
+| `check` (list) | Lines of one Bash script, in the shape of `build`, that `smoke --agent` runs inside the container as the container user, with no route out (an `--egress` check skips them), in a scratch directory (`$CHECK_DIR`, also the working directory); the last line it prints is the report line. The gate requires the key of every shipped set, an empty list when nothing of it can be probed |
 | `pi_packages` (list) | Directories below the set directory that pi loads as packages (an extension with its `package.json`) |
 | `pi_lens` (table) | Merged into pi-lens's configuration, for example a language server under `lsp.servers` |
 | `note` (string) | Lines for the tools note |
@@ -97,22 +136,24 @@ and never credentials such as a private `.npmrc`.
 A `[ui]` table makes the set a browser UI that `ui <set>` adds to the
 selection and runs instead of `pi` ([Browser UIs](agents.md#browser-uis)).
 
-The names `stop` and `logs` are reserved for UI commands and cannot name
-a set with a `[ui]` table.
+A UI set's name ends the names of its containers, `tokencrate-ui-<set>`
+and `tokencrate-ui-forward-<set>`, so it holds lowercase letters,
+digits, and hyphens, at most 41 characters, starts with a letter or a
+digit, and does not start with `forward-`; `stop` and `logs` are
+reserved for UI commands.
 
 | Key | Meaning |
 | --- | --- |
 | `command` | A program name on the image's `PATH` that the entrypoint runs instead of `pi`; install it with a `build` line. It must bind all interfaces of the container and keep running in the foreground |
-| `port` | The container port it listens on (1024 to 65535), which the wrapper forwards the loopback port to |
-| `identity` (optional list) | Files directly below `.pi-web/` or `.paseo/` in the agent home that the wrapper keeps once per UI set under `LLM_AGENTS_DIR/pi/<set>-identity/` and copies into every project's home before the start, such as a daemon's keypair |
+| `port` | The container port it listens on (`1024` to `65535`), which the wrapper forwards the loopback port to |
+| `state` | One directory below the agent home (such as `.paseo`) that holds the UI's configuration, sessions, and identity. It is the UI's only home path bound from the host, so it persists per project ([storage layout](configuration.md#storage-layout)); it cannot be one of the agent's own directories (`.pi`, `.config`, and the like) |
+| `host_port` (optional) | The loopback port (`1024` to `65535`) the forwarder publishes unless `LLM_UI_PORT_<SET>` or `--port` names another ([`ui`](cli.md#ui)) |
+| `identity` (optional list) | Files directly below the `state` directory, written as `<state>/<file>` (`".paseo/server-id"`), that the wrapper keeps once per UI set under `LLM_AGENTS_DIR/pi/<set>-identity/` and copies into a project's home that lacks them before the start, such as a daemon's keypair |
 
 A UI's persistent files, including its identity paths, must live under
-one of the [retained home directories](configuration.md#storage-layout).
-The manifest does not add mounts. Supporting another state directory
-requires a reviewed Compose mount and host-path preparation change.
-
-Custom UI sets require an explicit host port with `--port`; the manifest
-port remains internal. See [`ui`](cli.md#ui) for the complete command contract.
+its `state` directory; nothing else in the home outlives the container.
+A set without `host_port` needs `LLM_UI_PORT_<SET>` or `--port`; the
+manifest `port` remains internal. See [`ui`](cli.md#ui) for all options.
 
 ## Upgrading a set
 
@@ -128,6 +169,6 @@ Update the source pin and its verification data together:
   `extensions/dap` between the two commits before changing the pin.
 
 Run `bash bin/tokencrate smoke --agent pi --sets <selection>` to build
-the image and check containment. For `dotnet`, `web`, `browser`, and
-`odin`, it also checks the toolchain without internet access. Record the
-result as [Validation](validation.md#recording-a-result) describes.
+the image and check containment; each set's `check` lines run without
+internet access and report one line per set. Record the result as
+[Validation](validation.md#recording-a-result) describes.

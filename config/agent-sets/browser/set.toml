@@ -3,6 +3,10 @@ description = "Chrome DevTools tools for pi against Debian's Chromium, started h
 apt = ["chromium", "fonts-liberation"]
 pi_packages = ["node_modules/@narumitw/pi-chrome-devtools"]
 build = ["install -m 0755 tokencrate-chromium /usr/local/bin/tokencrate-chromium"]
+check = [
+  "tokencrate-chromium --version >/dev/null",
+  'echo "$(tokencrate-chromium --version | head -1) answers --version"',
+]
 note = "chromium (headless) is available to the chrome devtools tools."
 
 [npm]
@@ -10,6 +14,6 @@ omit_peer = true
 
 # The extension reads the browser path from this variable. Its author
 # prefers pi's browser.executablePath setting, which a set cannot write
-# (CONTRIBUTING.md, "One pi configuration for every selection").
+# (CONTRIBUTING.md, "Shared pi configuration").
 [env]
 PI_CHROME_DEVTOOLS_BROWSER = "/usr/local/bin/tokencrate-chromium"

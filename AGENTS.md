@@ -14,59 +14,58 @@ helps a named reader decide, act, verify, or recover.
 
 - The implementation is one Python package, `tokencrate/`, behind the shim
   `bin/tokencrate`; `CONTRIBUTING.md` lists its modules, the rules for
-  changing it, the synchronized pin locations, and the metadata for
-  model-set, agent-set, and skill-set entries.
+  changing it, the pin locations, and the metadata for model-set,
+  agent-set, and skill-set entries.
 - `README.md` carries the product scope, the host requirements, and the
-  shortest user path. Its "Choose what to do next" table is the
-  documentation index: it must link every page under `docs/`,
-  `CONTRIBUTING.md`, and `SECURITY.md`. There is no separate index page.
+  shortest user path. Its "Choose what to do next" table is the only
+  documentation index and must link every page under `docs/`,
+  `CONTRIBUTING.md`, and `SECURITY.md`.
 - Pages are flat kebab-case Markdown files under `docs/`, hard-wrapped near
-  80 columns, with one main purpose each. `docs/cli.md` is the main source
-  for every `bin/tokencrate` command and flag, with a section per command
-  listed by `bin/tokencrate help` and every usage line of that help shown
-  verbatim; other pages link to it instead of restating flags.
-  `docs/models.md` owns model sets, presets, reasoning effort, and the chat
-  template; `docs/agent-sets.md` owns the agent sets (the shipped ones,
-  the manifest keys, upgrading one); `docs/agents.md` owns agents, skills,
-  the filesystem and mount limits of the container, and the
-  first-request token costs; `docs/privacy.md` owns what leaves the
-  machine, the telemetry switches, and the network layout with its limits
-  (the forwarder rules and the Docker gateway mode);
-  `docs/troubleshooting.md` owns observed failures.
-- `.env.example` is the settings reference. `docs/configuration.md` owns
-  the storage layout with the retained agent-home directories and their
-  tmpfs limits, the pins in `pins.env` with the image names, the built-in
-  chat UI defaults, when a setting takes effect, and the one upgrade
-  procedure.
-- `docs/validation.md` holds the validation procedure, the only status text
-  (a claims table with the evidence vocabulary: supported, expected,
-  validated, unverified, and the list of what is still unverified), the
-  router observations the wrapper relies on, and the dated records;
-  other pages link to `docs/validation.md#status` instead of restating
-  status.
-- The project has no glossary and no terminology register.
-- There is no changelog until the first tagged release; Git history is the
-  record of changes.
-- `SECURITY.md` holds the scope statement, the reporting channel, and the
-  credentials rule.
+  80 columns, with one main purpose each. Page ownership:
+  - `docs/cli.md`: every `bin/tokencrate` command and flag, one section per
+    command in `bin/tokencrate help`, with every usage line verbatim; other
+    pages link to it instead of restating flags.
+  - `docs/models.md`: model sets, presets, reasoning effort, and the chat
+    template.
+  - `docs/agent-sets.md`: the shipped agent sets, the manifest keys, and
+    upgrading a set.
+  - `docs/agents.md`: agents, skills, the container's filesystem and mount
+    limits, and the first-request token costs.
+  - `docs/privacy.md`: what leaves the machine, the telemetry switches, and
+    the network layout with its limits (the forwarder rules and the Docker
+    gateway mode).
+  - `docs/configuration.md`: the storage layout with the retained
+    agent-home directories and their tmpfs limits, the pins in `pins.env`
+    with the image names, the built-in chat UI defaults, when a setting
+    takes effect, and the upgrade procedure. `.env.example` is the settings
+    reference.
+  - `docs/validation.md`: the validation procedures, the only status text
+    (the claims table with its evidence terms expected, validated, and
+    unverified, and the "Still unverified" list), the router
+    behavior the wrapper relies on, and the dated records. Other pages link
+    to `docs/validation.md#status` instead of restating status.
+  - `docs/troubleshooting.md`: observed failures.
+  - `SECURITY.md`: the scope statement, the reporting channel, and the
+    credentials rule.
+- The project has no glossary, no terminology register, and no changelog
+  before the first tagged release; Git history records changes.
 - Verification: `bash tests/static.sh` is the engine-free gate for code,
-  configuration, Compose, and documentation changes, and
-  `python3 tests/integration.py` runs the package against real containers;
+  configuration, Compose, and documentation changes;
+  `python3 tests/integration.py` runs the package against real containers.
   `CONTRIBUTING.md` says what each runs and which changes need which. The
-  gate checks links, anchors, the README index, and the usage lines; the
-  facts in the prose are checked by hand against the implementation.
+  gate checks links, anchors, the README index, and the usage lines; check
+  the facts in the prose by hand against the implementation.
 
 ## Documentation review gate
 
-Load the `documentation-guidelines` skill from
-[SkillCrate](https://github.com/angelo-lesniak/skill-crate) from your own
-skills directory before you write, restructure, or review documentation,
-or change anything user-visible: behavior, commands, configuration,
-defaults, setup, compatibility, security, privacy, or validation claims
-(`CONTRIBUTING.md` says how each kind of agent obtains it). The skill's
-`SKILL.md` is the workflow and its
-`references/documentation-guidelines.md` the policy; the repository facts
-the workflow asks for are the section above.
+Before you write, restructure, or review documentation, or change anything
+user-visible (behavior, commands, configuration, defaults, setup,
+compatibility, security, privacy, or validation claims), load the
+`documentation-guidelines` skill from
+[SkillCrate](https://github.com/angelo-lesniak/skill-crate);
+`CONTRIBUTING.md` says how to obtain it. Its `SKILL.md` is the workflow and
+its `references/documentation-guidelines.md` the policy; the section above
+gives the repository facts the workflow asks for.
 
 When changes are authorized, update the existing canonical page. During
 review-only tasks, report missing, stale, conflicting, or misplaced

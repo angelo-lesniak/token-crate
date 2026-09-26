@@ -1,20 +1,11 @@
-.git
-.github
-.env
-.idea
-.vscode
-data
-local/*
-!local/agent-sets
-reports
-build/*
-!build/agents
-docs
-tests
-tokencrate
-**/__pycache__/
-**/*.py[cod]
-# A set installs its packages in the image with `npm ci`; a node_modules a
-# maintainer left in the set directory would be copied over that install.
+# The build context is an allowlist: only what a Dockerfile copies. A set
+# installs its packages in the image with `npm ci`; a node_modules a
+# maintainer left in a set directory would be copied over that install.
+*
+!services/
+!config/agent-sets/
+!local/agent-sets/
+!build/agents/pi/
+build/agents/pi/.staging-*
 config/agent-sets/*/node_modules
 local/agent-sets/*/node_modules

@@ -13,6 +13,12 @@ build = [
   "rm -rf /tmp/warm /tmp/NuGetScratchroot /root/.dotnet /root/.nuget /root/.local",
   "chmod -R a+rX /opt/nuget",
 ]
+# The xunit template is the one whose packages are not part of the SDK.
+check = [
+  "dotnet new xunit --name check --output xunit >/dev/null",
+  "dotnet build xunit --nologo -v quiet >/dev/null",
+  'echo "dotnet $(dotnet --version) builds the xunit template from the cached packages"',
+]
 note = "dotnet SDK with csharp-ls (language server) and netcoredbg (debug adapter, .cs). NuGet restore defaults to the read-only image cache (console, classlib, xunit, and web templates). Uncached packages need --egress, an explicit source, and NUGET_PACKAGES set to a writable directory in the project."
 
 [[asset]]

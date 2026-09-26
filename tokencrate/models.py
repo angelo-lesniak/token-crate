@@ -19,7 +19,6 @@ import os
 import re
 import shutil
 import stat
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,10 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import TokenCrateError
-from .names import SET_NAME_RE, SHA256_RE, load_catalog
+from .names import SET_NAME_RE, SHA1_RE, SHA256_RE, load_catalog, read_toml, relative_path
+from .names import description as read_description
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 MODEL_CARD_URL_RE = re.compile(
     r"^https://huggingface\.co/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/blob/[0-9a-f]{40}/README\.md$"
 )
@@ -95,17 +94,6 @@ class ModelSet:
         return tuple(model_file for model_file in self.files if model_file.role == "split")
 
 
-def safe_relative_path(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise TokenCrateError(f"{field} must be a non-empty path")
-    if "\\" in value or any(ord(character) < 32 for character in value):
-        raise TokenCrateError(f"{field} contains unsupported characters: {value!r}")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
-        raise TokenCrateError(f"{field} must be a safe relative path: {value!r}")
-    return path.as_posix()
-
-
 def require_keys(table: dict, allowed: set[str], context: str) -> None:
     unknown = set(table) - allowed
     if unknown:
@@ -125,32 +113,9 @@ def read_manifest(path: Path) -> ModelSet:
         raise TokenCrateError(f"unsafe model-set filename: {path.name}")
     if name == "all":
         raise TokenCrateError("all is reserved and cannot be a model-set filename")
-    try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
-        raise TokenCrateError(f"could not read {path}: {error}") from error
-    if not isinstance(document, dict):
-        raise TokenCrateError(f"{path} must contain a TOML table")
-    require_keys(
-        document,
-        {
-            "schema",
-            "description",
-            "upstream_model",
-            "model_card",
-            "mtp",
-            "chat_template_file",
-            "license",
-            "file",
-            "requires",
-        },
-        name,
-    )
-    if document.get("schema") != 1:
-        raise TokenCrateError(f"{name}: schema must be 1")
-    description = document.get("description")
-    if not isinstance(description, str) or not description.strip():
-        raise TokenCrateError(f"{name}: description must be a non-empty string")
+    known = {"schema", "description", "upstream_model", "model_card", "mtp", "chat_template_file", "license", "file"}
+    document = read_toml(path, known | {"requires"}, name)
+    description = read_description(document, name)
     model_card = document.get("model_card")
     if not isinstance(model_card, str) or MODEL_CARD_URL_RE.fullmatch(model_card) is None:
         raise TokenCrateError(f"{name}: model_card must be an immutable Hugging Face README URL")
@@ -209,13 +174,13 @@ def read_manifest(path: Path) -> ModelSet:
             raise TokenCrateError(f"{name}: file {index} role must be one of {', '.join(ROLES)}")
         repository = raw.get("repository")
         revision = raw.get("revision")
-        source = safe_relative_path(raw.get("source"), f"{name} file {index} source")
+        source = relative_path(raw.get("source"), "source", f"{name} file {index}")
         if not isinstance(repository, str) or not REPOSITORY_RE.fullmatch(repository):
             raise TokenCrateError(f"{name}: file {index} has an invalid repository")
-        if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
+        if not isinstance(revision, str) or not SHA1_RE.fullmatch(revision):
             raise TokenCrateError(f"{name}: file {index} revision must be a full lowercase commit")
         destination = raw.get("destination", f"{repository}/{source}")
-        destination = safe_relative_path(destination, f"{name} file {index} destination")
+        destination = relative_path(destination, "destination", f"{name} file {index}")
         size = raw.get("size")
         digest = raw.get("sha256")
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
@@ -716,13 +681,13 @@ def draft(spec: str, token: str | None) -> str:
     if match is None:
         raise TokenCrateError("draft needs hf:<owner>/<repository>:<file.gguf>")
     repository = match.group("repository")
-    wanted = safe_relative_path(match.group("file"), "draft file")
+    wanted = relative_path(match.group("file"), "file", "draft")
     if not wanted.endswith(".gguf"):
         raise TokenCrateError("draft only supports GGUF files")
     encoded = urllib.parse.quote(repository, safe="/")
     payload = hub_json(f"{HUB_URL}/api/models/{encoded}/revision/main?blobs=true", token)
     revision = payload.get("sha")
-    if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
+    if not isinstance(revision, str) or not SHA1_RE.fullmatch(revision):
         raise TokenCrateError("Hugging Face did not report a commit for the main branch")
     siblings = {
         item["rfilename"]: item

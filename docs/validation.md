@@ -12,42 +12,43 @@ procedure before reusing a result.
 
 ## Status
 
-The table summarizes the [records](#records). The [PI WEB](#pi-web) and
-[Paseo](#paseo) records cover individual UIs; the
-[local services record](#local-services-and-agent-builds) covers both UIs
-running independently on the CPU, and
-[Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools)
-covers all four clients on the GPU.
+The table summarizes the [records](#records).
 
-- **Supported**: the project intends to maintain the stated feature, version,
-  or environment. This is a maintenance promise, not proof that it works.
-- **Expected**: technical evidence supports the claim, but no recorded
-  validation run has confirmed it.
 - **Validated**: a defined procedure passed, with a record in
   [Records](#records).
-- **Unverified**: no recorded evidence supports the claim yet.
+- **Expected**: technical evidence supports the claim, but no recorded
+  validation run confirms it.
+- **Unverified**: no recorded evidence supports the claim.
 
 | Claim | Term | Engine and host | Record |
 | --- | --- | --- | --- |
-| The CLI refuses a malformed `LLM_PORT`, `--sets` with oh-my-pi, a repeated single-valued flag, a benched preset named twice, an unknown default preset, and `ui stop` of an unknown set, each with one sentence and before the pre-flight | Validated | RTX 5090, rootless Podman 6.1.1 | [The pre-release polish pass](#the-pre-release-polish-pass) |
-| A browser UI stops through its launcher's signal handler in 1 to 3 seconds rather than through the container's 20-second stop grace period, and the pi image supervising a UI runs 4 processes for PI WEB and 11 for Paseo against its 512 `pids_limit` | Validated | RTX 5090, rootless Podman 6.1.1 | [The pre-release polish pass](#the-pre-release-polish-pass) |
-| Local model and UI API requests bypass host HTTP proxies; the ordinary urllib transport retains proxy handling | Validated | Python 3.14.7, engine-free harness with loopback listeners | [Local services and agent builds](#local-services-and-agent-builds) |
-| Whole-stack shutdown removes live terminal agents, the model, and all project networks; startup succeeds afterwards | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2, CPU fixture | [Local services and agent builds](#local-services-and-agent-builds) |
-| HTTP and WebSocket authorization accepts implicit and explicit port 80 for the exact loopback authorities and rejects foreign hosts, origins, sibling ports, and disallowed Fetch Metadata | Validated | Node.js 24.20.0, engine-free harness with unprivileged listeners | [HTTP authorities and label discovery](#http-authorities-and-label-discovery) |
-| Terminal pi and omp in RPC mode, PI WEB through its HTTP API, and Paseo through its daemon CLI answer sequentially while all clients stay alive, with one unchanged router and loaded model process | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2, CPU fixture; RTX 5090 on the shipped preset | [Local services and agent builds](#local-services-and-agent-builds), [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
-| Both terminal agents cannot reach either live UI or forwarder by name or effective container address, with and without egress | Validated | Both engines, CPU fixture | [Local services and agent builds](#local-services-and-agent-builds) |
+| The CLI refuses a malformed `LLM_PORT`, `--sets` with oh-my-pi, a repeated single-valued flag, a benched preset named twice, an unknown default preset, and `ui stop` of an unknown set, each with one sentence and before the pre-flight | Validated | RTX 5090, rootless Podman 6.1.1 | [CLI refusals](#cli-refusals) |
+| A terminal agent of another project, with or without `--egress`, cannot resolve or reach a running UI started without `--egress` or `--cloud`, or its forwarder, by name or effective container address, and its check finds nothing but the routes out it asked for. On rootless Podman that holds while the internal bridges keep IPv4 forwarding off, which is the case for bridges created after forwarding was switched on in the engine's network namespace; on Docker the internal networks have no gateway address | Validated | RTX 5090, rootless Podman 6.1.1 and 6.1.2; Docker Engine 29.7.2 without a GPU | [Egress sessions and the UI networks](#egress-sessions-and-the-ui-networks), [Cross-project containment](#cross-project-containment), [Docker Engine](#docker-engine), [The internal bridges of the virtual machine](#the-internal-bridges-of-the-virtual-machine) |
+| `agent pi --cloud` refuses a missing keys file, a directory, a file inside the project, and oh-my-pi, each with one sentence before the pre-flight; the file reaches the named session container through the `run`'s own `-v`, read-only, with no key value in `inspect` or on the command line; the entrypoint exports its lines, refuses a malformed one, and pi offers the keyed provider's bundled catalogue; `--egress` alone offers no cloud model | Validated | Arch Linux VM, rootless Podman 6.1.2, placeholder key; RTX 5090, rootless Podman 6.1.2, an OpenRouter key with a free model answering | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
+| A `SIGTERM` or `SIGHUP` to the wrapper of a running `agent` session stops the session container and leaves no Compose provider process; `Ctrl-C` ends the session with status 130 | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
+| The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
+| `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
+| An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
+| An oh-my-pi session sends the Anthropic key to the address a project's `.env` or `.env.local` names (8 requests to a listener inside the container with the file, 0 without), so `agent omp --cloud` is refused | Validated | Arch Linux VM, rootless Podman 6.1.2, pinned oh-my-pi image offline | [oh-my-pi and project env files](#oh-my-pi-and-project-env-files) |
+| Local model and UI API requests bypass host HTTP proxies; the ordinary urllib transport retains proxy handling | Validated | Python 3.14.7, engine-free harness with loopback listeners | [The harnesses and the CPU runs on both engines](#the-harnesses-and-the-cpu-runs-on-both-engines) |
+| Whole-stack shutdown removes live terminal agents, the model, and all project networks; startup succeeds afterwards | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2, CPU fixture | [The harnesses and the CPU runs on both engines](#the-harnesses-and-the-cpu-runs-on-both-engines) |
+| HTTP and WebSocket authorization accepts implicit and explicit port 80 for the exact loopback authorities and rejects foreign hosts, origins, sibling ports, and disallowed Fetch Metadata | Validated | Node.js 24.20.0, engine-free harness with unprivileged listeners | [The harnesses and the CPU runs on both engines](#the-harnesses-and-the-cpu-runs-on-both-engines) |
+| Terminal pi and omp in RPC mode, PI WEB through its HTTP API, and Paseo through its daemon CLI answer sequentially while all clients stay alive, with one unchanged router and loaded model process | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2, CPU fixture; RTX 5090 on the shipped preset | [The harnesses and the CPU runs on both engines](#the-harnesses-and-the-cpu-runs-on-both-engines), [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
 | The nine loadable presets in the linked record run through CDI, pass every `smoke` check (including streamed tool calls and mid-conversation system messages), and hold 3 to 7 GiB less than `[requires]`. `bench` measures the MTP preset at about twice the generation speed of the two-slot preset using the same file | Validated | RTX 5090, driver 610.57.04, rootless Podman 6.1.1 | [The llama API and the presets](#the-llama-api-and-the-presets) |
+| `qwen3.8-27b-q4-mtp-long` and `qwen3.8-27b-q4-uncensored-mtp-long` pass every `smoke` check, report a 128K context, hold 22.5 GiB against 28 GiB declared with the slot empty and with 119,009 prompt tokens in it, find a code near the start of that prompt, reuse all but the new tokens on the next turn, and generate at the speed of their 64K MTP siblings, twice `qwen3.8-27b-q4-long` | Validated | RTX 5090, driver 615.71.09, rootless Podman 6.1.2 | [The 128K MTP presets](#the-128k-mtp-presets) |
 | `gpt-oss-20b-small` and `qwen3.8-27b-q3-small` pass every `smoke` check and hold 12.7 and 13.5 GiB, 2.3 and 1.5 GiB less than the 15 GiB they declare | Validated | RTX 5090, driver 610.57.04, rootless Podman 6.1.1 | [The 16 GB presets](#the-16-gb-presets) |
 | The 96 GB tier and the 27B variants hold less than `[requires]` and pass every `smoke` check; Flash-Next reuses a session's growing prompt, and the settings behind `n_cpu_moe`, the 2048 micro-batch, and the unset `load-mode` are measured | Validated | RTX 5090 with 96 GB of RAM | [The settings of the 96 GB RAM tier](#the-settings-of-the-96-gb-ram-tier) |
-| The pi image renders and builds for `coding`, `coding,debug,dotnet,web,browser`, and `coding,debug,odin` from the pinned Node base image; each passes the agent check with the toolchain probes; prompts complete on CPU and GPU, with answers checked in the GPU record | Validated | Rootless Podman, with and without a GPU; Docker Engine 29.7.2 without one | [pi and the agent sets](#pi-and-the-agent-sets), [The CPU integration check](#the-cpu-integration-check), [Docker Engine](#docker-engine) |
+| The pi image renders and builds for `coding`, `coding,debug,dotnet,web,browser`, and `coding,debug,odin` from the pinned Node base image; each passes the agent check, whose per-set lines come from the sets' `check` scripts; prompts complete on CPU and GPU, with answers checked in the GPU record | Validated | Rootless Podman, with and without a GPU; Docker Engine 29.7.2 without one | [pi and the agent sets](#pi-and-the-agent-sets), [The CPU integration check](#the-cpu-integration-check), [Docker Engine](#docker-engine) |
 | Both agents run on the GPU with one scripted prompt each: pi edits and commits a file, every agent check passes for the default and the toolchain selections and for oh-my-pi, and both resume a transcript with `--continue` in a new container | Validated | RTX 5090, rootless Podman 6.1.1 | [pi and the agent sets](#pi-and-the-agent-sets), [oh-my-pi](#oh-my-pi) |
 | The thinking levels reach the Qwen template; on a task that needs reasoning the 27B generated monotonically more tokens at each level, and on a one-line answer the level made no difference (the effort is an instruction, not a budget) | Validated | RTX 5090 | [pi and the agent sets](#pi-and-the-agent-sets) |
-| `ui pi-web` and `ui paseo` start from their sets, answer through the forwarder on loopback, refuse a foreign origin, and run one prompt through pi | Validated | Rootless Podman 6.1.1 with the GPU; both engines without one | [PI WEB](#pi-web), [Paseo](#paseo), [Docker Engine](#docker-engine) |
+| `ui pi-web` and `ui paseo` start from their sets, answer through the forwarder on loopback, refuse a foreign origin, and run one prompt through pi | Validated | Rootless Podman 6.1.1 with the GPU and 6.1.2 without one; Docker Engine 29.8.1 without one | [PI WEB](#pi-web), [Paseo](#paseo), [Browser UIs with --egress and --cloud](#browser-uis-with---egress-and---cloud) |
+| `ui <set>` starts the UI and its forwarder with `compose run` as `tokencrate-ui-<set>` and `tokencrate-ui-forward-<set>`, a relaunch replaces only that set, and `ui stop` and `down` remove both | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.8.1; RTX 5090, rootless Podman 6.1.2 | [Browser UIs with --egress and --cloud](#browser-uis-with---egress-and---cloud), [The CPU integration check](#the-cpu-integration-check) |
+| With `ui <set> --cloud` the keys file is mounted read-only through the `run`'s `-v` with `TOKENCRATE_CLOUD=1` and no key value in `inspect`; the UI sits on `ui` and `default` with the forwarder on `ui` and `ui-publish` alone; `status` ends the line with `cloud`; the launcher and the UI daemons hold the key and offer the keyed provider; an offline sibling UI reaches the cloud UI over `ui`; a relaunch without the flag drops the mount and the network; on Docker the host reaches the cloud UI's default-network address past the forwarder's `Host` check; on the GPU host `ui paseo --cloud` with an OpenRouter key answers `CLOUD_OK` from a free model through Paseo's daemon | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.8.1, placeholder key; RTX 5090, rootless Podman 6.1.2, an OpenRouter key | [Browser UIs with --egress and --cloud](#browser-uis-with---egress-and---cloud) |
+| With a `--cloud` UI running, `smoke --agent pi --egress` reports `[info]` for the UI's name and its default-network address and `not reachable` for its `ui` address and its forwarder, with 0 failures; `smoke --agent pi` reports every UI target `not reachable` with 0 failures | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.8.1; RTX 5090, rootless Podman 6.1.2 | [Browser UIs with --egress and --cloud](#browser-uis-with---egress-and---cloud) |
 | PI WEB answers successive sessions, reopens its transcript after a restart, runs browser terminal panels, and shares a project with a terminal agent; Paseo answers after recreation and keeps its identity | Validated | RTX 5090, rootless Podman 6.1.1 | [PI WEB](#pi-web), [Paseo](#paseo) |
-| A terminal agent of another project cannot resolve a running UI or its forwarder, with or without `--egress`, and its agent check finds nothing but the three egress routes it asked for; on Docker the internal networks have no gateway address | Validated | Both engines | [Cross-project containment](#cross-project-containment), [Docker Engine](#docker-engine) |
-| `tests/integration.py` passes on the GPU: the fixture presets through the router, the full and basic probes with the swap between them, `bench`, the three pi selections and oh-my-pi contained and answering, each agent's thinking level reaching the template, and the four home lifecycles | Validated | RTX 5090, rootless Podman 6.1.1 | [The integration run and the home lifecycles](#the-integration-run-and-the-home-lifecycles) |
-| Agent homes keep transcripts, oh-my-pi blobs, and browser-UI state and identity through stop/start and recreation; live settings and other home files do not persist, and a terminal and a UI container on one project share transcripts only | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2 | [Local services and agent builds](#local-services-and-agent-builds) |
-| `tests/integration.py` passes on the CPU with the fixture models | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2, Arch Linux VM, no GPU | [The CPU integration check](#the-cpu-integration-check), [Docker Engine](#docker-engine) |
+| `tests/integration.py` passes on the GPU, every test except `test_concurrent_clients`: the fixture presets through the router, the full and basic probes with the swap between them, `bench`, the three pi selections answering, the four agent checks, each agent's thinking level reaching the template, and the four home lifecycles | Validated | RTX 5090, rootless Podman 6.1.1 | [The integration run and the home lifecycles](#the-integration-run-and-the-home-lifecycles) |
+| Agent homes keep transcripts, oh-my-pi blobs, and browser-UI state and identity through stop/start and recreation; live settings and other home files do not persist, and a terminal and a UI container on one project share transcripts only | Validated | Rootless Podman 6.1.1 and Docker Engine 29.7.2 | [The integration run and the home lifecycles](#the-integration-run-and-the-home-lifecycles) |
+| `tests/integration.py` passes on the CPU with the fixture models | Validated | Rootless Podman 6.1.1 and 6.1.2 and Docker Engine 29.7.2, Arch Linux VM, no GPU | [The CPU integration check](#the-cpu-integration-check), [Docker Engine](#docker-engine) |
 | Four clients answer in turn on the shipped MTP preset with one unchanged router and model process, each forwarder refuses foreign and sibling authorities, and a second client queues behind the first: one request takes 7.5 seconds alone and two issued together 14.6 seconds, at unchanged generation speed | Validated | RTX 5090, rootless Podman 6.1.1 | [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
 | The default preset serves a coding session of a dozen turns in its 64K slot: pi compacts the prompt when it fills and continues, and a session whose turns read 20 KB files refills the slot within two turns; one overflow compaction at 63,312 tokens failed because its summary hit the token cap | Validated | RTX 5090 | [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
 | A GPU session calls `lens_diagnostics`, the `debug` tool over js-debug, the subagent tool, and the browser tools | Validated | RTX 5090, rootless Podman 6.1.1 | [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
@@ -55,31 +56,48 @@ covers all four clients on the GPU.
 | Long sessions stay far inside the 256 MiB home tmpfs: 424 KiB after twelve pi turns, and oh-my-pi keeps its growth in the retained directories on disk (8.6 MiB after six turns) | Validated | RTX 5090, rootless Podman 6.1.1 | [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
 | oh-my-pi starts on the selected preset at `xhigh` without its onboarding wizard, and its model picker saves a choice for the session: the entrypoint writes its settings into the home, where the picker's rewrite lands, and keeps the repository file as the overlay above it | Validated | RTX 5090, rootless Podman 6.1.1 | [Four clients, long sessions, and the tools](#four-clients-long-sessions-and-the-tools) |
 | The abliterated 27B does not loop in longer runs: five of six long completions ended on their own, exactly as on the shipped preset, and a six-turn session ended every turn | Validated | RTX 5090 | [The settings of the 96 GB RAM tier](#the-settings-of-the-96-gb-ram-tier) |
-| `load-mode = "none"` on Flash-Next doubles prompt processing in an agent session too, and leaves the host 5 GiB of memory and 32 GiB of swap in use; the presets keep the memory map | Validated | RTX 5090 with 96 GB of RAM | [The settings of the 96 GB RAM tier](#the-settings-of-the-96-gb-ram-tier) |
+| `load-mode = "none"` on Flash-Next doubles prompt processing, also measured after a six-turn agent session, and leaves the host 5 GiB of available memory with 32 GiB of swap in use; the presets keep the memory map | Validated | RTX 5090 with 96 GB of RAM | [The settings of the 96 GB RAM tier](#the-settings-of-the-96-gb-ram-tier) |
 | Either 16 GB preset runs on a 16 GB card: both were measured on a 32 GB one, and the fit follows from what they held | Expected | RTX 5090 | [The 16 GB presets](#the-16-gb-presets) |
 | Loading and inference with `glm-5.3-flash-q2` and `glm-5.3-flash-q2-uncensored` on a build with `glm5next`; the pinned build lacks the architecture, and the preset settings await smoke and benchmark measurements | Unverified | RTX 5090 with 96 GB of RAM | [The GLM-5.3-Flash presets](#the-glm-53-flash-presets) |
-| Docker Engine 29.7.2 with Compose 5.5.1 runs every part of the procedure that needs no GPU: `doctor`, `tests/integration.py` to completion with a first build of the agent images on Docker's store, the agent checks of the `pi-web` and `paseo` sets, both UIs through the forwarder, the cross-project check, and the four home lifecycles; the Compose files render with the Docker CLI in the static gate | Validated | Docker Engine 29.7.2, Arch Linux VM, no GPU | [Docker Engine](#docker-engine) |
+| Docker Engine 29.7.2 and 29.8.1 with Compose 5.5.1 run every part of the procedure that needs no GPU: `doctor`, `tests/integration.py` to completion with a first build of the agent images on Docker's store, the agent checks of the `pi-web` and `paseo` sets, both UIs through the forwarder, the cross-project check, and the four home lifecycles; the Compose files render with the Docker CLI in the static gate | Validated | Docker Engine 29.7.2 and 29.8.1, Arch Linux VM, no GPU | [Docker Engine](#docker-engine), [Browser UIs with --egress and --cloud](#browser-uis-with---egress-and---cloud) |
 | Gateway mode `isolated` keeps host services off the agents network on Docker Engine versions between 28 and 29.6; only 29.7.2 has a record, where the agent check also found no default route and no external name resolution. The mode is documented from 28 on and `doctor` checks for 28 | Expected | Docker Engine 29.7.2 | [Docker Engine](#docker-engine) |
 
 ### Still unverified
 
-These checks remain open. Passing the engine-free gate or CPU integration
-does not complete them:
+The engine-free gate and the CPU integration check do not cover these:
 
-- the GLM presets on a llama.cpp release that carries `glm5next`: run the
-  fallback ladder of `glm-5.3-flash-q2`, then `glm-5.3-flash-q2-uncensored`,
-  each with `smoke` and `bench`, and record the build number with the
-  numbers;
+- the GLM presets on a llama.cpp release that carries `glm5next`: run
+  `glm-5.3-flash-q2`, then `glm-5.3-flash-q2-uncensored`, each with
+  `smoke` and `bench`, and record the build number with the results;
 - Docker Engine with the GPU, and the Docker integration workflow in CI;
-  the GPU host has no Docker Engine installed;
-- a task that a subagent or the `debug` tool carries through to the end:
-  the [GPU record](#four-clients-long-sessions-and-the-tools) shows both
-  tools running, and the model finished neither task;
-- whether the `[requires]` values of the presets no session has filled
-  leave the right headroom; the default preset held the same 20.1 GiB
-  with an empty and a full 64K slot;
-- the UI launchers' readiness timeouts, which report a daemon that
-  never answers: no recorded run has had one fail to start.
+  the GPU host has no Docker Engine;
+- a task that the `debug` tool carries through to the end: the [GPU
+  record](#four-clients-long-sessions-and-the-tools) shows the tool
+  running, but the model did not finish the task;
+- whether the `[requires]` values of the presets that no session has
+  filled leave the right headroom; the default preset held the same
+  20.1 GiB with an empty and a full 64K slot, and the three 128K Q4
+  presets the same with an empty and a 91 percent full slot ([their
+  record](#the-128k-mtp-presets));
+- the UI launchers' readiness timeouts for a daemon that never answers:
+  no recorded run had a daemon fail to start;
+- the provider in pi's interactive model picker, a cloud answer through
+  PI WEB's browser session or Paseo's create-agent form, and the
+  reported cost: every recorded cloud answer came from a scripted prompt
+  on a free model, which reports no cost;
+- on Docker Engine, that a `SIGTERM` to the wrapper stops the named
+  session container, and the llama API's CORS setting; both records are
+  from rootless Podman;
+- the router observations that the wrapper relies on
+  ([Router behavior](#router-behavior-the-wrapper-relies-on)) were read
+  on build b10920; the pinned b11028 confirms readiness, swapping, and
+  the preset file through the CPU integration check, not the failure
+  codes, the offline behavior, or the image details;
+- that `up` sets up the model's non-internal network before the internal
+  ones on every host, which is what keeps IPv4 forwarding off on the
+  internal bridges of rootless Podman ([the VM
+  record](#the-internal-bridges-of-the-virtual-machine)); `smoke --agent
+  pi --egress` with a browser UI running is the per-host check.
 
 ## Environment
 
@@ -89,23 +107,26 @@ The pins under test, as `bash bin/tokencrate pins` prints them:
 `OMP_VERSION=18.2.5`, `NODE_TAG=26.9.0-bookworm-slim`,
 `BUN_TAG=1.4.2-slim`, `CUDA_MIN_DRIVER_MAJOR=580`, each image with the
 digest in `pins.env`. The agent sets pin PI WEB 1.202609.0, Paseo 0.8.0,
-the .NET SDK 10.0.401, Chromium 153.0.8010.52, and Odin
-`dev-2026-08-nightly:902106f`. Unless a record states otherwise, agent
+the .NET SDK 10.0.401, and Odin `dev-2026-08-nightly:902106f`; the runs
+used Debian's Chromium 153.0.8010.52, which the `browser` set installs
+unpinned. Unless a record states otherwise, agent
 sessions used `LLM_AGENT_SETS=coding`, with
 `LLM_SKILL_SETS=pocock-core,skill-crate`, and on the GPU with the model
 set `qwen3.8-27b-ud-q4-k-xl` and the preset `qwen3.8-27b-q4-mtp`
 (`n_ctx` 65536).
 
 Two machines appear in the records. **The GPU host** is Linux x86-64
-(kernel 7.2.4) with an NVIDIA GeForce RTX 5090 (32607 MiB, driver
-610.57.04, CUDA 13.3, CDI device `nvidia.com/gpu=all`), 93.35 GiB of
-system memory (MemTotal 97883376 kB) and 46 GiB of swap, rootless Podman
-6.1.1 with podman-compose 1.6.0, `crun`, and netavark 2.1.0, Python
-3.14.7, host UID:GID `1000:1000` with `keep-id`, and no Node.js, so the
-engine-free gate cannot run there. **The virtual machine** is Arch Linux
-(kernel 7.2.4) with no GPU, rootless Podman
-6.1.1 with `crun` and podman-compose 1.6.0, Docker Engine 29.7.2 with
-Compose 5.5.1 for the Docker runs, Python 3.14.7, Node.js, and Ruff.
+(kernel 7.2.4 or 7.2.6) with an NVIDIA GeForce RTX 5090 (32607 MiB,
+driver 610.57.04, CUDA 13.3, CDI device `nvidia.com/gpu=all`), 93.35 GiB
+of system memory (MemTotal 97883376 kB) and 46 GiB of swap, rootless
+Podman 6.1.1 or 6.1.2 with podman-compose 1.6.0, `crun`, and netavark
+2.1.0, Python 3.14.7, host UID:GID `1000:1000` with `keep-id`, and no
+Node.js, so the engine-free gate cannot run there. **The virtual
+machine** is Arch Linux (kernel 7.2.4 or 7.2.6) with no GPU, rootless
+Podman 6.1.1 or 6.1.2 with `crun`, netavark 2.1.0, and podman-compose
+1.6.0, Docker Engine 29.7.2 with Compose 5.5.1 for the Docker runs,
+Python 3.14.7, Node.js, and Ruff. Each record names the versions of its
+run where they differ.
 The CPU and Docker integration records used 12 virtual CPUs and
 31.3 GiB of RAM. Each record names its relevant resource allocation.
 
@@ -169,9 +190,9 @@ python3 tests/integration.py -k home_lifecycle
 ```
 
 This selects the pi, oh-my-pi, PI WEB, and Paseo home checks, with the
-integration setup and `down` around them; see
-[setup requirements](../CONTRIBUTING.md#tests). The checks themselves use
-no model.
+integration setup and `down` around them;
+[CONTRIBUTING.md](../CONTRIBUTING.md#tests) lists what the setup needs.
+The checks themselves use no model.
 
 Each check renders the production agent service through the wrapper and
 keeps its tmpfs, hardening, user mapping, and retained mounts. It uses the
@@ -196,31 +217,28 @@ Run on both engines after a change to the Compose networks, the forwarder,
 or the agent check. Copy `tests/fixtures/model-sets/ci-small.toml` into
 `config/model-sets/` and `tests/fixtures/presets/ci-small.toml` into
 `config/presets/`, set `LLM_DEFAULT_PRESET=ci-small` (and `LLM_GPU=false`
-on a host without a GPU), create two scratch projects A and B below the
-home directory, then:
+on a host without a GPU), and create a scratch project A below the home
+directory. On a host with a GPU and the shipped model set, name the
+loaded preset with `--preset` instead of copying the fixture.
+`smoke --agent` runs its check in a scratch project of its own, which
+stands for the other project. Then:
 
 1. `bash bin/tokencrate up --model-set ci-small`, then
    `bash bin/tokencrate ui pi-web --dir A` and
    `bash bin/tokencrate ui paseo --dir A`.
 2. `bash bin/tokencrate smoke --agent pi`: the check must report that
-   every active UI service and forwarder is unreachable by name and
+   every active UI container and forwarder is unreachable by name and
    current container address and, on Docker, that the agents network has
    no gateway address.
-3. Run the agent check for project B without and with the egress
-   overlay (a terminal session cannot run a shell command through
-   `agent`, so the script starts the container the way the wrapper
-   does and passes the active UI names and addresses into the image's
-   agent check):
-
-   ```bash
-   .venv/bin/python tests/manual/cross-project-check.py B
-   ```
-
-   Without egress every line must pass. With egress the route checks
-   fail by design; every UI peer must still be unreachable. On a host
-   with a GPU and the shipped model set, name the loaded preset as the
-   second argument instead of copying the fixture.
-4. `bash bin/tokencrate ui stop`, `bash bin/tokencrate down`, and remove
+3. `bash bin/tokencrate smoke --agent pi --egress`: the check starts the
+   container with the egress overlay, as `agent --egress` does. A default
+   route must exist, and every UI peer must still be unreachable.
+4. `bash bin/tokencrate ui pi-web --egress --dir A`, then the check with
+   `--egress` again: the UI's name and its address on the default
+   network are reported as `[info] ... that UI was started with
+   --egress`, its address on the `ui` network and its forwarder stay
+   `not reachable`, and the check without `--egress` reports 0 failures.
+5. `bash bin/tokencrate ui stop`, `bash bin/tokencrate down`, and remove
    the fixture copies.
 
 ### Independent-client check
@@ -235,34 +253,39 @@ python3 tests/integration.py -k concurrent_clients
 ```
 
 `tests/concurrent_clients.py` keeps pi and omp alive in RPC mode,
-creates a fresh PI WEB session through its published API, and drives a
-Paseo session through the daemon. It checks assistant messages and the
+creates a PI WEB session through its published API, and drives a Paseo
+session through the daemon. It checks the assistant messages and the
 effective `ci-small` model, including Paseo's saved provider model and
-that invocation's own transcript. It repeats the pi prompt, checks both
-UI IDs, and compares router/model PIDs and kernel start times within an
-unchanged router container. It also exercises targeted stops, retained
-state, project and image changes, near-simultaneous starts, occupied
-ports, failed custom-set launches, both forwarders' Host/Origin checks,
-and name/address containment from both terminal agents with and without
-egress.
+transcript, repeats the pi prompt, and compares router and model PIDs
+and kernel start times within an unchanged router container. It also
+exercises targeted stops, retained state, project and image changes,
+near-simultaneous starts, occupied ports, failed custom-set launches,
+both forwarders' Host and Origin checks, and name and address
+containment from both terminal agents with and without egress.
+
+`TOKENCRATE_CONCURRENT_AGENTS` selects the terminal clients kept alive in
+RPC mode: `pi,omp` by default. CI sets `pi`, because omp's first prompt,
+about 16,000 tokens, takes six to eleven minutes on the runner's CPU;
+`RPC_TIMEOUT` (default 1200 seconds) bounds each RPC answer. The
+containment probes run from both agents in either case.
 
 For browser and terminal-screen acceptance, follow the
 [four-client workflow](agents.md#use-four-clients-with-one-model) with
 separate conversations. Confirm the effective preset in each client,
-especially Paseo's retained profile; wait for PI WEB's title request
-before the next prompt. Record actual assistant responses, router and
+especially Paseo's retained profile, and wait for PI WEB's title request
+before the next prompt. Record the assistant responses, router and
 model-process identities, UI IDs, and listener addresses before and
-after. Test the defaults separately from free-port integration runs.
-A banner, health response, or live process does not establish a prompt
-response. Keep GPU and browser claims unverified until those runs exist.
+after. Test the default ports separately from free-port integration
+runs. A banner, health response, or live process does not prove a
+prompt response; a GPU or browser claim needs such a run.
 
 ### Recording a result
 
 Add a section under [Records](#records), headed by the subject, with:
 
 - Purpose and the run date;
-- Environment: pins from `bash bin/tokencrate pins`, tested tree, engine
-  and version, GPU and driver; name differences from
+- Environment: pins from `bash bin/tokencrate pins`, the tree under
+  test, engine and version, GPU and driver; name differences from
   [Environment](#environment) instead of repeating it;
 - results, including the smoke and benchmark reports;
 - a closing "Not covered" paragraph.
@@ -328,7 +351,7 @@ caching off. "Held" is `nvidia-smi` after `smoke` minus what the desktop
 held before the run (995 MiB).
 
 - `doctor`: 20 `[ok]` lines, 0 failures and 0 warnings; the driver, the
-  CDI device, `Podman 6 keeps bridge networks apart`, and 32 GiB against
+  CDI device, the Podman version, and 32 GiB against
   the default preset's 24 GiB.
 - `up` rendered every preset except the two GLM ones and reported the
   default preset loaded in 7 seconds with the files on disk and the
@@ -352,7 +375,7 @@ held before the run (995 MiB).
   | `qwen3.8-27b-q4` | 18.8 GiB | 24 GiB |
   | `qwen3.8-27b-q4-long` | 21.1 GiB | 28 GiB |
   | `qwen3.8-27b-q4-mtp-f16kv` | 21.5 GiB | 25 GiB |
-  | `qwen3.8-27b-q4-mtp-uncensored` | 19.7 GiB | 24 GiB |
+  | `qwen3.8-27b-q4-uncensored-mtp` | 19.7 GiB | 24 GiB |
   | `qwen3.8-27b-q6-quality` | 25.9 GiB | 30 GiB |
   | `qwen3.8-flash-next-q4` | 26.2 GiB | 30 GiB |
   | `qwen3.8-flash-next-q4-uncensored` | 26.4 GiB | 30 GiB |
@@ -367,18 +390,23 @@ held before the run (995 MiB).
   | `qwen3.8-27b-q4` | 75, 74 | 1,350, 3,320 |
   | `qwen3.8-27b-q4-long` | 76, 75 | 2,089, 3,517 |
   | `qwen3.8-27b-q4-mtp-f16kv` | 143, 144 | 1,838, 3,205 |
-  | `qwen3.8-27b-q4-mtp-uncensored` | 151, 143 | 1,803, 3,221 |
+  | `qwen3.8-27b-q4-uncensored-mtp` | 151, 143 | 1,803, 3,221 |
   | `qwen3.8-27b-q6-quality` | 113, 100 | 1,000, 2,707 |
-  | `qwen3.8-flash-next-q4` | 34, 33 | 119, 740 |
+  | `qwen3.8-flash-next-q4` | 32, 31 | 98, 660 |
   | `qwen3.8-flash-next-q4-uncensored` | 34, 35 | 111, 774 |
   | `gpt-oss-20b-fast` | 264, 246 | 7,601, 22,449 |
 
   The MTP preset generated about twice as fast as the two-slot preset of
   the same file. A second run of both repeated the generation numbers
   within one percent; its prompt speeds differed by up to half, which is
-  cache state, not the preset. The `qwen3.8-flash-next-q4` row is from
-  the runs of [the 96 GB tier record](#the-settings-of-the-96-gb-ram-tier)
-  on llama.cpp build b10920; every other row is from the pinned build.
+  cache state, not the preset. The `qwen3.8-flash-next-q4` row is a
+  warmed measurement on driver 615.71.09: `smoke` loaded the preset
+  first, so the page faults of the memory map are not in the average;
+  the same short prompt directly after the load measured 79 prompt and
+  30 generation tokens per second. The `qwen3.8-flash-next-q4-uncensored`
+  row is from the runs of [the 96 GB tier
+  record](#the-settings-of-the-96-gb-ram-tier) on llama.cpp build
+  b10920; every other row is from the pinned build.
 
 Not covered: the two GLM presets, which the pinned build does not load
 ([The GLM-5.3-Flash presets](#the-glm-53-flash-presets)); the two
@@ -386,7 +414,7 @@ Not covered: the two GLM presets, which the pinned build does not load
 
 ### The 16 GB presets
 
-Purpose: the first GPU measurement of `gpt-oss-20b-small` and
+Purpose: the GPU measurement of `gpt-oss-20b-small` and
 `qwen3.8-27b-q3-small`, following the [NVIDIA host
 baseline](#nvidia-host-baseline) with the steps `init facts doctor up
 status presets down`. Environment: the GPU host; the desktop held 649 MiB
@@ -430,6 +458,75 @@ before the run, which "Held" subtracts. Date: 2026-09-20.
 Not covered: a 16 GB card, which no run here has; an agent session on
 either preset; what three bits cost the 27B on agent work.
 
+### The 128K MTP presets
+
+Purpose: the GPU measurement of `qwen3.8-27b-q4-mtp-long` and
+`qwen3.8-27b-q4-uncensored-mtp-long`, the 128K slot with MTP drafting,
+next to `qwen3.8-27b-q4-long` and `qwen3.8-27b-q4-uncensored-mtp`, with
+an empty and a nearly full slot. Environment: the GPU host on the shipped
+pins, driver 615.71.09, rootless Podman 6.1.2, the model files in the
+page cache. "Held" is `nvidia-smi` after `smoke` minus what the desktop
+held before `up` (960 MiB). Date: 2026-09-20.
+
+- `up` rendered 13 of 15 presets, the four under test among them, and
+  loaded the default preset in 7 to 8 seconds.
+- `smoke`: every check `pass` on all four presets, three times on
+  `qwen3.8-27b-q4-uncensored-mtp-long` and twice on
+  `qwen3.8-27b-q4-uncensored-mtp`. Every run ended both completions with
+  `stop`, so nothing looped in its reasoning, and the long presets report
+  `n_ctx` 131072.
+- Held against `[requires]`, with the slot empty and while a prompt of
+  119,009 tokens filled it:
+
+  | Preset | Held, empty | Held, 119,009 tokens | `[requires]` |
+  | --- | ---: | ---: | ---: |
+  | `qwen3.8-27b-q4-mtp` | 19.8 GiB | refused | 24 GiB |
+  | `qwen3.8-27b-q4-long` | 21.0 GiB | 21.0 GiB | 28 GiB |
+  | `qwen3.8-27b-q4-mtp-long` | 22.5 GiB | 22.5 GiB | 28 GiB |
+  | `qwen3.8-27b-q4-uncensored-mtp-long` | 22.4 GiB | 22.4 GiB | 28 GiB |
+
+  The cache is allocated when the preset loads, so a full slot adds
+  nothing (at most 4 MiB in one-second samples). Drafting costs the 128K
+  slot 1.5 GiB, and the 128K MTP presets hold 5.5 GiB less than they
+  declare. The default and `qwen3.8-27b-q4-long` repeated their figures
+  from [the preset record](#the-llama-api-and-the-presets).
+- `bench`, three iterations with a 262-token and a 6,052-token prompt,
+  prompt caching off, each pair in one report:
+
+  | Preset | Generation (short, long) | Prompt (short, long) |
+  | --- | --- | --- |
+  | `qwen3.8-27b-q4-long` | 76, 75 | 2,098, 3,499 |
+  | `qwen3.8-27b-q4-mtp-long` | 138, 154 | 1,804, 3,277 |
+  | `qwen3.8-27b-q4-uncensored-mtp` | 151, 141 | 1,778, 3,261 |
+  | `qwen3.8-27b-q4-uncensored-mtp-long` | 147, 142 | 1,714, 3,258 |
+
+  The 128K slot costs MTP nothing measurable: `qwen3.8-27b-q4-mtp-long`
+  generates at the default preset's 138 and 154 tokens per second from
+  the preset record, twice `qwen3.8-27b-q4-long`, and the abliterated
+  pair is within three percent of each other. `qwen3.8-27b-q4-long` and
+  `qwen3.8-27b-q4-uncensored-mtp` repeated their rows in that record
+  within two percent.
+- The nearly full slot: 5,049 numbered lines with an access code at line
+  151, 119,009 prompt tokens (91 percent of the slot), thinking off, and
+  a second turn on the same conversation:
+
+  | Preset | Turn 1 | Prompt tokens/s | Generation tokens/s | Code found | Turn 2 processed, reused |
+  | --- | ---: | ---: | ---: | --- | --- |
+  | `qwen3.8-27b-q4-long` | 63 s | 1,898 | 49 | yes | 32, 119,016 |
+  | `qwen3.8-27b-q4-mtp-long` | 68 s | 1,766 | 85 | yes | 31, 119,017 |
+  | `qwen3.8-27b-q4-uncensored-mtp-long` | 68 s | 1,756 | 88 | yes | 31, 119,017 |
+
+  Each answered `AZURE-7431` and ended with `stop`. On the second turn
+  the context checkpoints left only the new tokens to process. Drafting
+  kept its lead with the slot full, at 8 generated tokens per answer.
+  The second question asked for the line after line 100: the two MTP
+  presets answered `101`, `qwen3.8-27b-q4-long` answered `151`, one
+  sample each at temperature 1.0. The default refused the same prompt
+  with `400 ... exceeds the available context size (65536 tokens)`.
+
+Not covered: an agent session on either preset; answer quality over a
+full slot beyond one retrieval question.
+
 ### pi and the agent sets
 
 Purpose: the pi image for the three shipped selections, its agent check,
@@ -441,15 +538,21 @@ and the other selections reusing its cached layers.
 - `smoke --agent pi` for `coding`, `coding,debug,dotnet,web,browser`,
   and `coding,debug,odin`: `Agent check completed with 0 failure(s).`
   each time, with every containment line `[ok]`: the model endpoint
-  reachable, no default route, no route to `1.1.1.1`, no name resolution,
+  reachable, no route out (the route probes of the check as run there:
+  no default route, no route to an address literal, no name resolution),
   `agent-ui` and `ui-forward` not resolving, the gateway `10.89.1.1`
   answering from the user's network namespace, the root filesystem
   read-only, the project mounted, and 5, 7, and 6 pi packages seeded. The
-  toolchain probes: `dotnet 10.0.401 builds the xunit template from the
-  cached packages`, `js-debug answers a DAP initialize request over
-  stdio`, `Chromium 153.0.8010.52 built on Debian GNU/Linux 12 (bookworm)
-  runs headless`, `odin version dev-2026-08-nightly:902106f builds and
-  runs a program`.
+  sets' own check lines: `dotnet: dotnet 10.0.401 builds the xunit
+  template from the cached packages`, `web: js-debug answers a DAP
+  initialize request over stdio`, `browser: Chromium 153.0.8010.52 built
+  on Debian GNU/Linux 12 (bookworm) answers --version`, `odin: odin
+  version dev-2026-08-nightly:902106f builds and runs a program`, and for
+  the `coding,pi-web` and `coding,paseo` selections `pi-web: pi-web
+  1.202609.0 resolves the image's pi and node-pty` and `paseo: paseo
+  0.8.0 answers --version`; the oh-my-pi check passed with the same
+  containment lines. Every check without a browser UI printed `[warn] no
+  browser UI running; UI isolation not tested`.
 - `agent pi -p ...` at `xhigh` in a fresh Git project: pi created
   `hello.txt` with the `write` tool, committed `add hello` with the
   `bash` tool, and answered `done` in 13 seconds of wall time including
@@ -521,19 +624,15 @@ forwarder from `10.89.2.4`; the agents network with its gateway
 
 - `smoke --agent pi` while the UI ran: 0 failures, with `[ok] agent-ui
   does not resolve` and `[ok] ui-forward does not resolve`.
-- `tests/manual/cross-project-check.py B qwen3.8-27b-q4-mtp`: without
-  egress, `getent hosts agent-ui ui-forward` printed nothing and the
-  agent check passed with 0 failures, every containment line `[ok]`.
-  With the egress overlay, exactly the three route findings failed (a
-  default route, `1.1.1.1` reached, `example.com` reached), the two UI
-  names still did not resolve, the check ended with 3 failures, and the
-  wrapper reported the non-zero exit, which is the expected result of
-  that run. Project B's agent home gained an empty `sessions` directory
-  and no session.
+- The check's scratch project stands for the other project: without
+  egress, `getent hosts agent-ui ui-forward` printed nothing and the check
+  passed with 0 failures, every containment line `[ok]`. With `--egress`
+  the check found the route out (a default route, an address literal and
+  a public name reached) and the two UI names still did not resolve.
 
-Not covered: a connection attempt to the UI container's and the
-forwarder's addresses ([Still unverified](#still-unverified)); the same
-check with `agent omp`.
+Not covered: the same check with `agent omp`. Connection attempts to the
+UI's and the forwarder's addresses are in [Egress sessions and the UI
+networks](#egress-sessions-and-the-ui-networks).
 
 ### PI WEB
 
@@ -621,22 +720,14 @@ Not covered: what a Paseo agent does with a task beyond one prompt.
 
 ### Four clients, long sessions, and the tools
 
-Purpose: the items that only a GPU host can settle: four clients on the
-shipped MTP preset, whether a second client queues on it, sessions beyond
-one prompt for pi, oh-my-pi, and PI WEB, long-session home capacity, and a
-session that calls `lens_diagnostics`, the `debug` tool, the subagent tool,
-and the browser tools. Environment: the GPU host, `LLM_AGENT_SETS=coding`,
-the default preset unless a line names another, both browser UIs on their
-own default host ports (`4224` and `4250`); the desktop held 683 MiB before
-the run, which "held" subtracts. Date: 2026-09-20.
+Purpose: four clients on the shipped MTP preset, whether a second client
+queues on it, multi-turn sessions for pi, oh-my-pi, and PI WEB, home
+capacity in a long session, and sessions that call `lens_diagnostics`,
+the `debug` tool, the subagent tool, and the browser tools. Date:
+2026-09-20. Environment: the GPU host, the default preset unless a line
+names another, both browser UIs on their default host ports (`4224` and
+`4250`); the desktop held 683 MiB before the run, which "held" subtracts.
 
-- `doctor` passed with 0 failures and 0 warnings, `up` rendered 11 of 13
-  presets and reported the default preset loaded in 7 seconds, and `smoke`
-  passed all 8 checks (42 characters at 133.5 tokens per second). The
-  agent check passed with 0 failures for `coding`,
-  `coding,debug,dotnet,web,browser`, `coding,pi-web`, `coding,paseo`, and
-  oh-my-pi, with every containment line and the .NET, js-debug, and
-  Chromium probes.
 - Four clients on `qwen3.8-27b-q4-mtp`, in turn: terminal pi answered in
   2.7 seconds (first request 7,986 tokens), terminal omp in 7.8 seconds
   (19,032), PI WEB through its HTTP API, and Paseo through its daemon,
@@ -649,9 +740,8 @@ the run, which "held" subtracts. Date: 2026-09-20.
   without `--egress`.
 - A second client queues. The same prompt with an 800-token budget at
   effort `low`, three times: alone 7.5 seconds; two issued together
-  finished after 7.4 and 14.6 seconds, 14.6 seconds for the pair. Generation
-  stayed at 110 to 114 tokens per second in all three and the drafting
-  numbers matched (about 1,100 tokens drafted, 420 to 434 accepted), so
+  finished after 7.4 and 14.6 seconds. Generation stayed at 110 to 114
+  tokens per second in all three and the drafting numbers matched, so
   the second request waited for the slot instead of sharing it, as the
   preset's one slot implies.
 - A pi session of 12 turns in one container, reading and editing files of
@@ -659,28 +749,25 @@ the run, which "held" subtracts. Date: 2026-09-20.
   `replace`, `insert`, `bash`, and `lens_diagnostics`. The prompt grew
   from 8,013 to 51,822 tokens by turn 10; pi compacted there and continued
   at 28,292; turn 12 reached 63,312 tokens of the 64K slot, ended with
-  `length`, and its overflow compaction failed
-  (`Summarization failed: generation hit the token cap and the summary is
-  incomplete`), after which the agent stayed busy and refused the next
-  prompt. The card held 21,238 MiB before the first turn and after the
-  last, 20.1 GiB against the preset's 24 GiB `[requires]`: a full slot
-  holds no more than an empty one, because llama.cpp allocates the cache
-  when the model loads.
+  `length`, and its overflow compaction failed (`Summarization failed:
+  generation hit the token cap and the summary is incomplete`), after
+  which the agent stayed busy and refused the next prompt. The card held
+  21,238 MiB before the first turn and after the last, 20.1 GiB against
+  the preset's 24 GiB `[requires]`: a full slot holds no more than an
+  empty one, because llama.cpp allocates the cache when the model loads.
 - An oh-my-pi session of 6 turns in one container, on
   `qwen3.8-flash-next-q4`: every turn ended on its own, the prompt grew
   from 26,845 to 39,298 tokens, and the home tmpfs stayed empty while its
   retained `.omp` directories grew to 8.6 MiB on disk.
 - Home capacity in a long session: pi's home tmpfs held 96 KiB before the
   first turn and 424 KiB after the twelfth, of the 256 MiB the tmpfs
-  offers, and its `/tmp` 10.5 MiB of 1 GiB. The homes these sessions left
-  on the host are 336 to 864 KiB. Nothing approached a limit.
+  offers, and its `/tmp` 10.5 MiB of 1 GiB. Nothing approached a limit.
 - PI WEB in a browser, resuming the 12-turn conversation: a reply ended
   with `length` at 63,359 tokens, PI WEB compacted (a 12,275-character
   summary), and the session continued at 15,076 tokens, read four files,
   and reached 63,729 two turns later. Compaction recovers the slot, and a
   session whose turns read 20 KB files refills it within two turns. Two
-  other conversations in the same project answered normally, at 8,050 to
-  8,539 tokens.
+  other conversations in the same project answered normally.
 - The tool families, one scripted session each on the
   `coding,debug,dotnet,web,browser` image, with the tools the transcripts
   record:
@@ -689,152 +776,114 @@ the run, which "held" subtracts. Date: 2026-09-20.
   | --- | ---: | --- | --- |
   | `lens_diagnostics` on a type error | 77 s | `lens_diagnostics`, `read`, `anchor_grep`, `replace` | reported the diagnostic, fixed the file, and confirmed it clean |
   | the `debug` tool over js-debug | stopped at the run's 1,200 s limit | `debug`, `bash`, `read` | the adapter answered and the model kept debugging for 74 assistant messages, compacting once, without finishing the task |
-  | the subagent tool | 51 s | `subagent`, `read`, `bash`, `replace` | the scout returned all three TODO comments with file and line |
+  | the subagent tool | 51 s | `subagent`, `read`, `bash`, `replace` | the scout, its definition naming the loaded preset, returned all three TODO comments with file and line |
   | the browser tools | 20 s | `chrome_devtools_navigate`, `chrome_devtools_evaluate` | returned the title, the `h1`, and the text the page's script wrote |
 
-- The subagent definitions the pi package ships name models no container
-  here can reach (`claude-haiku-4-5` in `scout.md`, `claude-sonnet-4-5` in
-  `planner.md`, `reviewer.md`, and `worker.md`), which is why the `coding`
-  set seeds them with the `model:` line removed. In this session the
-  delegation reached the scout once the definition named the loaded
-  preset.
 - The four clients by hand, in real browser windows and terminal screens:
   every client answered its own conversation, nothing hung, and the model
   stayed loaded. Paseo's browser form created an agent that ran on
   `tokencrate/qwen3.8-27b-q4-mtp` at `xhigh` and closed normally; PI WEB
-  served its terminal panel and an extension dialog, and its compaction
-  of the long conversation above took a visible pause. oh-my-pi needs two
-  settings of its own to open the same way: its onboarding wizard opens
-  whenever the stored setup version is older than the binary's, which a
-  home that is a fresh tmpfs makes every session, and its model picker
-  saves by renaming a temporary file over `~/.omp/agent/config.yml`,
-  which fails with `EBUSY` unless that path is writable. The next
-  paragraph measures what the settings do about both ([Agent
-  configuration](agents.md#agent-configuration) describes them).
+  served its terminal panel and an extension dialog.
+- The subagent definitions the pi package ships name models no container
+  here can reach (`claude-haiku-4-5` in `scout.md`, `claude-sonnet-4-5` in
+  `planner.md`, `reviewer.md`, and `worker.md`). The `coding` set strips
+  the `model:` line from the definitions it seeds, so each subagent runs
+  on the session's own model and thinking level; the image build and the
+  agent check refuse a definition that names a model of its own. A
+  session delegated with one `subagent` call and the scout reported all
+  three TODO comments of a scratch project with file and line in 24
+  seconds, ending on its own.
+- oh-my-pi's two settings of its own ([Agent
+  configuration](agents.md#agent-configuration)): its onboarding wizard
+  opens whenever the stored setup version is older than the binary's,
+  which a fresh tmpfs home makes every session, and
+  `startup.setupWizard: false` in the repository settings turns it off;
+  its model picker saves by renaming a temporary file over
+  `~/.omp/agent/config.yml`, which fails with `EBUSY` unless that path is
+  writable, so the entrypoint writes the settings into the home and keeps
+  the repository file as the overlay above it (the agent check performs
+  that write). oh-my-pi answered a prompt in 10 seconds with
+  `model_change tokencrate/qwen3.8-27b-q4-mtp` and `thinking_level_change
+  xhigh` in its transcript, and in an interactive session the picker
+  saved a choice with no `EBUSY`.
 
-What the shipped settings do about those two, and about the subagent
-definitions, measured on the same host:
-
-- The `coding` set strips the `model:` line from the subagent definitions
-  it seeds, so each subagent runs on the session's own model and thinking
-  level; the image build and the agent check refuse a definition that
-  names a model of its own
-  (`4 subagent definition(s) seeded, none pinned to another model` for
-  every pi selection). A session then delegated with one `subagent` call
-  and the scout reported all three TODO comments of a scratch project
-  with file and line, in 24 seconds, ending on its own.
-- The entrypoint writes oh-my-pi's settings into the home, where the
-  picker's rewrite lands, and keeps the repository file as the overlay
-  above it; the agent check performs that write (`the agent can save
-  its settings for this session`). oh-my-pi answered a prompt in 10
-  seconds, and its transcript records `model_change
-  tokencrate/qwen3.8-27b-q4-mtp` with `resolvedModelIsFallback false` and
-  `thinking_level_change xhigh`, so the seeded settings carry both. In an
-  interactive session the model picker saved a choice, which the
-  transcript shows as a `model_change` with `role default`, and no
-  `EBUSY` followed.
-- `startup.setupWizard: false` in the repository settings closes the
-  onboarding wizard, whose first step asks to sign in to a provider no
-  container here can reach; an interactive session started on the preset
-  without it.
-
-Not covered: Docker Engine with a GPU, which this host has no Docker
-Engine for; a `debug` task the model finishes; the GLM presets.
+Not covered: Docker Engine with a GPU; a `debug` task the model
+finishes; the GLM presets.
 
 ### The integration run and the home lifecycles
 
 Purpose: `tests/integration.py` on the GPU, whose four
 `test_home_lifecycle_*` checks are the [agent home
 check](#agent-home-check), and the same four checks on both engines of
-the virtual machine. Environment: the GPU host with `CONTAINER_ENGINE=podman
-LLM_GPU=true`, run as `python3 tests/integration.py -v --durations 0` on
-the fixture models (`ci-small`, Qwen3-0.6B Q4_K_M; `ci-tiny`,
-stories260K; the preset `ci-think`); the virtual machine with rootless
-Podman 6.1.1 and with Docker Engine 29.7.2, no model, for the lifecycle
-checks alone.
+the virtual machine. Date: 2026-09-20. Environment: the GPU host with
+`CONTAINER_ENGINE=podman LLM_GPU=true`, run as `python3
+tests/integration.py -v --durations 0` on the fixture models (`ci-small`,
+Qwen3-0.6B Q4_K_M; `ci-tiny`, stories260K; the preset `ci-think`); the
+virtual machine with rootless Podman 6.1.1 and with Docker Engine 29.7.2,
+no model, for the lifecycle checks alone.
 
-The GPU run: the setup fetched the skill sets, `doctor` passed with 0
-failures and 0 warnings, `up` rendered 12 of 14 presets and reported
-`ci-small` loaded; `Ran 9 tests in 179.956s`, `OK`; `git status --short`
-printed nothing afterwards.
-
-| Test | Duration | Result |
-| --- | ---: | --- |
-| `test_pi_answers_with_a_tool_call` | 38.2 s | the three selections exited 0 with output and without a load error; no file added to the project |
-| `test_home_lifecycle_pi_web` | 30.8 s | the saved session reopened with text and image data; home 64 KiB |
-| `test_agent_checks_pass` | 20.4 s | four checks with 0 failures |
-| `test_home_lifecycle_paseo` | 18.7 s | passed; home 616 KiB |
-| `test_thinking_level_reaches_the_template` | 16.6 s | both agents' `low` reached the `ci-think` template |
-| `test_probes_swap_the_loaded_model` | 11.3 s | `smoke` on `ci-small`, the basic probe on `ci-tiny`, `bench` |
-| `test_home_lifecycle_omp` | 9.8 s | the saved session reopened with text and image data; home 28 KiB |
-| `test_home_lifecycle_pi` | 9.5 s | passed; home 40 KiB |
-| `test_omp_answers` | 8.0 s | `hello` |
-
-The lifecycle checks on the virtual machine ran for five selections on
-each engine, ten runs, and every run passed: pi with the `dotnet`,
-`web`, and `browser` sets; pi with the `odin` set; oh-my-pi; PI WEB;
-Paseo.
-
-- Every home mount ancestor was writable as `1000:1000` with mode
-  `0750`. Podman needs the tmpfs option `U` and Docker `uid=1000,gid=1000`
-  for that, and a tmpfs on the home alone leaves the nested mount
-  ancestors root-owned, which is why every ancestor of a retained bind
-  has an owned tmpfs of its own.
-- The session managers saved and reopened text and image messages.
-  Oh-my-pi's JSONL held a `blob:sha256:` reference and restored the
-  image bytes from the retained blob store after stop/start and
-  recreation. Its pinned sources (`session-paths.ts`,
-  `session-manager.ts`, `pi-utils/src/dirs.ts`) name the terminal
+- The GPU run: the setup fetched the skill sets, `doctor` passed with 0
+  failures and 0 warnings, `up` rendered every shipped and fixture preset
+  except the two GLM ones and reported `ci-small` loaded; the nine tests
+  (every test except `test_concurrent_clients`) passed in 180 seconds:
+  the three pi selections and oh-my-pi answered, the four agent checks
+  had 0 failures, `smoke` on `ci-small`, the basic probe on `ci-tiny`,
+  and `bench` swapped the loaded model, both agents' `low` reached the
+  `ci-think` template, and the four home lifecycles passed with homes of
+  28 to 616 KiB. `git status --short` printed nothing afterwards.
+- The lifecycle checks on the virtual machine ran for five selections on
+  each engine, ten runs, and every run passed: pi with the `dotnet`,
+  `web`, and `browser` sets; pi with the `odin` set; oh-my-pi; PI WEB;
+  Paseo. Every home mount ancestor was writable as `1000:1000` with mode
+  `0750`, which needs the tmpfs option `U` on Podman and `uid=,gid=` on
+  Docker and an owned tmpfs on every ancestor of a retained bind: a
+  tmpfs on the home alone leaves the nested mount points root-owned.
+- The session managers saved and reopened text and image messages;
+  oh-my-pi restored image bytes from its retained blob store after
+  stop/start and recreation, and its pinned sources name the terminal
   breadcrumbs and the custom session-file registry as its other resume
   and cleanup inputs, which is why those directories are retained too.
-- Two concurrent containers shared a transcript without sharing live pi
-  settings or other home files, and the terminal peer saw no UI state.
-  Host files outside the retained directories stayed untouched and
-  invisible to the container. Stop/start and recreation removed planted
-  home files and settings changes, kept every retained-directory marker,
-  and recreated the generated model list and the skills link.
-- Both UI launchers reached HTTP readiness after the first start, after
-  stop/start, and after recreation. PI WEB's terminal backend ran two
-  shells. Paseo registered the scratch workspace and kept the exact
-  keypair and server id through both restarts. Odin built and ran a
-  program under `/tmp`.
-- Home usage, retained binds included, stayed below 0.7 MiB: 464 KiB
-  after the .NET first run, 248 KiB for oh-my-pi, 72 KiB for PI WEB, and
-  656 KiB for Paseo; `/tmp` stayed below 8 MiB. These samples support
-  the 256 MiB limit of each home tmpfs for these workloads, not an
-  aggregate memory bound or a long-session capacity claim.
+  Two concurrent containers shared a transcript without sharing live
+  settings or other home files; host files outside the retained
+  directories stayed invisible; stop/start and recreation removed planted
+  home files, kept every retained-directory marker, and recreated the
+  generated model list and the skills link. Both UI launchers reached
+  HTTP readiness after the first start, after stop/start, and after
+  recreation; Paseo kept the exact keypair and server id; Odin built and
+  ran a program under `/tmp`.
+- Home usage, retained binds included, stayed below 0.7 MiB (464 KiB
+  after the .NET first run, 656 KiB for Paseo) and `/tmp` below 8 MiB,
+  which supports the 256 MiB limit of each home tmpfs for these
+  workloads, not an aggregate memory bound.
 
 Not covered: the production network and the forwarder (the lifecycle
-checks run with networking disabled), a real browser, and long-session
-capacity.
+checks run with networking disabled) and a real browser. Home capacity
+in a long session is in [Four clients, long sessions, and the
+tools](#four-clients-long-sessions-and-the-tools).
 
 ### The settings of the 96 GB RAM tier
 
 Purpose: the measurements behind the settings of the 96 GB tier: the
 expert split, the micro-batch, the memory map, and the alternatives that
 were tried and dropped. The presets' own results are in [The llama API
-and the presets](#the-llama-api-and-the-presets). Environment: the GPU host
-on llama.cpp build b10920; the [baseline procedure](#nvidia-host-baseline)
-for the shipped settings and hand-run `smoke` and `bench` commands for
-the alternatives, each alternative a temporary edit of a preset on the
-host, reverted afterwards. `bench` ran three iterations with a 262-token and a
-6,052-token prompt, prompt caching off. "Held" is `nvidia-smi` after
-`smoke` minus what the desktop held before the run (739 to 1041 MiB).
+and the presets](#the-llama-api-and-the-presets). Date: 2026-09-20.
+Environment: the GPU host on llama.cpp build b10920; the [baseline
+procedure](#nvidia-host-baseline) for the shipped settings and hand-run
+`smoke` and `bench` commands for the alternatives, each alternative a
+temporary edit of a preset on the host, reverted afterwards. `bench` ran
+three iterations with a 262-token and a 6,052-token prompt, prompt
+caching off. "Held" is `nvidia-smi` after `smoke` minus what the desktop
+held before the run (739 to 1041 MiB).
 
 The shipped settings:
 
-- `up` downloaded and verified the abliterated 27B file (17.4 GB) in
-  311 seconds in all; with the files on disk, `up` took 9 seconds.
-- `smoke`: every check passed on every run of the four presets (three
-  runs of the abliterated 27B, two of the f16 preset, and the Flash-Next
-  presets after each change of their settings), and again on the three
-  measured 27B Q4 presets. The `reply terminates` check found `stop` on
-  all six completions of the abliterated 27B; the mid-conversation
-  answer was `42` everywhere. The orcarouter Flash-Next file embeds
-  Qwen's own template (8,952 characters, read from its header on the
-  host), not the 27B's that the Unsloth file embeds; the patched
-  template replaced it and the streamed tool call, the later system
-  message, and the effort comparison passed.
+- `smoke`: every check passed on every run of the four presets (the
+  abliterated 27B, the f16 preset, and the two Flash-Next presets after
+  each change of their settings); the `reply terminates` check found
+  `stop` on all six completions of the abliterated 27B. On the
+  orcarouter Flash-Next file, whose embedded template differs (see the
+  source checks below), the patched template replaced it and every check
+  passed.
 - GPU memory held while loaded, generation and prompt speed in tokens
   per second for the short and the long prompt, against `[requires]`:
 
@@ -843,61 +892,45 @@ The shipped settings:
   | `qwen3.8-flash-next-q4` | 26.2 GiB | 30 GiB | 34, 33 | 119, 740 |
   | `qwen3.8-flash-next-q4-uncensored` | 26.1 GiB | 30 GiB | 37, 36 | 118, 776 |
 
-  A second run repeated the 27B numbers within a few percent. The card
-  had 4.2 and 4.3 GiB free with the two Flash-Next presets loaded (27916
-  and 27803 MiB in use).
+  The card had 4.1 and 4.2 GiB free with the two presets loaded.
 - Flash-Next at the 2048 micro-batch: two uncached 12,052-token prompts
   on `qwen3.8-flash-next-q4` processed at 729 and 788 tokens per second
   with no error in the log, so llama.cpp issue 28282 (a CUDA illegal
   memory access at this micro-batch on this card class, reported on a
   GLM model) did not show.
-- The model server's load lines, with `verbosity = 4` in
-  `[server.extra]` (the default 3 prints the library's warnings but none
-  of its info lines), are where the memory split in the preset's own
-  comment comes from. Two behaviours they show that the split does not:
-  the loader reports `load_mode = mmap` and warns that tensor overrides
-  to the CPU with mmap are slower than `--load-mode none`, and the
-  server logs `forcing full prompt re-processing due to lack of cache
-  data (likely due to SWA or hybrid/recurrent memory)` between requests
-  that share no prefix.
-- Flash-Next in system memory: `free` showed 7 GiB used, 86 GiB of page
-  cache, and 86 GiB available while the Unsloth file was loaded, because
-  llama.cpp memory-maps the weights and the kernel counts mapped file
-  pages as cache; a desktop system monitor showed under 8 GiB in use
-  throughout, and 3 GiB sat in swap with little swap traffic in `vmstat`.
-  The first completion after a load took 23 and 38 seconds: the first
-  request processed its 55-token prompt at 7.7 tokens per second and the
-  second its 347 at 49, the page faults of the memory map.
-- Prefix reuse on `qwen3.8-flash-next-q4` with prompt caching on: a
-  6,052-token request processed at 606 tokens per second; the same
-  conversation with the answer and one more turn appended reported
-  `cache_n` 6048 and `prompt_n` 39, processed in 0.5 seconds. A
-  session's growing prompt is reused, so a turn pays for its new tokens.
+- The loader's own lines (`verbosity = 4` in `[server.extra]`) are where
+  the memory split in the preset's comment comes from; they also report
+  `load_mode = mmap` with the warning that CPU tensor overrides are
+  slower than `--load-mode none`, and the server re-processes a full
+  prompt between requests that share no prefix.
+- Flash-Next in system memory: `free` showed 7 GiB used and 86 GiB of
+  page cache while the Unsloth file was loaded, because llama.cpp
+  memory-maps the weights and the kernel counts mapped file pages as
+  cache; a desktop monitor showed under 8 GiB in use throughout. The
+  first completion after a load took 23 and 38 seconds, the page faults
+  of the memory map.
+- Prefix reuse with prompt caching on: a 6,052-token request processed
+  at 606 tokens per second; the same conversation with one more turn
+  appended reported `cache_n` 6048 and `prompt_n` 39, processed in 0.5
+  seconds. A session's growing prompt is reused, so a turn pays for its
+  new tokens.
 - An agent on Flash-Next: `agent pi --preset qwen3.8-flash-next-q4` in a
-  fresh Git project created `hello.txt`, committed `add hello`, and
-  answered `done` in six requests; the router log gives 8,011 prompt
-  tokens for the first request, processed at 187 tokens per second at the
-  default micro-batch (43 seconds before the first word), and 34 to 35
-  tokens per second of generation. The run exported no Git identity, so
-  the model set a repository-local `user.name` and `user.email` before
-  committing, and said so.
-- `smoke --agent pi --preset qwen3.8-flash-next-q4` ended with 0
-  failures: the model endpoint reachable, no route and no name
-  resolution, the root filesystem read-only, 5 pi packages seeded. It is
-  the container check, so it proves reachability of Flash-Next, not a
-  session on it.
+  fresh Git project created `hello.txt`, committed, and answered `done`
+  in six requests; the first request's 8,011 prompt tokens processed at
+  187 tokens per second at the default micro-batch (43 seconds before
+  the first word), generation at 34 to 35 tokens per second.
 
 The alternatives measured on Flash-Next, none adopted; every `smoke`
-run passed, and "mapped" is the memory-mapped default:
+run passed:
 
 | Preset and setting | Held | Prompt (short, long) | Generation | Verdict |
 | --- | ---: | --- | --- | --- |
 | `qwen3.8-flash-next-q4`, default micro-batch (512), 36 layers in system memory | 27.1 GiB | 119, 324 | 35, 34 | Less than half the long-prompt speed of the 2048 micro-batch |
-| `qwen3.8-flash-next-q4`, 2048 micro-batch, 36 layers | 29.3 GiB (1.0 GiB free) | 102, 720 | 33, 32 | Too little headroom for a session; the shipped preset keeps 38 layers in system memory, which costs about 1 token per second of generation against the default-micro-batch row |
+| `qwen3.8-flash-next-q4`, 2048 micro-batch, 36 layers | 29.3 GiB (1.0 GiB free) | 102, 720 | 33, 32 | Too little headroom for a session; the shipped 38 layers cost about 1 token per second of generation |
 | `qwen3.8-flash-next-q4-uncensored`, default micro-batch, 36 layers | 23.8 GiB | 107, 328 | 37, 36 | The orcarouter file holds 3 GiB less at the same layer count, so its preset keeps 36 |
 | `qwen3.8-flash-next-q4-uncensored`, default micro-batch, 34 layers | 26.6 GiB (3.8 GiB free) | 115, 346 | 38, 31 | No gain from two more expert layers on the card |
 | `qwen3.8-flash-next-q4`, `load-mode = "none"`, default micro-batch, 36 layers | 27.2 GiB | 272, 689 | 34, 34 | `smoke` took 61 seconds including the load |
-| `qwen3.8-flash-next-q4`, `load-mode = "none"` at the shipped settings (38 layers, 2048 micro-batch) | 26.2 GiB | 242, 1,315 | 33, 33 | Prompt processing doubles again, but `free` afterwards showed 69 GiB used, 58 shared, 24 available, under 1 GiB free, swap 9 to 10 GiB, and `vmstat` up to 2,953 pages swapped in per second during the bench: the experts sit in memory the kernel cannot reclaim, and the bench prompt touches little of the n-gram table, whose on-demand reads share the 24 GiB in real use. Not set; the preset comment gives the two lines that turn it on |
+| `qwen3.8-flash-next-q4`, `load-mode = "none"` at the shipped settings | 26.2 GiB | 242, 1,315 | 33, 33 | Prompt processing doubles, but `free` afterwards showed 69 GiB used and 24 GiB available, swap 9 to 10 GiB, and `vmstat` up to 2,953 pages swapped in per second: the experts sit in memory the kernel cannot reclaim. Not set; the preset comment gives the two lines that turn it on |
 
 The KV-cache types on the 27B Q4 file with MTP, two runs that agree
 within 1 percent: prompt speed the same for all three types; generation
@@ -905,68 +938,45 @@ for the short and the long prompt 135 and 152 (`q8_0`), 139 and 141
 (`f16`), 142 and 136 (`bf16`). `nvidia-smi` right after `smoke` showed
 22871 MiB in use with `qwen3.8-27b-q4-mtp-f16kv` (21.3 GiB held) and
 23073 MiB with a bf16 copy of it (21.5 GiB held); both passed every
-check at 145 and 143 tokens per second. bf16 holds as much as f16, as
-the same element size predicts.
+check. bf16 holds as much as f16, as the same element size predicts, and
+buys nothing for prompt processing on this build: the flash-attention
+kernel that processes prompts (`fattn-mma-f16.cuh` at b10920) has no
+bf16 path and converts K and V to f16.
 
-Checked from sources before the runs (the file headers were read from the
-first megabytes of each file at the pinned commits, with a Hugging Face
-token for the gated repositories):
+Checked from the file headers at the pinned commits: the abliterated
+27B (huihui-ai) and Unsloth's 27B are both `qwen35` with 866 tensors,
+the `blk.64.nextn.*` MTP tensors, and identical embedded chat templates
+(9,993 characters, the same SHA-256), so the shipped patched template
+applies to the abliterated file. Unsloth's Flash-Next names the
+architecture `qwen4exp` and embeds the same template; orcarouter's
+Q4_K_S names `qwen4exp` too and embeds a different one (8,952
+characters). The memory split of Flash-Next is arithmetic from the file
+sizes and layer counts: about 60 GiB of experts in system memory (38 of
+48 layers) plus up to 27 GiB of memory-mapped n-gram table, against the
+93.35 GiB the host reports.
 
-- The abliterated 27B: huihui-ai's
-  `Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf` and Unsloth's
-  `Qwen3.8-27B-UD-Q4_K_XL.gguf` are both `qwen35` with 866 tensors and
-  the `blk.64.nextn.*` MTP tensors, and their embedded chat templates are
-  identical (9,993 characters, the same SHA-256), so the shipped patched
-  template applies to the abliterated file.
-- Unsloth's Flash-Next UD-Q4_K_XL names the architecture `qwen4exp`,
-  which the pinned build carries, and embeds the same 9,993-character
-  template; orcarouter's Q4_K_S names `qwen4exp` too and embeds a
-  different template (8,952 characters). The cards name the method of
-  both uncensored files as abliteration.
-- The bf16 question, from `ggml/src/ggml-cuda/fattn.cu` at b10920: bf16
-  is in the type list of the flash-attention vector kernel (single-token
-  generation on Ada and newer), and the mma kernel that processes prompts
-  (`fattn-mma-f16.cuh`) has no bf16 path, so K and V are converted to
-  f16 for it; bf16 therefore buys nothing over f16 for prompt processing
-  on this build, which the runs confirmed.
-- The memory split of Flash-Next is arithmetic from the file sizes and
-  layer counts: about 60 GiB of experts in system memory (38 of 48
-  layers) plus up to 27 GiB of memory-mapped n-gram table, against the
-  93.35 GiB the host reports.
+`load-mode = "none"` in an agent session of six turns on
+`qwen3.8-flash-next-q4`, on the pinned build with the shipped settings
+and the setting added for the run: the load cost 132 seconds including
+`smoke`, whose every check passed; the host went from 44 GiB in use, 48
+GiB available, and no swap before the load to 88 GiB in use, 5 GiB
+available, and 32 GiB of swap after the session, with up to 27,397 pages
+per second swapped in during its busiest interval; the six turns took 23
+to 161 seconds and grew the prompt to 40,996 tokens; `bench` on the same
+loaded model measured 260 and 1,352 prompt tokens per second and 34.5
+and 33.2 of generation, so the doubled prompt speed reproduces and
+generation is unchanged. The setting stays off: it buys prompt speed
+with the host's last reclaimable memory.
 
-`load-mode = "none"` in real use, measured on the shipped settings with
-the setting added and removed again afterwards (the pinned build, an
-agent session of six turns on `qwen3.8-flash-next-q4`):
-
-- The load cost 132 seconds including `smoke`, whose every check passed;
-  its first completion took 125 seconds at 31.8 tokens per second.
-- The host had 44 GiB in use, 48 GiB available, and no swap in use before
-  the load; 84 and 9 GiB with 31 GiB of swap after it; and 88 and 5 GiB
-  with 32 GiB of swap after the session, which swapped out 7.6 million
-  pages and swapped in 305 thousand, up to 27,397 pages per second in the
-  busiest interval of `vmstat`.
-- The session's turns took 23 to 161 seconds and grew the prompt to
-  40,996 tokens; the card held 27,991 MiB throughout.
-- `bench` on the same loaded model measured 260 and 1,352 prompt tokens
-  per second for the short and the long prompt and 34.5 and 33.2 of
-  generation, so the doubled prompt speed of the hand-run measurement
-  above reproduces, and generation is unchanged.
-
-The setting stays off: it buys prompt speed with the host's last
-reclaimable memory, and the preset's comment keeps the two lines that
-turn it on.
-
-The abliterated 27B in longer runs, against `qwen3.8-27b-q4-mtp` measured
-the same way: six prompts at `xhigh` with a 4,096-token budget, five of
-which ended on their own on both presets. The sixth, a 600-word story,
-spent the whole budget on reasoning and returned no answer on both, so
-that is what `xhigh` does with a creative prompt, not what abliteration
-does. No answer repeated itself beyond a LaTeX delimiter (13 times on the
-shipped preset, 7 on the abliterated one), and the prompt that asks for
-200 numbered lines produced 200 distinct ones on both. A six-turn agent
-session on the abliterated preset ended every turn on its own, grew the
-prompt from 8,208 to 25,768 tokens, and left the files it was asked to
-write.
+The abliterated 27B in longer runs, against `qwen3.8-27b-q4-mtp`
+measured the same way: six prompts at `xhigh` with a 4,096-token budget,
+five of which ended on their own on both presets. The sixth, a 600-word
+story, spent the whole budget on reasoning and returned no answer on
+both, so that is what `xhigh` does with a creative prompt, not what
+abliteration does. No answer repeated itself beyond a LaTeX delimiter,
+and a six-turn agent session on the abliterated preset ended every turn
+on its own, grew the prompt from 8,208 to 25,768 tokens, and left the
+files it was asked to write.
 
 Not covered: what the f16 cache buys in quality; anything about answer
 quality, refusals included.
@@ -978,7 +988,7 @@ rest on while no llama.cpp release loads them, and one load attempt.
 Environment for the attempt: the GPU host on llama.cpp build b10920, with
 the orcarouter file (116.9 GB) downloaded; the build gate was opened by a
 temporary edit of the model set on the host (`llama_build = ""`),
-restored afterwards. Measured on a GPU: nothing that ran. Checked:
+restored afterwards. No GLM preset ran on the GPU. Checked:
 
 - The first parts of Unsloth's UD-Q2_K_XL and of orcarouter's Q2_K both
   name the architecture `glm5next`. Part 4 of the Unsloth file carries
@@ -1059,94 +1069,48 @@ Purpose: the Docker path without a GPU: `doctor`, `tests/integration.py`
 to completion with a first build of the agent images on Docker's store,
 the gateway mode of the internal networks, the containment lines, the
 agent checks of both UI sets, both UIs, the cross-project check, and the
-home lifecycles. Environment: the virtual machine of [The CPU
-integration check](#the-cpu-integration-check) (kernel 7.2.4, 12 CPUs of
-an AMD Ryzen 9 7950X, 31.3 GiB of system memory, Python 3.14.7) with
-Docker Engine 29.7.2 (build `a7dcaa6fdb`) and Compose 5.5.1, the rootful
-daemon started for the session and stopped afterwards,
-`CONTAINER_ENGINE=docker`, the Docker CLI's `default` context, and
-`LLM_GPU=false`. The integration run used the fixture model sets and
-presets of the script with the model files already under
-`LLM_MODELS_DIR`; the UI checks used the `ci-small` fixture (Qwen3-0.6B
-Q4_K_M) alone, and the cross-project check two scratch projects A and B
-below the home directory.
+home lifecycles. Date: 2026-09-20. Environment: the virtual machine of
+[The CPU integration check](#the-cpu-integration-check) with Docker
+Engine 29.7.2 (build `a7dcaa6fdb`) and Compose 5.5.1, the rootful daemon
+started for the session and stopped afterwards, `CONTAINER_ENGINE=docker`,
+the Docker CLI's `default` context, and `LLM_GPU=false`. The integration
+run used the fixture model sets and presets of the script with the model
+files already under `LLM_MODELS_DIR`; the UI checks used the `ci-small`
+fixture (Qwen3-0.6B Q4_K_M) alone, and the cross-project check a scratch
+project A below the home directory.
 
 - `doctor` passed with 0 failures and the `LLM_GPU=false` warning, and
   printed `Docker version 29.7.2, build a7dcaa6fdb`, `Docker Compose
   version 5.5.1`, and `Docker Engine 29.7.2 keeps host services off the
   agents network (gateway mode isolated needs 28 or newer)`.
 - `CONTAINER_ENGINE=docker LLM_GPU=false python3 tests/integration.py -v
-  --durations 0` ran for 11 minutes. The setup fetched
-  the skill sets, `doctor` passed as above, the llama image came from the
-  build cache, and `up` rendered 3 of 14 presets and reported `ci-small`
-  loaded; `Ran 9 tests in 662.268s`, `OK`. `down` removed the llama
-  container and the three networks; `docker ps -a` and `docker network
-  ls` afterwards listed no container and only Docker's `bridge`, `host`,
-  and `none` networks.
-
-| Test | Duration | Result |
-| --- | ---: | --- |
-| `test_agent_checks_pass` | 183.4 s | four checks with 0 failures; three first builds |
-| `test_omp_answers` | 132.0 s | `hello` |
-| `test_thinking_level_reaches_the_template` | 130.2 s | both agents' `low` reached the `ci-think` template |
-| `test_pi_answers_with_a_tool_call` | 122.4 s | the three selections exited 0 with output and without a load error; no file added to the project |
-| `test_home_lifecycle_paseo` | 34.8 s | the saved session reopened with text and image data; home 608 KiB |
-| `test_home_lifecycle_pi_web` | 30.6 s | the saved session reopened with text and image data; home 56 KiB |
-| `test_probes_swap_the_loaded_model` | 7.5 s | `smoke` on `ci-small`, the basic probe on `ci-tiny`, `bench` |
-| `test_home_lifecycle_omp` | 5.0 s | the saved session reopened with text and image data; home 20 KiB |
-| `test_home_lifecycle_pi` | 4.0 s | the saved session reopened with text and image data; home 32 KiB |
-
-- Docker's store held no pi image of the pinned Node tag, so the run
-  measured a first build. `test_agent_checks_pass` pulled
-  `node:26.9.0-bookworm-slim` (two layers, 55 MB and 28 MB) and built the
-  `coding` image with no cached step, then the
-  `coding,debug,dotnet,web,browser` and `coding,debug,odin` images over
-  the cached `pi` stage; the `paseo` and `pi-web` images followed in their
-  lifecycle checks. The step times BuildKit printed sum to 39 s, 66 s,
-  73 s, 21 s, and 7 s for the five images; the longest steps were the apt
-  install of the Odin toolchain (49.4 s, 161 MB fetched in 33 s), the
-  image exports (13 to 22 s each), and the apt install of Chromium
-  (20.8 s). The builds are why `test_agent_checks_pass` took 183.4 s
-  against 29.0 s with a warm cache on Podman. The oh-my-pi image's apt
-  layer came from the cache, and every later build of the run was cached.
+  --durations 0`: the setup fetched the skill sets, the llama image came
+  from the build cache, `up` rendered the three fixture presets and
+  reported `ci-small` loaded, and all ten tests passed in 950 seconds,
+  the pi images built from the shipped manifests over Docker's cached
+  base layers. `down` removed the llama container and the three
+  networks; `docker ps -a` and `docker network ls` afterwards listed no
+  container and only Docker's own networks.
 - The agent checks of the three pi selections and of oh-my-pi passed
-  with 0 failures, with the toolchain probes of [The CPU integration
-  check](#the-cpu-integration-check) (the .NET SDK 10.0.401, js-debug,
-  Chromium 153.0.8010.52, and Odin `dev-2026-08-nightly:902106f`) and, in
-  every check, the model endpoint reachable, no default route, no route
-  to `1.1.1.1`, no name resolution, `agent-ui` and `ui-forward` not
-  resolving, `the agents network has no gateway address; no host address
-  is reachable`, a read-only root, and the seeded tools note and pi
-  packages.
-- On the CPU, `smoke` on `ci-small` generated at 108.1 tokens/s with the
-  streamed tool call and the mid-conversation system message passing,
-  the basic probe on `ci-tiny` generated at 5148.1 tokens/s, and `bench`
-  on `ci-small` measured 912.8 prompt and 87.1 generation tokens/s over
-  two iterations of the short prompt (223 prompt tokens, 128 generated).
-- The three pi prompts exited 0 without a load error and added no file
-  to the project. Each printed four characters and the first line of
-  the seeded tools note, so the check proves that pi ran to completion
-  on each image, not that the 0.6B model read the file. oh-my-pi
-  answered `hello`, and both agents' `low` reached the `ci-think`
-  template.
-- The four home lifecycles passed as under Podman: every home tmpfs
-  owned by the host user with mode `0750`, each session manager
-  reopening its saved session with text and image data in the first
-  container, in the peer, and after stop/start and recreation, and the
-  retained directories keeping their markers while planted files and
-  settings changes disappeared.
-- After the integration run, `up --model-set ci-small` rendered 1 of 12
-  presets and reported `ci-small` loaded; `smoke --agent pi --sets
-  coding,pi-web` and `smoke --agent pi --sets coding,paseo` each passed
-  with 0 failures in about three seconds from the cached images, with
-  `pi-web 1.202609.0 resolves the image's pi and node-pty` and `paseo
-  0.8.0 starts` next to the containment lines above. `docker images`
-  reports the disk usage of the images the run built as 1.25 GB
-  (`coding`), 3.51 GB (`coding,debug,dotnet,web,browser`), 2.53 GB
-  (`coding,debug,odin`), 1.36 GB (`coding,pi-web`), 1.92 GB
-  (`coding,paseo`), and 1.9 GB (oh-my-pi), with content sizes of 291 MB,
-  920 MB, 591 MB, 309 MB, 451 MB, and 423 MB; the llama image is 5.26 GB
-  (1.88 GB of content).
+  with 0 failures, with the sets' check lines of [The CPU integration
+  check](#the-cpu-integration-check) (`dotnet`, `web`, `browser`,
+  `odin`, and `coding`) and, in every check, the model endpoint
+  reachable, no route out, `the agents network has no gateway address`,
+  a read-only
+  root, the seeded tools note and pi packages, and `[warn] no browser UI
+  running; UI isolation not tested`.
+- On the CPU, `smoke` on `ci-small` passed with the streamed tool call and
+  the mid-conversation system message, the basic probe on `ci-tiny`
+  passed, and `bench` on `ci-small` measured over two iterations of the
+  short prompt. The three pi prompts exited 0 without a load error and
+  added no file to the project; oh-my-pi answered `hello`, and both
+  agents' `low` reached the `ci-think` template. The four home
+  lifecycles passed as under Podman.
+- The independent-client check passed as under Podman: four clients on
+  `ci-small`, containment from both terminal agents with and without
+  egress, targeted stops, retained state, and a failed custom UI launch.
+  The UI containers mount one UI path from the host, the set's `state`
+  directory, beside the pi transcripts.
 - `up` created `tokencrate_agents` and `tokencrate_ui` as internal
   networks with `com.docker.network.bridge.gateway_mode_ipv4: isolated`
   (and the IPv6 twin) and no gateway address. Container names on
@@ -1165,31 +1129,20 @@ below the home directory.
   session file under the project's agent home, and nothing was written
   into the project directory.
 - `ui paseo --dir A` was ready in 22 seconds and answered `/api/health`;
-  `paseo run --provider pi` reached `completed`; neither DNS nor speech
-  models existed in the container. Paseo's `paseo.pid` in the retained
-  `.paseo` directory can name a process id from a container of the other
-  engine that exists in the new one (`Another Paseo daemon is already
-  running (PID 80)` when the file was left in place), which is why the
-  launcher removes the file before the daemon starts.
-- The cross-project check for project B: without egress the agent check
-  passed with 0 failures; with the egress overlay `agent-ui` and
-  `ui-forward` did not resolve, and the route checks failed, as they
-  must.
-- `agent pi --dir A -- -p ...` started while the UI ran for A, on the same
-  project, and answered; `agent pi` and `agent omp` each answered a
-  prompt in a scratch project.
-- The agent `/tmp` is mounted with `exec` because the two engines differ
-  on it: Docker mounts a tmpfs `noexec` unless the options say otherwise,
-  Podman honours the options as written, and a toolchain that builds a
-  program and runs it under `/tmp` fails on the first and works on the
-  second. Measured in the odin image: the same probe prints `ok` with
-  `exec` and `Could not spawn subprocess: Permission denied` with
-  `noexec`.
+  `paseo run --provider pi` reached `completed`. Paseo's `paseo.pid` in
+  the retained `.paseo` directory can name a process id from a container
+  of the other engine that exists in the new one (`Another Paseo daemon
+  is already running (PID 80)` when the file was left in place), which
+  is why the launcher removes the file before the daemon starts.
+- The cross-project check, whose scratch project stands for the other
+  project: without egress the agent check passed with 0 failures; with
+  `--egress` the check found the route out, and `agent-ui` and
+  `ui-forward` did not resolve. `agent pi --dir A -- -p ...` answered
+  while the UI ran for project A; `agent pi` and `agent omp` each
+  answered a prompt in a scratch project.
 - `ui stop` removed the UI containers and `down` removed the llama
   container and all four networks (Docker printed that `tokencrate_ui`
   was still in use at `ui stop`, which is expected while llama runs).
-  The strict engine-free gate's agent-check test drives every branch of
-  the gateway probe with stub commands.
 
 Not covered: a real browser; the GPU; Docker Engine versions other than
 29.7.2; a rootful Podman or a Podman without netavark; the Docker
@@ -1199,166 +1152,431 @@ integration workflow in CI.
 
 Purpose: `tests/integration.py` on the CPU with the fixture models, with
 the engine-free checks and the UI-set agent checks on the same machine.
-Environment: the virtual machine with rootless Podman 6.1.1,
-podman-compose 1.6.0, `crun` 1.29.1, and netavark 2.1.0, kernel 7.2.4,
-12 CPUs of an AMD Ryzen 9 7950X (6 cores, 2 threads each), 31.3 GiB of
-system memory (MemTotal 32851940 kB), Python 3.14.7, Node.js 24.20.0, and
-Ruff 0.16.6. The run was `CONTAINER_ENGINE=podman LLM_GPU=false python3
-tests/integration.py -v --durations 0`, with the files of both fixture
-model sets already under `LLM_MODELS_DIR` and every image layer in the
-Podman build cache, so the run downloaded no model and measured no build
-time.
+Date: 2026-09-20. Environment: the virtual machine with rootless Podman
+6.1.2, podman-compose 1.6.0, `crun`, and netavark 2.1.0, kernel 7.2.6,
+12 CPUs of an AMD Ryzen 9 7950X, 31.3 GiB of system memory, Python
+3.14.7, Node.js 24.20.0, and Ruff 0.16.6. The run was
+`CONTAINER_ENGINE=podman LLM_GPU=false python3 tests/integration.py -v`,
+with the files of both fixture model sets already under
+`LLM_MODELS_DIR` and the base layers of the pi images in the store.
 
-The setup fetched the skill sets, `doctor` passed with 0 failures and
-the `LLM_GPU=false` warning, and `up` rendered 3 of 14 presets and
-reported `ci-small` loaded; `Ran 9 tests in 605.592s`, `OK`. The run
-removed its fixture copies, containers, networks, reports, and scratch
-directories, and `git status --short` printed nothing it created.
-
-| Test | Duration | Result |
-| --- | ---: | --- |
-| `test_omp_answers` | 148.9 s | `hello` |
-| `test_pi_answers_with_a_tool_call` | 146.2 s | the three selections exited 0 with output and without a load error; no file added to the project |
-| `test_thinking_level_reaches_the_template` | 145.9 s | both agents' `low` reached the `ci-think` template |
-| `test_home_lifecycle_pi_web` | 44.1 s | passed; home 56 KiB |
-| `test_home_lifecycle_paseo` | 30.0 s | passed; home 608 KiB |
-| `test_agent_checks_pass` | 29.0 s | four checks with 0 failures |
-| `test_home_lifecycle_omp` | 15.8 s | passed; home 20 KiB |
-| `test_home_lifecycle_pi` | 14.9 s | passed; home 32 KiB |
-| `test_probes_swap_the_loaded_model` | 13.4 s | `smoke` on `ci-small`, the basic probe on `ci-tiny`, `bench` |
-
-- The agent checks of the three pi selections passed with the toolchain
-  probes: the .NET SDK 10.0.401 builds the xunit template from the
-  image's NuGet cache without a route out, js-debug answers a DAP
-  `initialize` request over stdio, Chromium 153.0.8010.52 runs headless,
-  and Odin `dev-2026-08-nightly:902106f` builds and runs a program. Every
-  check found the model endpoint, no default route, no name resolution,
-  a read-only root, and the seeded tools note and pi packages.
-- On the CPU, `smoke` on `ci-small` generated at 99.7 tokens/s with the
-  streamed tool call and the mid-conversation system message passing,
-  the basic probe on `ci-tiny` generated at 5545.7 tokens/s, and `bench`
-  on `ci-small` measured 952.4 prompt and 80.5 generation tokens/s over
-  two iterations of the short prompt (223 prompt tokens, 128 generated).
-- The agent prompts dominate the run: oh-my-pi's one prompt took 148.9 s
-  (its first request is about 19,000 tokens), and each of pi's three
-  prompts about 50 s. The check accepts any answer without a load
-  error; with the 0.6B model, pi's three answers said that README.md was
-  not found. A separate prompt with the same model and the `coding`
-  selection showed pi calling `read` on the seeded `AGENTS.md` path and
-  returning that file's first line, so the tool machinery runs and the
-  model chooses the wrong path.
+- The setup fetched the skill sets, `doctor` passed with 0 failures and
+  the `LLM_GPU=false` warning, and `up` rendered the three fixture
+  presets and reported `ci-small` loaded; all ten tests passed in 4,653
+  seconds, the pi images of every selection built from the shipped
+  manifests over the cached base layers. The run removed its fixture
+  copies, containers, networks, reports, and scratch directories, and
+  `git status --short` printed nothing it created.
+- The agent checks of the three pi selections and of oh-my-pi passed
+  with 0 failures. The sets' own check scripts reported, one line each:
+  `dotnet: dotnet 10.0.401 builds the xunit template from the cached
+  packages`, `web: js-debug answers a DAP initialize request over
+  stdio`, `browser: Chromium 153.0.8010.52 built on Debian GNU/Linux 12
+  (bookworm) answers --version`, `odin: odin version
+  dev-2026-08-nightly:902106f builds and runs a program`, and `coding: 4
+  subagent definitions seeded, none pinned to another model`. Every
+  check found the model endpoint, no route out, a read-only root, and
+  the seeded tools note and pi packages, and printed `[warn] no browser
+  UI running; UI isolation not tested`, because the checks run before
+  any UI.
+- On the CPU, `smoke` on `ci-small` passed with the streamed tool call and
+  the mid-conversation system message (115 tokens per second of
+  generation), the basic probe on `ci-tiny` passed, and `bench` on
+  `ci-small` measured over two iterations of the short prompt.
+- The agent prompts dominate the run: oh-my-pi's one prompt and each of
+  pi's three take one to two minutes on the 0.6B model. The check accepts
+  any answer without a load error; with that model, pi's answers say that
+  README.md was not found. A separate prompt with the same model and the
+  `coding` selection showed pi calling `read` on the seeded `AGENTS.md`
+  path and returning that file's first line, so the tool machinery runs
+  and the model chooses the wrong path.
+- The independent-client check: four clients answered on `ci-small` with
+  one unchanged router and model process; both terminal agents could not
+  reach either UI or forwarder by name or effective address, with and
+  without egress; targeted stops, retained state, project and image
+  changes, near-simultaneous starts, an occupied port, and a failed
+  custom UI launch (a private set with a `[ui]` table) behaved as the
+  check demands.
+- The four home lifecycles passed: every home tmpfs owned by the host
+  user with mode `0750`, each session manager reopening its saved
+  session in the first container, in the peer, and after stop/start and
+  recreation, and the retained directories keeping their markers while
+  planted files and settings changes disappeared. The UI containers
+  mount one UI path from the host, the set's `state` directory
+  (`.pi-web` or `.paseo`), beside the pi transcripts.
 - The engine-free gate passed in strict mode
-  (`TOKENCRATE_STATIC_STRICT=1 bash tests/static.sh`): `Ran 227 tests in
-  35.296s`, 44 s in all. `doctor` with the machine's `.env` passed with 0
-  failures and the `LLM_GPU=false` warning, and `presets render`
-  validated every preset against its model set, all loadable except the
-  two GLM presets waiting for a build.
-- The pi images for `coding,pi-web` (980 MB) and `coding,paseo`
-  (1.38 GB) built from the rendered Dockerfiles, and `smoke --agent pi
-  --sets` passed for both against `ci-small` with the UI probes: the
-  `pi-web` set resolves the image's pi (its scope directory links to
-  the global install, not a second copy), pi-ai, and node-pty (PI WEB
-  1.202609.0), and Paseo 0.8.0 starts. Inside the Paseo container
-  `relay.enabled` is `false`, the speech providers are logged as
-  `enabled:false`, no model directory is created, and `relay.paseo.sh`
-  does not resolve.
+  (`TOKENCRATE_STATIC_STRICT=1 bash tests/static.sh`). `doctor` with the
+  machine's `.env` passed with 0 failures and the `LLM_GPU=false`
+  warning, and `presets render` validated every preset against its model
+  set, all loadable except the two GLM presets waiting for a build.
 
 Not covered: a session that uses `lens_diagnostics`, the `debug` tool,
 a subagent, or the browser tools, because the fixture model does not
-call tools reliably; a first build of the agent images; Docker Engine,
-whose CPU runs are in [Docker Engine](#docker-engine).
+call tools reliably; Docker Engine, whose CPU runs are in [Docker
+Engine](#docker-engine).
 
-### HTTP authorities and label discovery
+### The harnesses and the CPU runs on both engines
 
-Purpose: verify HTTP port-80 authorization, UI-set label discovery,
-and direct UI stop/log dispatch. Date: 2026-09-20.
-Environment: the pins in [Environment](#environment), Arch Linux VM,
-kernel 7.2.4, 12 CPUs, 31.3 GiB RAM, Python 3.14.7, and Node.js 24.20.0
-for the engine-free forwarder harness. The pi and forwarder images use
-the pinned Node 26.9.0. Rootless Podman 6.1.1 used podman-compose 1.6.0; Docker
-Engine 29.7.2 used Compose 5.5.1 and a temporary daemon with a separate
-store, socket, and bridge. Each engine had an isolated source copy,
-Compose project, copied fixture models, scratch clients, and fresh
-retained state; `LLM_GPU=false`.
+Purpose: the engine-free forwarder and local-HTTP harnesses, and the
+CPU integration and independent-client checks on both engines with
+scratch checkouts. Date: 2026-09-20. Environment: the virtual machine,
+Node.js 24.20.0, rootless Podman 6.1.1, and Docker Engine 29.7.2 on a
+temporary daemon with a separate store, socket, and bridge; each engine
+with an isolated source copy, Compose project, copied fixture models,
+scratch clients, fresh retained state, allocated loopback ports, and
+`LLM_GPU=false`.
 
-- The 54 focused forwarder, UI lifecycle, CLI, and settings tests passed.
-  The strict engine-free gate passed 253 tests, Ruff, ShellCheck,
-  podman-compose compatibility checks, and both Compose renders with
-  the repository virtual environment active.
 - The forwarder harness exercised HTTP and WebSocket upgrades with all
   three loopback names, implicit and explicit port 80, and a non-default
-  port. Foreign hosts, sibling ports, non-HTTP and malformed Origins,
-  and disallowed Fetch Metadata were rejected. The harness used
-  unprivileged listeners independently of the published authority.
-- Both full `python3 tests/integration.py -v` runs passed all 10 tests,
-  including agent/toolchain checks, prompts, model swaps, thinking-level
-  forwarding, and all four home lifecycles. Podman took 887.427 seconds;
-  Docker took 1068.978 seconds with a fresh image store. The runs
-  overlapped on the same CPU host, so these are not benchmark comparisons.
-
-- Both engines' independent-client checks passed: pi, omp, PI WEB, and
-  Paseo answered on `ci-small`, and a repeat pi request answered with the
-  same router/model process identities. Targeted restarts, saved state,
-  project/image/port changes, close starts, failed launches, port
-  collisions, and stop-all passed. Both terminal agents could not reach
-  either UI or forwarder by name or effective address, with or without
-  egress. Both forwarders rejected foreign and sibling UI origins.
-- The manual cross-project procedure passed on both engines with both
-  UIs alive: `smoke --agent pi` and project B without egress had zero
-  failures; B with egress had exactly the three expected route failures
-  and could not reach any UI peer. These checks used only the repository
-  skill (`LLM_SKILL_SETS=`). Whole-stack `down` with both UI pairs alive
-  removed every test-project container and network on both engines.
+  port, with unprivileged listeners. Foreign hosts, sibling ports,
+  non-HTTP and malformed Origins, duplicate `Host` headers, interrupted
+  streams, and disallowed Fetch Metadata were rejected.
+- Local API calls bypassed a configured HTTP proxy while ordinary urllib
+  calls retained it.
+- Both full `python3 tests/integration.py -v` runs passed all 10 tests
+  in 887 seconds on Podman and 1,069 seconds on Docker with a fresh image
+  store; the runs overlapped on one CPU host, so the times do not compare
+  the engines. Both independent-client checks passed: terminal pi and omp
+  in RPC mode, PI WEB through its HTTP API, and Paseo through its daemon
+  CLI answered on `ci-small` while all clients stayed alive, a repeat pi
+  request answered with the same router and model process identities,
+  and targeted restarts, saved
+  state, project, image, and port changes, close starts, failed launches,
+  port collisions, and stop-all passed.
+- Whole-stack `down` with both UI pairs and live terminal clients removed
+  every test-project container and network on both engines, and startup
+  succeeded afterwards; a separate Podman check removed three live
+  auto-remove containers and their network.
+- Cleanup left no test-project containers or networks; the test image
+  tags, the temporary Docker daemon, and its bridge were removed.
 
 Not covered: GPU or MTP inference, real browser rendering, interactive
 terminal screens, a host listener on privileged port 80, or the default
-host-port combination `4207`, `4224`, `4250`. The port-80 result covers
-HTTP authorization; the container runs used allocated free host ports.
+host-port combination `4207`, `4224`, `4250`.
 
-### Local services and agent builds
+### CLI refusals
 
-Purpose: verify direct local HTTP requests, rendered build scripts,
-read-only model-list mounts, and UI lifecycle with temporary launch
-files, over the JSON-form Bash build steps, the label-based lifecycle
-discovery, and the shared model and UI lifecycle lock. Date: 2026-09-20.
+Purpose: that a wrong command gets one sentence rather than a traceback
+or a silent last-value-wins, before the pre-flight. Date: 2026-09-20.
+Environment: the GPU host, both browser UIs running.
 
-Environment: the pins in [Environment](#environment), Arch Linux VM
-without a GPU, Python 3.14.7, Node.js 24.20.0 for the forwarder harness,
-rootless Podman 6.1.1 with podman-compose 1.6.0, and Docker Engine 29.7.2
-with Compose 5.5.1. Docker used a temporary local daemon. Each engine had
-separate source and retained-state directories, test image tags, a
-Compose project, and allocated loopback ports; `LLM_GPU=false`.
+- Twelve refusals each printed one sentence and exited non-zero, with no
+  traceback: `LLM_PORT` of `99999`, `abc` and `0` gave `LLM_PORT requires a
+  port from 1 to 65535`; `agent omp --sets` and `smoke --agent omp --sets`
+  gave `--sets applies to pi only; oh-my-pi has no agent sets`; a repeated
+  `--dir`, `--sets` and `--iterations` gave `<flag> may be given once with
+  <command>`; `bench` with the same preset twice gave `--preset names
+  qwen3.8-27b-q4-mtp twice`; `smoke` and `bench` with an unknown
+  `LLM_DEFAULT_PRESET` gave `unknown preset: nope (run: bash bin/tokencrate
+  presets list)`; `ui stop no-such-set` gave `no UI container found:
+  no-such-set`.
+- The refusals returned before the pre-flight: the block of twelve took
+  4 seconds with no stack running, too little for a pre-flight and engine
+  detection.
+- The closing `podman ps -a` and `podman network ls` were empty after
+  `ui stop` and `down`.
 
-- The strict static gate passed all 271 tests, Ruff, ShellCheck,
-  podman-compose compatibility checks, and both Compose renders.
-- Rendered build scripts preserved inline comments, literal hashes, and
-  variables across lines, and stopped on command and pipeline failures.
-  Compose contract checks verified that agents mount only their generated
-  model-list file, read-only. Preset validation refused `rpc` and retained
-  the fixture's `override-kv` setting.
-- Local API calls bypassed a configured HTTP proxy while ordinary urllib
-  calls retained it. The forwarder harness checked HTTP and WebSocket
-  authorities, duplicate Host normalization, and interrupted streams.
-  UI manifest checks rejected names that collide with `stop` and `logs`.
-- Temporary UI files were removed after success and failure. Both Compose
-  providers preserved paths, literal dollars, networks, and the engine's
-  user mapping. Lifecycle tests covered interrupted builds, disappearing
-  containers, bounded waits for automatic removal, and recovery commands.
-- The full Podman CPU integration suite passed all 10 tests: the three
-  pi selections and oh-my-pi, prompts, model switching, smoke and benchmark
-  probes, reasoning-level forwarding, concurrent clients, and all four
-  home lifecycles. Docker passed all four home lifecycles and the targeted
-  independent-client check.
-- On both engines, pi, omp, PI WEB, and Paseo answered with one unchanged
-  router and loaded model process. Containment, independent restarts,
-  saved state, project/image/port changes, close starts, failed launches,
-  and port collisions passed without persistent UI launch records.
-  Whole-stack shutdown removed live terminal clients and project networks,
-  then startup succeeded. The final removal code also passed a separate
-  Podman check with three live auto-remove containers and their network.
-- Cleanup left no test-project containers or networks. Test image tags,
-  the temporary Docker daemon, and its bridge were removed.
+Not covered: the same refusals on Docker.
 
-Not covered: GPU or MTP inference, real browser rendering, interactive
-terminal screens, privileged host-port binding, the default host-port
-combination, or a full Docker integration run beside these checks.
+### Egress sessions and the UI networks
+
+Purpose: what a terminal session started with `--egress` can and cannot
+reach while a browser UI runs. Date: 2026-09-20. Environment: the GPU
+host, rootless Podman 6.1.2 (kernel 7.2.6), netavark 2.1.0-3 and
+aardvark-dns 2.1.0-3 on the nftables backend with no `firewall_driver`
+set, and PI WEB and Paseo serving a scratch project on their manifests'
+host ports (`127.0.0.1:4224` and `127.0.0.1:4250`).
+
+- `smoke --agent pi` and `smoke --agent pi --egress` with both UIs
+  running: 0 failures. With `--egress` the route findings read
+  `(expected with --egress)`, the gateway probe printed `[info] the
+  session is on the default network, not the agents network`, and every
+  browser-UI target `is not reachable`: each UI's name and address on the
+  `ui` network (`10.89.2.3:8504`, `10.89.2.5:6767`) and each forwarder's
+  name and addresses on `ui` and `ui-publish`. Without a UI the same
+  checks printed `[warn] no browser UI running; UI isolation not tested`
+  and 0 failures. Each UI container bound one UI directory from the
+  host (`/home/agent/.pi-web` or `/home/agent/.paseo`) beside the pi
+  sessions directory. An `agent pi --egress` prompt answered `OK` on the
+  model through the default network.
+- A container started by hand on `tokencrate_agents` and the model's
+  non-internal `tokencrate_default` got `curl failed (not reachable)`
+  from `10.89.2.3:8504`. In the engine's network namespace the bridges
+  of the internal `tokencrate_agents` and `tokencrate_ui` carried
+  `forwarding = 0`, those of `tokencrate_default` and
+  `tokencrate_ui-publish` `1`; the netavark `FORWARD` chain carried
+  `policy accept`, and its isolation chains named only the two bridges
+  that are not internal.
+- `ui stop` and `down` removed both UI pairs, the model, and all four
+  networks and left no container.
+
+Not covered: the egress session's network list and the no-relay probe on
+this host, recorded on the virtual machine ([The egress network on the
+virtual machine](#the-egress-network-on-the-virtual-machine));
+Docker Engine, and whether the order in which the network namespace sets
+up its bridges holds on every host ([Still
+unverified](#still-unverified)).
+
+### The internal bridges of the virtual machine
+
+Purpose: why an internal bridge on rootless Podman sometimes forwards,
+which decides whether an `--egress` session can reach a browser UI.
+Date: 2026-09-20. Environment: the virtual machine, rootless Podman
+6.1.2 with netavark, the interfaces of the engine's rootless network
+namespace read directly.
+
+- netavark creates an internal bridge with `forwarding = 0`. When
+  `net.ipv4.ip_forward` first changes from 0 to 1 in that namespace,
+  which the first non-internal network's setup does, Linux sets
+  `forwarding = 1` on every interface that exists at that moment.
+- An internal bridge created before that change therefore forwards: a
+  container on it and on a non-internal network reached a peer on the
+  internal bridge (HTTP status 200). An internal bridge created after
+  the change keeps `forwarding = 0`, and the same peer was unreachable.
+- On the GPU host ([Egress sessions and the UI
+  networks](#egress-sessions-and-the-ui-networks)) the `agents` and `ui`
+  bridges carried `forwarding = 0` and the UI was unreachable; the
+  netavark firewall is not the boundary there: its `FORWARD` chain had
+  `policy accept` and its isolation chains named only the two bridges
+  that are not internal.
+
+Not covered: whether `up` orders the network setup the same way on
+every host; `smoke --agent pi --egress` with a browser UI running is the
+per-host check ([Still unverified](#still-unverified)).
+
+### The egress network on the virtual machine
+
+Purpose: the `--egress` session's network placement and the containment
+check's report with and without a browser UI. Date: 2026-09-20.
+Environment: the virtual machine, once with rootless Podman 6.1.2 and
+once with Docker Engine 29.7.2 and Compose 5.5.1 (the rootful daemon
+started for the session and stopped afterwards, the Docker CLI's
+`default` context), `LLM_GPU=false` with the `ci-small` fixture loaded,
+`LLM_SKILL_SETS=` and the `coding` selection. The sessions that ran a
+shell instead of the agent used the wrapper's own `session.prepare` and
+Compose `run`, as the integration script does. Every result below holds
+on both engines; the addresses are the Podman run's, Docker's differ in
+the subnets only.
+
+- `smoke --agent pi --egress` with no UI running: 0 failures, the route
+  findings `(expected with --egress)`, `[warn] no browser UI running; UI
+  isolation not tested`, and `[info] the session is on the default
+  network, not the agents network; the gateway probe does not apply`.
+- `ui pi-web` started; its container's home binds were exactly
+  `/home/agent/.pi/agent/sessions` and `/home/agent/.pi-web`. The same
+  check with the UI running: 0 failures, every UI target `is not
+  reachable` (the UI's name and address on the `ui` network, the
+  forwarder's name and its addresses on `ui` and `ui-publish`).
+- No relay: an offline session held `tokencrate_agents` alone
+  (`10.89.2.3`); an egress session started beside it held
+  `tokencrate_default` alone. From the egress session the offline
+  container's name did not resolve and a connection to its `agents`
+  address failed. On Docker, `tokencrate_default` carries a gateway
+  (`172.20.0.1`), the host address an egress session reaches, as
+  [Privacy and containment](privacy.md#defaults-and-their-limits)
+  states.
+
+Not covered: the cloud keys file, recorded below on Podman.
+
+### Browser UIs with --egress and --cloud
+
+Purpose: the UI launch through `compose run`, and what `ui <set>
+--cloud` mounts, joins, shows, and exposes. Date: 2026-09-20.
+Environment: the virtual machine, once with rootless Podman 6.1.2 and
+podman-compose 1.6.0 and once with Docker Engine 29.8.1 and Compose
+5.5.1 (the rootful daemon started for the session and stopped
+afterwards, the Docker CLI's `default` context), `LLM_GPU=false` with
+the `ci-small` fixture loaded, `LLM_SKILL_SETS=`, the `coding`
+selection, a scratch project below `/tmp` (`LLM_PROJECT_ROOTS=/tmp`),
+and the keys file `local/cloud-keys.env` with the placeholder key
+`sk-ant-placeholder-not-a-key`. Every result holds on both engines
+unless it names one; the addresses are the Podman run's (Docker's are
+`172.19.0.3` on the default network and `172.20.0.2` on `ui`).
+
+- `tests/integration.py` passed all ten tests, in 4,706 seconds on
+  Podman and 936 on Docker, the pi images built for the `coding`,
+  `coding,pi-web`, `coding,paseo`, and toolchain selections included. Its four-client
+  check started both UIs as `tokencrate-ui-pi-web`,
+  `tokencrate-ui-forward-pi-web`, `tokencrate-ui-paseo`, and
+  `tokencrate-ui-forward-paseo`; PI WEB answered `hello` and Paseo
+  `Welcome!` on `ci-small`; the containment probes from both terminal
+  agents, with and without egress, listed those four names and their
+  addresses on `ui` and `ui-publish` and reached none; the failed
+  custom UI launch left both siblings running, `ui stop pi-web` removed
+  one pair, the relaunch found the retained transcript, and `down`
+  removed the live terminal clients, both UI pairs, and the networks.
+- `ui pi-web --cloud --dir P --port 4311` printed the two warnings of
+  `agent --cloud` and was ready in 25 seconds. `inspect` of
+  `tokencrate-ui-pi-web`: the keys file at `/etc/tokencrate/cloud-keys`
+  with `rw=false` beside the project, sessions, and `.pi-web` binds;
+  `TOKENCRATE_CLOUD=1` in the environment; the labels
+  `io.tokencrate.ui-set=pi-web` and `io.tokencrate.ui-egress=1`;
+  addresses on `tokencrate_default` (`10.89.1.3`) and `tokencrate_ui`
+  (`10.89.3.3`); no key value anywhere in the document. The forwarder
+  sat on `tokencrate_ui` and `tokencrate_ui-publish` only, published
+  `127.0.0.1:4311`, and had no `TOKENCRATE_CLOUD`. Inside the UI
+  container the launcher shell, `pi-web-sessiond`, and `pi-web-server`
+  each held `ANTHROPIC_API_KEY` in their environment, and PI WEB's
+  session model list offered the providers `anthropic` and
+  `tokencrate`. `status` printed `UI pi-web: forwarder running
+  http://127.0.0.1:4311/ project=/tmp/... cloud`.
+- `smoke --agent pi --egress` with that UI running: 0 failures, `[info]
+  the container resolves tokencrate-ui-pi-web; a browser UI is
+  reachable by name; that UI was started with --egress or --cloud`, `[info] the
+  container reached browser UI tokencrate-ui-pi-web:8504; ...` and the
+  same for `10.89.1.3:8504`, and `is not reachable` for `10.89.3.3:8504`
+  and for the forwarder's name and its two addresses. `smoke --agent pi`
+  without egress: 0 failures, every one of the six UI targets `is not
+  reachable`.
+- `ui paseo --dir P --port 4312` (no flag) beside it: from the Paseo
+  container `curl http://tokencrate-ui-pi-web:8504/` answered `200`
+  and `example.com` did not answer; from the cloud UI `example.com`
+  answered `200`. `ui logs pi-web` showed the request from the Paseo
+  container's address.
+- `ui pi-web --dir P --port 4311` without the flag replaced the pair:
+  the UI then sat on `tokencrate_ui` alone with no keys mount, and its
+  `status` line ended without `cloud`. `ui stop` removed both pairs;
+  the retained agent homes under `data/agents/pi/` held no copy of the
+  placeholder key; `down` removed llama and the four networks.
+- On Docker, from the host, `curl` with `Host: evil.example:8504` to
+  the cloud UI's default-network address answered `200`, past the
+  forwarder's checks; its `ui` address did not answer (gateway mode
+  `isolated`). Rootless Podman's bridges are inside the user's network
+  namespace, and the host does not reach them.
+- The `StopTimeout` the engine records for a UI container is 20 seconds
+  on Docker and 10 on Podman: podman-compose passes `stop_grace_period`
+  to its own `stop` and `down` only, and `ui stop` calls the engine's
+  `stop` directly.
+- On the GPU host (RTX 5090, driver 615.71.09, rootless Podman 6.1.2,
+  `qwen3.8-27b-q4-mtp` loaded, the `coding` selection, the keys file
+  holding an OpenRouter key): `ui paseo --cloud --dir /tmp/...` was
+  ready in 458 seconds, image build included, with the same mounts,
+  labels, and networks as on the VM (`10.89.0.3` on the default network,
+  `10.89.2.3` on `ui`); the Paseo daemon, its supervisor, the launcher
+  shell, and three node processes held `OPENROUTER_API_KEY`; `status`
+  ended the line with `cloud`; the egress check printed the three
+  `[info]` lines for the UI's name and default-network address and
+  `not reachable` for its `ui` address and the forwarder, 0 failures;
+  the offline check 0 failures. `paseo run --provider pi --model
+  openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+  --thinking off` inside the UI container reached `completed` in 8
+  seconds; the saved agent record names that model, and the pi
+  transcript in the retained sessions directory holds the assistant
+  turn `CLOUD_OK` with `provider: openrouter`, 8,715 tokens, cost 0.
+  The relaunch without the flag, `ui stop`, the key grep of the agent
+  homes (nothing), and `down` behaved as on the VM.
+
+Not covered: a cloud model through PI WEB; Paseo's create-agent form
+in a browser; a paid provider.
+
+### The cloud keys file and the session container
+
+Purpose: what `agent pi --cloud` refuses, how the keys file reaches pi,
+what the engine records of it, what a signal to the wrapper does to the
+session container, the llama API's CORS setting, the agent check's route
+lines, and `doctor`'s set-name warning. Date: 2026-09-20. Environment:
+the virtual machine, rootless Podman 6.1.2 with podman-compose 1.6.0 and
+`crun`, kernel 7.2.6, `LLM_GPU=false` with the `ci-small` fixture
+loaded, `LLM_SKILL_SETS=` and the `coding` selection, a scratch project
+below the home directory, and the keys file `local/cloud-keys.env` with
+the placeholder key `sk-ant-placeholder-not-a-key`.
+
+- Four refusals, one sentence each, exit status 1, before the pre-flight:
+  no file gave `no cloud keys file at .../local/cloud-keys.env; write one
+  NAME=value line per provider key there (.env.example describes it), or
+  set LLM_CLOUD_KEYS_FILE`; a directory at that path `the cloud keys
+  file is not a regular file`; a file below the project `the cloud keys
+  file lies inside the project (...), which agent containers read; move
+  it`; `agent omp --cloud` gave `--cloud applies to pi only; oh-my-pi
+  reads provider settings from the project's .env files, which could
+  redirect a key`.
+- `agent pi --cloud -- --list-models anthropic` with the file holding a
+  comment line, a blank line, a double-quoted Anthropic key, and an
+  OpenAI key whose value carries `=`: the wrapper printed both warnings,
+  the second naming the file, and pi listed the 14 Anthropic models of
+  its bundled catalogue; the key value appeared nowhere in the output.
+  The same command with `--egress` instead of `--cloud` printed `No
+  models matching "anthropic"`. A file whose first line is `not a line`
+  stopped the container with `cloud keys file line 1 is not NAME=value`.
+- A shell started the way the session is: `env` held the exported key,
+  `/proc/self/mounts` showed the file at `/etc/tokencrate/cloud-keys`
+  mounted `ro`, and `inspect` of the container listed the mount with the
+  host path and `RW false`, `TOKENCRATE_CLOUD=1` in its environment,
+  `tokencrate_default` as its only network, and the key value nowhere.
+  The project's agent home directory had mode `0700`.
+- `agent pi --cloud -- -p ...` runs in a container named
+  `tokencrate-agent-<12 hex digits>`. With the prompt in progress, a
+  `SIGTERM` to the wrapper ended it with status 143 and a `SIGHUP` with
+  status 129; in both cases the container was gone within seconds and
+  no `podman-compose` process remained. `Ctrl-C` through a
+  pseudo-terminal ended the wrapper with status 130 and left no session
+  container.
+- On the GPU host (rootless Podman 6.1.2, driver 615.71.09, the default
+  27B preset), the same steps: `smoke --agent pi` and `smoke --agent pi
+  --egress` passed with the lines above and the gateway `10.89.1.1`
+  answering from the user's network namespace; `agent pi --cloud --
+  --list-models openrouter` with a keys file holding an OpenRouter key
+  printed both warnings and OpenRouter's bundled catalogue, and the same
+  command with `--egress` alone printed `No models matching
+  "openrouter"`. A turn on `openrouter/google/gemma-4-31b-it:free` ended
+  in OpenRouter's `429` naming the upstream provider's shared free pool
+  (`is_byok: false`, no authentication error), so the file's key reached
+  OpenRouter and was accepted; a turn on the local model in the same
+  `--cloud` session answered. A second run tried free models in turn:
+  `minimax/minimax-m3:free` got OpenRouter's `404` (the model is no
+  longer free), and
+  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` answered
+  `CLOUD_OK` in 11 seconds including the container start, so a cloud
+  model answered a prompt through the mounted file. Afterwards no key
+  value was in any file under the agent homes. With a placeholder key, a turn on
+  `anthropic/claude-haiku-4-5` ended in Anthropic's `401`
+  `authentication_error`, `API key is invalid.`
+- The llama API (`LLAMA_ARG_CORS_ORIGINS=localhost`): `GET /health` with
+  `Origin: http://evil.example` answered without an
+  `Access-Control-Allow-Origin` header; with `Origin:
+  http://127.0.0.1:4300` and `http://localhost:4300` the header echoed
+  the origin. A `text/plain` `POST /models/load` with the foreign origin
+  answered `404` for the unknown model name: the request was acted on,
+  not refused.
+- `smoke --agent pi`: 0 failures, with `the container has one network
+  interface`, `no default route and no route through a gateway (IPv4 or
+  IPv6)`, `no name resolution (example.com does not resolve)`, and the
+  gateway `10.89.2.1` answering from the user's network namespace. With
+  `--egress`: 0 failures, `the routing table has a default route
+  (expected with --egress)`, `example.com resolves (expected with
+  --egress)`, and no `coding:` line, the set checks being skipped.
+- `doctor` with `LLM_AGENT_SETS=preset` printed `[warn] LLM_AGENT_SETS
+  names no known set: preset (run: bash bin/tokencrate agent-sets list)`
+  and 0 failures.
+
+Not covered: the interactive model picker and the reported cost; a paid
+provider; Docker Engine.
+
+### oh-my-pi and project env files
+
+Purpose: whether an oh-my-pi session with a route out can be made to send
+a provider key to an address a project chooses, which decides whether
+`--cloud` can be offered through oh-my-pi. Date: 2026-09-20. Environment:
+the virtual machine, rootless Podman 6.1.2, the pinned `agent-omp` image
+(oh-my-pi 18.2.5) run offline (`--network none`) with the sentinel key
+`sk-SENTINEL-not-a-key` in its environment and an HTTP listener inside
+the container on port 9999.
+
+- With `ANTHROPIC_BASE_URL=http://127.0.0.1:9999` in the project's
+  `.env`, `omp -p hi --model anthropic/claude-sonnet-4-5` sent 8 `POST
+  /v1/messages` requests to the listener, each carrying the sentinel in
+  `x-api-key`; the same line in `.env.local` gave the same 8. Without the
+  file (the control) the listener received no request.
+- The mechanism, read in the image: oh-my-pi's CLI merges `<cwd>/.env`,
+  `.env.local`, `.env.development`, and `.env.development.local` into its
+  environment for every unset variable, and its Anthropic provider uses
+  `ANTHROPIC_BASE_URL` when set. pi has no such loader; its bundled SDK
+  reads `ANTHROPIC_BASE_URL` from the environment alone, which the
+  container's Compose service does not set. `enabledProviders` in
+  oh-my-pi's settings opts foreign configuration directories in and gates
+  no provider, so it is no remedy.
+- `agent omp --cloud` is refused with one sentence before the keys are
+  read (engine-free gate, `tests/test_cloud.py`).
+
+Not covered: `~/.env` and oh-my-pi's own configuration directories, which
+the agent home tmpfs and the read-only configuration mount keep empty.

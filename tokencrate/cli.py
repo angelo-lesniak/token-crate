@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 import re
+import signal
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,12 +27,13 @@ from . import (
     presets,
     probe,
     runtime,
+    session,
     skills,
     uis,
     warn,
 )
 from . import engine as engines
-from .names import SET_NAME_RE, UI_ACTIONS, preset_file, select_sets
+from .names import SET_NAME_RE, UI_ACTIONS, select_sets
 
 USAGE = """\
 TokenCrate - pinned local-LLM and coding-agent containers for Docker and Podman
@@ -51,16 +53,16 @@ Usage:
       Follow the llama container logs.
   bin/tokencrate smoke [--preset id] [--basic]
       Run API probes against the running stack and save a report (--basic skips the checks that need a capable model).
-  bin/tokencrate smoke --agent <pi|omp> [--preset id] [--sets names (pi only)]
-      Prove from inside an agent container that only the model is reachable.
+  bin/tokencrate smoke --agent <pi|omp> [--preset id] [--sets names (pi only)] [--egress]
+      Prove from inside an agent container what is reachable: only the model, or with --egress also the routes out.
   bin/tokencrate bench [--preset id]... [--iterations n] [--long]
       Measure prompt-processing and generation speed per preset and save a report.
-  bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [-- args]
-      Open a coding agent in the current (or named) project directory.
+  bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [-- args]
+      Open a coding agent in the current (or named) project directory; --cloud (pi only) mounts LLM_CLOUD_KEYS_FILE.
   bin/tokencrate agent-sets list
       List the agent sets that can be rendered into the pi image.
-  bin/tokencrate ui <set> [--preset id] [--sets names] [--dir path] [--port port]
-      Start a browser UI for pi from an agent set in the background and print its loopback address.
+  bin/tokencrate ui <set> [--preset id] [--sets names] [--dir path] [--port port] [--egress] [--cloud]
+      Start a browser UI for pi from an agent set in the background; --cloud mounts LLM_CLOUD_KEYS_FILE into it.
   bin/tokencrate ui stop [<set>]
       Stop and remove the named UI, or all UIs when no set is named.
   bin/tokencrate ui logs [<set>]
@@ -97,7 +99,8 @@ DRAFT_SPEC_RE = re.compile(r"^hf:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[^\s]+$")
 FLAG_COMMANDS = {
     "--long": (("bench",), "bench"),
     "--basic": (("smoke",), "smoke"),
-    "--egress": (("agent",), "agent"),
+    "--egress": (("agent", "smoke", "ui"), "agent, smoke --agent, or ui"),
+    "--cloud": (("agent", "ui"), "agent or ui"),
     "--timeout": (("up",), "up"),
     "--iterations": (("bench",), "bench"),
     "--preset": (("doctor", "smoke", "bench", "agent", "ui"), "doctor, smoke, bench, agent, or ui"),
@@ -120,6 +123,7 @@ class Options:
     model_sets: list[str] = field(default_factory=list)
     agent_dir: str = ""
     egress: bool = False
+    cloud: bool = False
     agent_name: str = ""
     iterations: int = 3
     long: bool = False
@@ -146,8 +150,8 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
         argument = arguments[index]
         if argument in FLAG_COMMANDS and command not in FLAG_COMMANDS[argument][0]:
             raise TokenCrateError(f"{argument} is only valid with {FLAG_COMMANDS[argument][1]}")
-        # A repeated single-valued flag used to take the last occurrence
-        # silently, so a typo in the first one was invisible.
+        # A repeated single-valued flag is refused rather than resolved to
+        # one occurrence, so a typo in either stays visible.
         if argument in SINGLE_VALUE_FLAGS:
             if argument in seen:
                 raise TokenCrateError(f"{argument} may be given once with {command}")
@@ -158,6 +162,8 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
             options.basic = True
         elif argument == "--egress":
             options.egress = True
+        elif argument == "--cloud":
+            options.cloud = True
         elif argument == "--timeout":
             raw = value(argument, "a positive integer")
             if not POSITIVE_INTEGER_RE.fullmatch(raw):
@@ -172,7 +178,6 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
             index += 1
         elif argument == "--preset":
             name = value(argument, "a preset name")
-            preset_file(settings.config_dir, name)
             if options.presets and command != "bench":
                 raise TokenCrateError(f"--preset may be given once with {command}")
             if name in options.presets:
@@ -197,7 +202,7 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
             index += 1
         elif argument == "--agent":
             name = value(argument, "pi or omp")
-            if name not in agents.AGENTS:
+            if name not in session.AGENTS:
                 raise TokenCrateError("--agent requires pi or omp")
             options.agent_name = name
             index += 1
@@ -222,11 +227,6 @@ def parse_names(arguments: list[str]) -> list[str]:
     return list(arguments)
 
 
-def skill_set_catalog(settings: env.Settings) -> dict:
-    hosts = skills.load_allowed_hosts(settings.config_dir / "skill-sets" / "allowed-git-hosts.txt")
-    return skills.available_sets(settings.config_dir / "skill-sets", hosts)
-
-
 def requirement_text(preset: presets.Preset) -> str:
     """The `[requires]` of a preset as `presets list` prints it."""
     parts = []
@@ -240,7 +240,7 @@ def requirement_text(preset: presets.Preset) -> str:
 def print_set_list(catalog: dict) -> None:
     """One line per manifest with its description."""
     for name, entry in catalog.items():
-        print(f"{name}{' - ' + entry.description if entry.description else ''}")
+        print(f"{name} - {entry.description}")
 
 
 def run_model_sets(settings: env.Settings, action: str, names: list[str]) -> int:
@@ -258,15 +258,8 @@ def run_skill_sets(settings: env.Settings, action: str, names: list[str]) -> int
     skills_dir = settings.skills_dir
     if not skills_dir.is_dir():
         raise TokenCrateError(f"skills directory does not exist: {skills_dir} (run: bash bin/tokencrate init)")
-    selected = select_sets(skill_set_catalog(settings), names, "skill set")
+    selected = select_sets(skills.catalog(settings.config_dir), names, "skill set")
     return skills.fetch(selected, skills_dir.resolve(), verify_only=action == "status")
-
-
-def refuse_waiting(configuration: presets.Configuration, preset: str) -> None:
-    """The router has no section for a preset the pinned build cannot load."""
-    wait = configuration.wait(preset)
-    if wait:
-        raise presets.wait_error(preset, wait)
 
 
 def run_probe(
@@ -278,12 +271,9 @@ def run_probe(
 ) -> int:
     # The preset is judged before the stack is asked for, so a name that does
     # not exist is that message and not "the llama container is not running".
-    selected = options.presets or ([settings.default_preset] if settings.default_preset else [])
-    if not selected:
-        raise TokenCrateError(f"{kind} needs --preset or LLM_DEFAULT_PRESET")
+    selected = options.presets or [session.chosen_preset(settings, "")]
     for name in selected:
-        preset_file(settings.config_dir, name)
-        refuse_waiting(configuration, name)
+        configuration.require(name)
     engine.running_llama_id()
     url = settings.service_url
     if kind == "smoke":
@@ -375,13 +365,10 @@ def dispatch(command: str, arguments: list[str]) -> int:
                 "fix the [fail] lines above before starting (bash bin/tokencrate doctor repeats them)"
             )
         loaded = configuration()
-        # A default preset that no longer exists, or that the pinned build
+        # A default preset that does not exist, or that the pinned build
         # cannot load, must fail before a download.
         if settings.default_preset:
-            preset_file(settings.config_dir, settings.default_preset)
-            wait = loaded.wait(settings.default_preset)
-            if wait:
-                raise presets.default_wait_error(settings.default_preset, wait)
+            loaded.require(settings.default_preset)
         runtime.prepare_host_directories(settings)
         engine = engines.detect(settings)
         # A Docker network that keeps a gateway address must refuse before a
@@ -395,7 +382,10 @@ def dispatch(command: str, arguments: list[str]) -> int:
         runtime.stop_stack(engines.detect(settings, launching=False))
     elif command == "status":
         parse_options(settings, command, arguments)
-        runtime.print_status(settings, engines.detect(settings, launching=False))
+        engine = engines.detect(settings, launching=False)
+        runtime.print_containers(settings, engine)
+        uis.print_status(engine)
+        runtime.print_models(settings, engine)
     elif command == "logs":
         parse_options(settings, command, arguments)
         engine = engines.detect(settings, launching=False)
@@ -408,13 +398,15 @@ def dispatch(command: str, arguments: list[str]) -> int:
         if options.sets is not None and not options.agent_name:
             raise TokenCrateError("--sets applies to smoke --agent")
         if options.sets is not None and options.agent_name != "pi":
-            raise TokenCrateError(agents.SETS_ARE_PI_ONLY)
+            raise TokenCrateError(session.SETS_ARE_PI_ONLY)
+        if options.egress and not options.agent_name:
+            raise TokenCrateError("--egress applies to smoke --agent")
         engine = engines.detect(settings)
         if options.agent_name:
             if options.basic:
                 raise TokenCrateError("--basic is not valid with --agent")
             return agents.agent_check(
-                settings, engine, configuration(), options.agent_name, options.preset, options.sets
+                settings, engine, configuration(), options.agent_name, options.preset, options.sets, options.egress
             )
         return run_probe(settings, engine, configuration(), "smoke", options)
     elif command == "bench":
@@ -423,14 +415,17 @@ def dispatch(command: str, arguments: list[str]) -> int:
     elif command == "agent":
         if not arguments:
             raise TokenCrateError(
-                "usage: bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [-- args]"
+                "usage: bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] "
+                "[--egress] [--cloud] [-- args]"
             )
         agent, rest = arguments[0], arguments[1:]
-        if agent not in agents.AGENTS:
+        if agent not in session.AGENTS:
             raise TokenCrateError(f"unsupported agent: {agent} (choose pi or omp)")
         options = parse_options(settings, command, rest)
         if options.sets is not None and agent != "pi":
-            raise TokenCrateError(agents.SETS_ARE_PI_ONLY)
+            raise TokenCrateError(session.SETS_ARE_PI_ONLY)
+        if options.cloud and agent != "pi":
+            raise TokenCrateError(session.CLOUD_IS_PI_ONLY)
         project_dir = options.agent_dir or os.getcwd()
         engine = engines.detect(settings)
         return agents.run_agent(
@@ -443,11 +438,13 @@ def dispatch(command: str, arguments: list[str]) -> int:
             options.egress,
             options.agent_args,
             options.sets,
+            options.cloud,
         )
     elif command == "ui":
         if not arguments:
             raise TokenCrateError(
-                "usage: bin/tokencrate ui <set> [--preset id] [--sets names] [--dir path] [--port port] | stop | logs"
+                "usage: bin/tokencrate ui <set> [--preset id] [--sets names] [--dir path] [--port port] "
+                "[--egress] [--cloud] | stop | logs"
             )
         target, rest = arguments[0], arguments[1:]
         if target in UI_ACTIONS:
@@ -456,11 +453,9 @@ def dispatch(command: str, arguments: list[str]) -> int:
             engine = engines.detect(settings, launching=False)
             name = rest[0] if rest else ""
             return uis.stop(engine, name) if target == "stop" else uis.logs(engine, name)
-        if not SET_NAME_RE.fullmatch(target):
-            raise TokenCrateError(f"unsafe agent set name: {target}")
         options = parse_options(settings, command, rest)
         project_dir = options.agent_dir or os.getcwd()
-        return agents.run_ui(
+        return uis.start(
             settings,
             engines.detect(settings),
             configuration(),
@@ -469,6 +464,8 @@ def dispatch(command: str, arguments: list[str]) -> int:
             project_dir,
             options.sets,
             options.port,
+            options.egress,
+            options.cloud,
         )
     elif command == "models":
         action, rest = (arguments[0], arguments[1:]) if arguments else ("", [])
@@ -517,11 +514,8 @@ def dispatch(command: str, arguments: list[str]) -> int:
         if action == "list":
             if rest:
                 raise TokenCrateError("usage: bin/tokencrate skills list")
-            print_set_list(skill_set_catalog(settings))
-            print(
-                "Repository skills under config/skills are always available; "
-                f"private skills go below {settings.local_skills_dir}."
-            )
+            print_set_list(skills.catalog(settings.config_dir))
+            print(f"Private skills go below {settings.local_skills_dir}.")
         elif action in ("fetch", "status"):
             return run_skill_sets(settings, action, parse_names(rest))
         else:
@@ -550,11 +544,28 @@ def dispatch(command: str, arguments: list[str]) -> int:
     return 0
 
 
+def install_signal_handlers() -> None:
+    """A hang-up or termination ends the wrapper the way an exception does,
+    so its `with` and `try` blocks unwind: the Compose client is killed,
+    and `agent` stops the session container it started (which the client
+    alone would leave running). A disposition of SIG_IGN, which `nohup`
+    and `setsid` leave behind, is respected: a backgrounded `up` or
+    `models fetch` keeps running."""
+
+    def raise_exit(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGHUP, signal.SIGTERM):
+        if signal.getsignal(signum) is not signal.SIG_IGN:
+            signal.signal(signum, raise_exit)
+
+
 def main(argv: list[str]) -> int:
     command = argv[0] if argv else "help"
     if command in ("help", "--help", "-h"):
         sys.stdout.write(USAGE)
         return 0
+    install_signal_handlers()
     try:
         return dispatch(command, argv[1:])
     except TokenCrateError as error:

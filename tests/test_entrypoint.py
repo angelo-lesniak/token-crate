@@ -28,14 +28,12 @@ class EntrypointTests(unittest.TestCase):
         self.generated = self.prefix / "etc" / "tokencrate" / "agent-generated"
         self.image = self.prefix / "opt" / "tokencrate"
         self.fetched = self.image / "skills"
-        self.repo_skills = self.image / "skills-repo"
         self.local_skills = self.image / "skills-local"
         for path in (
             self.project,
             self.static,
             self.generated,
             self.fetched,
-            self.repo_skills,
             self.local_skills,
         ):
             path.mkdir(parents=True)
@@ -73,7 +71,6 @@ class EntrypointTests(unittest.TestCase):
 
     def test_pi_merges_skills_writes_settings_and_leaves_the_project_alone(self) -> None:
         self.make_skill(self.fetched / "pocock-core", "tdd")
-        self.make_skill(self.repo_skills, "repo-skill")
         self.make_skill(self.local_skills, "private-skill")
         before = sorted(str(path) for path in self.project.rglob("*"))
         result = self.run_entrypoint(
@@ -88,7 +85,7 @@ class EntrypointTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"cwd={self.project}", result.stdout)
-        for name in ("tdd", "repo-skill", "private-skill"):
+        for name in ("tdd", "private-skill"):
             self.assertIn(name, result.stdout)
         self.assertIn("Fixture", result.stdout)
         self.assertIn("*", result.stdout)
@@ -137,9 +134,40 @@ class EntrypointTests(unittest.TestCase):
         self.assertTrue(os.access(config, os.W_OK), "oh-my-pi must be able to save its settings for the session")
         self.assertTrue((self.home / ".omp" / "agent" / "models.yml").is_file())
 
+    def test_the_mounted_keys_file_is_exported_and_nothing_else_is(self) -> None:
+        show = 'printf "%s|%s\\n" "${ANTHROPIC_API_KEY-unset}" "${OPENAI_API_KEY-unset}"'
+        without = self.run_entrypoint("omp", "bash", "-c", show)
+        self.assertEqual((without.returncode, without.stdout), (0, "unset|unset\n"), without.stderr)
+        keys = self.prefix / "etc" / "tokencrate" / "cloud-keys"
+        # The .env grammar: comments and blank lines, matching quotes removed,
+        # every other character of a value kept, trailing `=` included.
+        keys.write_text('# keys\n\nANTHROPIC_API_KEY="sk-ant=x=" \n')
+        mounted = self.run_entrypoint("omp", "bash", "-c", show, TOKENCRATE_CLOUD="1")
+        self.assertEqual((mounted.returncode, mounted.stdout), (0, "sk-ant=x=|unset\n"), mounted.stderr)
+        for content, message in (
+            ("not a key line\n", "line 1 is not NAME=value"),
+            ("OPENAI_API_KEY=sk\r\n", "line 1 has a carriage return"),
+            ("# fine\nPATH=/evil\n", "line 2 sets PATH, which the agent entrypoint owns"),
+            ("TOKENCRATE_PRESET=other\n", "sets TOKENCRATE_PRESET"),
+            ("IFS=x\n", "sets IFS"),
+        ):
+            with self.subTest(content=content):
+                keys.write_text(content)
+                refused = self.run_entrypoint("omp", "true")
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(message, refused.stderr)
+        # A session that asked for the keys refuses to start without the
+        # file, and a directory in its place (an engine creates one for a
+        # missing bind source) is no file.
+        keys.unlink()
+        self.assertEqual(self.run_entrypoint("omp", "true").returncode, 0)
+        missing = self.run_entrypoint("omp", "true", TOKENCRATE_CLOUD="1")
+        self.assertIn("not mounted as a regular file", missing.stderr)
+        keys.mkdir()
+        self.assertIn("not mounted as a regular file", self.run_entrypoint("omp", "true").stderr)
+
     def test_a_skill_whose_frontmatter_name_differs_from_its_directory_is_refused(self) -> None:
         self.make_skill(self.fetched / "one", "tdd")
-        self.make_skill(self.repo_skills, "repo-skill")
         self.make_skill(self.local_skills, "private-skill")
         self.assertEqual(self.run_entrypoint("pi", "true", TOKENCRATE_SKILL_SETS="one").returncode, 0)
         # The check applies to every source: here the private skill lies.

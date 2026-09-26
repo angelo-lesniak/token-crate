@@ -1,10 +1,19 @@
 schema = 1
-description = "Ten engineering and productivity skills from mattpocock/skills (MIT), pinned to one commit"
+description = "Seventeen engineering and productivity skills from mattpocock/skills (MIT), pinned to one commit"
 
 # Pins: https://github.com/mattpocock/skills at 3cca18b368ae95cdbdebbff572ccafa662551015
 # (main, 2026-09-04). Refresh with:
 #   bash bin/tokencrate skills status pocock-core
 # and recompute the digest for a new commit as CONTRIBUTING.md describes.
+#
+# A skill that another one calls by name is pinned with it:
+#   grilling          <- grill-me, triage, wayfinder, improve-codebase-architecture
+#   domain-modeling   <- triage, wayfinder, improve-codebase-architecture
+#   codebase-design   <- tdd, improve-codebase-architecture
+#   prototype         <- wayfinder
+#   research          <- wayfinder
+#   setup-matt-pocock-skills: code-review, to-spec, triage and wayfinder send
+#   the user to it when no issue tracker is configured.
 
 [[skill]]
 name = "tdd"
@@ -63,6 +72,54 @@ sha256 = "ec943f4623423aed3650b1b652d1c23ac0bc5be0645399a6da63ec0e46149325"
 license = "MIT"
 
 [[skill]]
+name = "wayfinder"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/engineering/wayfinder"
+sha256 = "e0d4612542ebaec19abc4b8e7d13244764d864df1fb252da38465e3b992baa74"
+license = "MIT"
+
+[[skill]]
+name = "domain-modeling"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/engineering/domain-modeling"
+sha256 = "e853d8483be510bfe949a65f052f71cd588308953ac6834681f526cc9c16b8b7"
+license = "MIT"
+
+[[skill]]
+name = "codebase-design"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/engineering/codebase-design"
+sha256 = "8c22098983873ee047bc989ef95522cd92570b481faa855652cb9c6c241de107"
+license = "MIT"
+
+[[skill]]
+name = "improve-codebase-architecture"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/engineering/improve-codebase-architecture"
+sha256 = "9144eeaddf0c89cce06d126f50e6b07a66c46a58b63c5494830d29d10cec2695"
+license = "MIT"
+
+[[skill]]
+name = "prototype"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/engineering/prototype"
+sha256 = "ac55c2593bb78f57e5b8c4c895e004df3480dd49ab3f7e74428af5f790093e5c"
+license = "MIT"
+
+[[skill]]
+name = "setup-matt-pocock-skills"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/engineering/setup-matt-pocock-skills"
+sha256 = "5f2a6eb55c05f9cd3667756dbcc999c8d65ce76f14e253adc6ee8636d07ca7f5"
+license = "MIT"
+
+[[skill]]
 name = "writing-for-agents"
 repository = "https://github.com/mattpocock/skills"
 commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
@@ -76,6 +133,14 @@ repository = "https://github.com/mattpocock/skills"
 commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
 path = "skills/productivity/grill-me"
 sha256 = "388a9fd67b3b68841fd0a0f896833c35794f9a09db1b77101d7ae0406c36b817"
+license = "MIT"
+
+[[skill]]
+name = "grilling"
+repository = "https://github.com/mattpocock/skills"
+commit = "3cca18b368ae95cdbdebbff572ccafa662551015"
+path = "skills/productivity/grilling"
+sha256 = "d9879a3201e3e0706487eca1c22346ae3bca03916a8c071527e6a8845aeb7acf"
 license = "MIT"
 
 [[skill]]

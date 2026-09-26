@@ -8,6 +8,7 @@ import dataclasses
 import io
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import unittest
@@ -121,7 +122,7 @@ class EvaluateTests(unittest.TestCase):
             "[ok] podman version 6.1.0-fake",
             "[ok] podman engine is reachable",
             "[ok] podman-compose version 1.6.0-fake",
-            "[ok] Podman 6 keeps bridge networks apart: an --egress session cannot reach the UI networks",
+            "[ok] Podman 6 meets the tested minimum (6)",
             "[ok] Podman engine is rootless",
             "[ok] Podman uses crun",
             "[ok] the Podman compose provider keeps CDI device requests",
@@ -412,14 +413,13 @@ class EvaluateTests(unittest.TestCase):
             ],
         )
 
-    def test_podman_older_than_6_fails(self) -> None:
+    def test_podman_older_than_6_warns(self) -> None:
         lines = evaluate(healthy_facts(engine=podman_facts(version_line="podman version 5.4.2")))
-        self.assertEqual(
-            failures(lines),
-            [
-                "[fail] Podman podman version 5.4.2 is older than 6; its bridges forward to each other, "
-                "so an --egress session could reach a running browser UI"
-            ],
+        self.assertEqual(failures(lines), [])
+        self.assertIn(
+            "[warn] Podman podman version 5.4.2 is older than 6, which is the oldest version TokenCrate is tested on; "
+            "run bash bin/tokencrate smoke --agent pi --egress while a browser UI runs to check the network boundary",
+            lines,
         )
 
     def test_storage_directories_are_reported_per_label(self) -> None:
@@ -443,29 +443,29 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertIn("[ok] skills directory exists: /srv/skills", lines)
 
+    def test_a_list_setting_that_names_no_set_warns(self) -> None:
+        # A stale .env (LLM_AGENT_SETS=preset) passes every host check;
+        # the first agent start would refuse it, doctor says so first.
+        problems = [
+            ("LLM_AGENT_SETS", "names no known set: preset (run: bash bin/tokencrate agent-sets list)"),
+            ("LLM_SKILL_SETS", "unsafe LLM_SKILL_SETS name: 'a b'"),
+        ]
+        lines = evaluate(healthy_facts(set_problems=problems))
+        self.assertEqual(
+            warnings(lines),
+            [
+                "[warn] LLM_AGENT_SETS names no known set: preset (run: bash bin/tokencrate agent-sets list)",
+                "[warn] LLM_SKILL_SETS unsafe LLM_SKILL_SETS name: 'a b'",
+            ],
+        )
+        self.assertEqual(failures(lines), [])
+
     def test_port_in_use_fails_unless_our_own_llama_container_holds_it(self) -> None:
         lines = evaluate(healthy_facts(port="4300", port_in_use=True, own_container_holds_port=False))
         self.assertEqual(failures(lines), ["[fail] host port 4300 is already in use"])
         lines = evaluate(healthy_facts(port="4300", port_in_use=True, own_container_holds_port=True))
         self.assertEqual(warnings(lines), [])
         self.assertEqual(failures(lines), [])
-
-    def test_an_unchecked_port_is_a_warning_not_a_free_port(self) -> None:
-        lines = evaluate(healthy_facts(port="4300", port_in_use=None, port_check_cause="ss was not found"))
-        self.assertEqual(
-            warnings(lines), ["[warn] could not check whether host port 4300 is in use (ss was not found)"]
-        )
-        self.assertEqual(failures(lines), [])
-
-    def test_the_port_warning_reports_why_the_check_failed_not_a_missing_ss(self) -> None:
-        # `ss` that runs and fails is not `ss` that is absent.
-        lines = evaluate(
-            healthy_facts(port="4300", port_in_use=None, port_check_cause='Error: "abc" does not look like a port.')
-        )
-        self.assertEqual(
-            warnings(lines),
-            ['[warn] could not check whether host port 4300 is in use (Error: "abc" does not look like a port.)'],
-        )
 
 
 class RunTests(unittest.TestCase):
@@ -604,11 +604,20 @@ class GatherTests(unittest.TestCase):
         self.assertEqual(facts.cdi_devices, [])
         self.assertFalse(facts.git_present)
         self.assertEqual(facts.uname, "")
-        # The restricted PATH has no `ss`, so the port could not be checked.
-        self.assertIsNone(facts.port_in_use)
+        self.assertIsInstance(facts.port_in_use, bool)
         self.assertEqual(facts.port, "4207")
         self.assertEqual([item[0] for item in facts.storage], ["models", "agents", "skills", "local-skills"])
         self.assertEqual(facts.storage[0], ("models", str(self.root / "data" / "models"), False, False))
+
+    def test_gather_judges_the_port_with_the_bind_the_start_makes(self) -> None:
+        # A loopback listener occupies the port the way a service would;
+        # once it is gone, the same port is free. No `ss` is consulted.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = str(listener.getsockname()[1])
+            self.assertTrue(doctor.gather(self.settings(LLM_PORT=port)).port_in_use)
+        self.assertFalse(doctor.gather(self.settings(LLM_PORT=port)).port_in_use)
 
     def test_gather_skips_the_gpu_probes_when_the_gpu_is_off(self) -> None:
         self.fake("nvidia-smi", FAKE_NVIDIA_SMI)

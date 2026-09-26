@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Runs inside an agent container: proves that the model endpoint is reachable
-# and that the routes out are absent (no default route, no path to an address
-# literal, no name resolution, no browser-UI peer, and on Docker no host
-# address on the bridge). It proves the absence of those routes, nothing
-# about what the reachable model does. Used by `bin/tokencrate smoke
-# --agent`, which passes the engine name and the gateway in.
+# and that the routes out are absent (one network, no route through a
+# gateway, no name resolution, no browser-UI peer except one that asked for
+# a route out itself, and on Docker no gateway address on the agents
+# network, through which host services would be reachable). It proves the
+# absence of those routes, nothing about what the reachable model does.
+# Used by `bin/tokencrate smoke --agent`, which passes the engine name and,
+# for an offline session, the gateway in.
 set -uo pipefail
 
 readonly LLAMA_URL=http://llama:8080
@@ -17,7 +19,8 @@ report() {
   [[ "$status" != fail ]] || failures=$((failures + 1))
 }
 
-printf '== TokenCrate agent container check (%s) ==\n' "${TOKENCRATE_AGENT:-unknown}"
+printf '== TokenCrate agent container check (%s%s) ==\n' "${TOKENCRATE_AGENT:-unknown}" \
+  "${TOKENCRATE_EGRESS:+, --egress}"
 report ok "running as $(id -u):$(id -g) with HOME=$HOME"
 
 if [[ -w "$HOME" ]]; then
@@ -39,39 +42,89 @@ else
   report fail "model endpoint is not reachable: $LLAMA_URL"
 fi
 
-# Containment is proven by routes, not names: no default route, no path to an
-# address literal, and no name resolution.
-if awk '$2 == "00000000" { found = 1 } END { exit !found }' /proc/net/route; then
-  report fail 'the routing table has a default route; egress is NOT blocked'
+# Containment is proven by routes, not names. The container sits on exactly
+# one network, so it cannot relay between two. An offline session has no
+# route through a gateway (IPv4 or IPv6; a route to the model's network is
+# on-link) and resolves no public name. With TOKENCRATE_EGRESS the session
+# asked for a route out, so a default route is the expected result; what
+# it must never reach, below, stays a failure either way, which is what
+# makes an egress run worth doing. Whether the internet answers is the
+# host's network, not the container's placement, and is not probed.
+egress=${TOKENCRATE_EGRESS:-}
+# Ethernet devices only (type 1): a kernel with tunnel modules loaded puts
+# fallback tunnel devices into every network namespace.
+interfaces=0
+for device in /sys/class/net/*; do
+  [[ "$(cat "$device/type" 2>/dev/null)" == 1 ]] && interfaces=$((interfaces + 1))
+done
+if ((interfaces == 1)); then
+  report ok 'the container has one network interface'
 else
-  report ok 'no default route'
+  report fail "the container has $interfaces network interfaces instead of one"
 fi
-if curl -sS --max-time 5 http://1.1.1.1/ >/dev/null 2>&1; then
-  report fail 'the container reached http://1.1.1.1/; egress is NOT blocked'
+default_route=false
+awk '$2 == "00000000" { found = 1 } END { exit !found }' /proc/net/route && default_route=true
+gateway_route=false
+# RTF_GATEWAY is bit 0x2 of the flags: the fourth field of the IPv4 table,
+# the ninth of the IPv6 one.
+while read -r _ _ _ flags _; do
+  [[ "$flags" =~ ^[0-9A-Fa-f]+$ ]] && ((16#$flags & 2)) && gateway_route=true
+done < /proc/net/route
+while read -r _ _ _ _ _ _ _ _ flags _; do
+  [[ "$flags" =~ ^[0-9A-Fa-f]+$ ]] && ((16#$flags & 2)) && gateway_route=true
+done < /proc/net/ipv6_route
+resolved=false
+getent hosts example.com >/dev/null 2>&1 && resolved=true
+
+if [[ -n "$egress" ]]; then
+  if [[ "$default_route" == true ]]; then
+    report ok 'the routing table has a default route (expected with --egress)'
+  else
+    report fail 'no default route although --egress was requested'
+  fi
+elif [[ "$gateway_route" == true || "$default_route" == true ]]; then
+  report fail 'the routing table has a default route or a route through a gateway; egress is NOT blocked'
 else
-  report ok 'no route to 1.1.1.1'
+  report ok 'no default route and no route through a gateway (IPv4 or IPv6)'
 fi
-if curl -sS --max-time 8 https://example.com >/dev/null 2>&1; then
-  report fail 'the container reached https://example.com; egress is NOT blocked'
-elif getent hosts example.com >/dev/null 2>&1; then
-  report fail 'the container resolved example.com; DNS egress is NOT blocked'
-else
-  report ok 'no name resolution (https://example.com and DNS both fail)'
+if [[ "$resolved" == true ]]; then
+  if [[ -n "$egress" ]]; then
+    report ok 'example.com resolves (expected with --egress)'
+  else
+    report fail 'the container resolved example.com; DNS egress is NOT blocked'
+  fi
+elif [[ -z "$egress" ]]; then
+  report ok 'no name resolution (example.com does not resolve)'
 fi
 
 # The wrapper discovers every active UI set, including custom sets. Probe
 # both DNS names and effective container addresses; DNS failure alone is
-# not proof that an address is unreachable.
+# not proof that an address is unreachable. Without a running UI there is
+# nothing to probe, which the report says rather than passing silently.
+# A target the wrapper prefixed with `egress:` belongs to a UI started
+# with --egress or --cloud, which sits on the default network too: an
+# egress session reaching it is what the flag means, not a failure; an
+# offline session must still not reach it.
+if [[ -z "${TOKENCRATE_UI_TARGETS:-}" ]]; then
+  report warn 'no browser UI running; UI isolation not tested'
+fi
 for target in ${TOKENCRATE_UI_TARGETS:-}; do
+  verdict=fail
+  note=
+  if [[ "$target" == egress:* ]]; then
+    target=${target#egress:}
+    note='; that UI was started with --egress or --cloud'
+    [[ -n "$egress" ]] && verdict=info
+  fi
   peer=${target%:*}
   port=${target##*:}
   if [[ ! "$peer" =~ ^[0-9.]+$ ]] && getent hosts "$peer" >/dev/null 2>&1; then
-    report fail "the container resolves $peer; a browser UI is reachable by name"
+    report "$verdict" "the container resolves $peer; a browser UI is reachable by name$note"
   fi
   # Expanded by the inner shell; arguments stay data.
   # shellcheck disable=SC2016
   if timeout 3 bash -c 'exec 3<>/dev/tcp/"$1"/"$2"' _ "$peer" "$port" 2>/dev/null; then
-    report fail "the container reached browser UI $target"
+    report "$verdict" "the container reached browser UI $target$note"
   else
     report ok "browser UI $target is not reachable"
   fi
@@ -85,9 +138,13 @@ done
 # container the first address of the subnet can belong to a peer. The probe
 # says whether the address answers (a closed port that refuses is an
 # answer); on Podman that is the user's network namespace, not the host.
+# An egress session is not on the agents network, so the probe does not
+# apply to it (the default network's gateway is a host address by design).
 gateway=${TOKENCRATE_AGENTS_GATEWAY:-}
-if [[ -z "$gateway" ]]; then
-  report ok 'the agents network has no gateway address; no host address is reachable'
+if [[ -n "$egress" ]]; then
+  report info 'the session is on the default network, not the agents network; the gateway probe does not apply'
+elif [[ -z "$gateway" ]]; then
+  report ok 'the agents network has no gateway address'
 else
   # Expanded by the inner shell; arguments stay data.
   # shellcheck disable=SC2016
@@ -137,83 +194,29 @@ if [[ "${TOKENCRATE_AGENT:-}" == omp ]]; then
 fi
 
 # --- Agent sets: what a selected set ships must run for the container user
-# --- with no route out; each probe keys on the binary its set installs.
-if [[ "${TOKENCRATE_AGENT:-}" == pi ]]; then
+# --- with no route out, so the set checks are an offline session's.
+if [[ "${TOKENCRATE_AGENT:-}" == pi && -z "$egress" ]]; then
   packages=$(jq -r '.packages | length' "$HOME/.pi/agent/settings.json")
   if [[ -f "$HOME/.pi/agent/AGENTS.md" ]]; then
     report ok "agent sets seeded: $packages pi package(s) and the tools note"
   else
     report fail 'the tools note of the agent sets is not seeded (AGENTS.md is missing)'
   fi
-  if grep -q '/subagent$' /opt/tokencrate/pi-packages.txt 2>/dev/null; then
-    if [[ -f "$HOME/.pi/agent/agents/scout.md" ]]; then
-      # A definition that names a model of its own would send the subagent to
-      # a provider this container cannot reach; without one it inherits the
-      # session's model.
-      seeded=$(find "$HOME/.pi/agent/agents" -maxdepth 1 -name '*.md' | wc -l)
-      pinned=$(grep -l '^model:' "$HOME"/.pi/agent/agents/*.md 2>/dev/null | wc -l)
-      if ((pinned == 0)); then
-        report ok "$seeded subagent definition(s) seeded, none pinned to another model"
-      else
-        report fail "$pinned of $seeded subagent definition(s) name a model this container cannot reach"
-      fi
+  # Each selected set's `check` lines, rendered into one script per set,
+  # run as the container user in a scratch directory with no route out;
+  # the last line a script prints is its report.
+  for script in "${TOKENCRATE_CHECKS_DIR:-/opt/tokencrate/checks}"/*; do
+    [[ -f "$script" ]] || continue
+    set_name=${script##*/}
+    scratch=$(mktemp -d)
+    if output=$(cd "$scratch" && CHECK_DIR=$scratch bash -e -o pipefail "$script" 2>&1); then
+      report ok "$set_name: ${output##*$'\n'}"
     else
-      report fail 'the subagent definitions of the coding set are not seeded'
+      last=${output##*$'\n'}
+      report fail "$set_name: ${last:-the check script failed without output}"
     fi
-  fi
-  check=$(mktemp -d)
-  if command -v dotnet >/dev/null; then
-    # The xunit template is the one whose packages are not part of the SDK.
-    if (cd "$check" && dotnet new xunit --name check --output xunit >/dev/null 2>&1 && dotnet build xunit --nologo -v quiet >/dev/null 2>&1); then
-      report ok "dotnet $(dotnet --version) builds the xunit template from the cached packages"
-    else
-      report fail 'dotnet cannot build the xunit template offline'
-    fi
-  fi
-  if command -v js-debug-adapter >/dev/null; then
-    # The bridge must answer a DAP request over stdio from the container user.
-    request='{"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"pwa-node"}}'
-    if printf 'Content-Length: %d\r\n\r\n%s' "${#request}" "$request" | timeout 30 js-debug-adapter 2>/dev/null | grep -q '"command":"initialize"'; then
-      report ok 'js-debug answers a DAP initialize request over stdio'
-    else
-      report fail 'js-debug does not answer a DAP initialize request over stdio'
-    fi
-  fi
-  if command -v tokencrate-chromium >/dev/null; then
-    if tokencrate-chromium --version >/dev/null 2>&1; then
-      report ok "$(tokencrate-chromium --version 2>/dev/null | head -1) answers --version"
-    else
-      report fail 'chromium does not answer --version'
-    fi
-  fi
-  if command -v tokencrate-ui-pi-web >/dev/null; then
-    # The daemon must load the image's pi (the scope directory of the set is
-    # a link to the global install, never a second copy) and node-pty from
-    # its prebuild.
-    if [[ "$(readlink -f /opt/tokencrate/sets/pi-web/node_modules/@earendil-works/pi-coding-agent)" != /usr/local/lib/node_modules/@earendil-works/pi-coding-agent ]]; then
-      report fail 'the pi-web set carries its own copy of pi instead of a link to the image'"'"'s'
-    elif (cd /opt/tokencrate/sets/pi-web && node -e 'import("@earendil-works/pi-ai").then(() => import("@earendil-works/pi-coding-agent")).then(() => import("node-pty")).then(() => process.exit(0), (error) => { console.error(error.message); process.exit(1); })' 2>/dev/null); then
-      report ok "pi-web $(pi-web --version 2>/dev/null | head -1) resolves the image's pi and node-pty"
-    else
-      report fail 'pi-web cannot load the image'"'"'s pi or node-pty'
-    fi
-  fi
-  if command -v tokencrate-ui-paseo >/dev/null; then
-    if paseo --version >/dev/null 2>&1; then
-      report ok "paseo $(paseo --version 2>/dev/null | head -1) answers --version"
-    else
-      report fail 'paseo does not answer --version'
-    fi
-  fi
-  if command -v odin >/dev/null; then
-    printf 'package main\nimport "core:fmt"\nmain :: proc() { fmt.println("ok") }\n' > "$check/hello.odin"
-    if odin run "$check/hello.odin" -file -out:"$check/hello" 2>/dev/null | grep -q '^ok$'; then
-      report ok "$(odin version 2>/dev/null | head -1) builds and runs a program"
-    else
-      report fail 'odin cannot build and run a program'
-    fi
-  fi
-  rm -rf "$check"
+    rm -rf "$scratch"
+  done
 fi
 
 printf 'Mounts (path, type):\n'

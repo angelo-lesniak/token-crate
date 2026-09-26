@@ -13,15 +13,12 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 
 from . import TokenCrateError
-from .localhttp import OPENER
+from .localhttp import request
 
-LOAD_TIMEOUT = 900  # seconds; the first request loads the model from disk
 # A chat completion may be the first request, so it waits for the load, and
 # then for up to ANSWER_TOKENS at the slowest shipped preset (a model with
 # expert weights in system memory generates about 6 tokens per second, so a
@@ -46,33 +43,6 @@ class Result:
     name: str
     passed: bool
     detail: str
-
-
-def request(url: str, payload: dict | None = None, *, timeout: int = LOAD_TIMEOUT, stream: bool = False):
-    data = None
-    headers = {"User-Agent": "TokenCrate-probe/1"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers)
-    try:
-        response = OPENER.open(req, timeout=timeout)
-    except urllib.error.HTTPError as error:
-        with error:
-            body = error.read().decode("utf-8", errors="replace")[:500]
-        raise TokenCrateError(f"HTTP {error.code} from {url}: {body}") from error
-    except (OSError, urllib.error.URLError) as error:
-        raise TokenCrateError(f"could not reach {url}: {error}") from error
-    if stream:
-        return response
-    with response:
-        body = response.read().decode("utf-8", errors="replace")
-    if not body:
-        return None
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError:
-        return body
 
 
 def chat(url: str, model: str, messages: list[dict], **extra) -> dict:

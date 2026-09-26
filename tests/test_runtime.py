@@ -54,7 +54,6 @@ class WaitTests(unittest.TestCase):
         with (
             mock.patch.object(runtime, "http_get", http(responses)),
             mock.patch("builtins.print") as printed,
-            mock.patch.object(runtime.uis, "containers", return_value=[]),
         ):
             runtime.wait_until_ready(settings, engine, timeout, sleep=self.tick, clock=lambda: self.clock)
         return "\n".join(str(call.args[0]) for call in printed.call_args_list)
@@ -96,7 +95,6 @@ class WaitTests(unittest.TestCase):
             mock.patch.object(runtime, "http_get", lambda url, timeout=5: next(answers)),
             mock.patch.object(runtime, "http_post", post or mock.Mock()),
             mock.patch("builtins.print") as printed,
-            mock.patch.object(runtime.uis, "containers", return_value=[]),
         ):
             runtime.wait_until_ready(settings, FakeEngine(["running"]), 10, sleep=self.tick, clock=lambda: self.clock)
         return "\n".join(str(call.args[0]) for call in printed.call_args_list)
@@ -163,14 +161,12 @@ class InitAndListingTests(unittest.TestCase):
         with mock.patch("builtins.print"):
             runtime.init_project(settings)
         env_file = self.scratch.root / ".env"
-        self.assertEqual(env_file.read_text(), (self.scratch.root / ".env.example").read_text())
+        # Comments only: every default stays in .env.example, so a line is
+        # copied only to change it and nothing is frozen at its old default.
+        self.assertEqual(env_file.read_text(), runtime.ENV_HEADER)
+        self.assertEqual(env.parse_env_file(env_file), {})
         self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o600)
-        for path in (
-            settings.models_dir,
-            settings.agents_dir / "pi",
-            settings.build_dir / "agents" / "omp",
-            self.scratch.root / "reports",
-        ):
+        for path in (settings.models_dir, settings.agents_dir / "pi", self.scratch.root / "reports"):
             self.assertTrue(path.is_dir())
         env_file.chmod(0o644)
         with mock.patch("builtins.print"):
@@ -184,9 +180,9 @@ class InitAndListingTests(unittest.TestCase):
         with (
             mock.patch.object(runtime, "http_get", http({"models": listing(a="loaded", b="unloaded")})),
             mock.patch("builtins.print") as printed,
-            mock.patch.object(runtime.uis, "containers", return_value=[]),
         ):
-            runtime.print_status(settings, engine)
+            runtime.print_containers(settings, engine)
+            runtime.print_models(settings, engine)
         engine.command.assert_called_once_with("ps", "--all", "--filter", "label=com.docker.compose.project=tokencrate")
         output = "\n".join(str(call.args[0]) if call.args else "" for call in printed.call_args_list)
         self.assertIn("Models (GET /models):\n  a: loaded\n  b: unloaded", output)

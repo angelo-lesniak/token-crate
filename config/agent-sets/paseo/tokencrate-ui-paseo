@@ -12,7 +12,7 @@ export PASEO_HOME="$HOME/.paseo"
 export PASEO_LISTEN=0.0.0.0:$PORT PASEO_WEB_UI_ENABLED=true
 # No relay (the hosted rendezvous service) and no speech: the speech
 # features download models at daemon start, and the container has no
-# route out.
+# route out unless the UI was started with --egress or --cloud.
 export PASEO_RELAY_ENABLED=false PASEO_DICTATION_ENABLED=false PASEO_VOICE_MODE_ENABLED=false
 readonly HEALTH="http://127.0.0.1:$PORT/api/health"
 mkdir -p "$PASEO_HOME"
