@@ -1,8 +1,10 @@
-"""Real sequential prompts with four live clients, plus independent UI lifecycle.
+"""Real sequential prompts with live clients, plus independent UI lifecycle.
 
 Called by integration.py; terminal binaries stay alive in RPC mode. PI WEB
-uses its browser HTTP API, Paseo its daemon CLI. Browser rendering and terminal
-screen interaction are separate manual checks, not claimed by this test.
+uses its browser HTTP API, Paseo its daemon CLI. TOKENCRATE_CONCURRENT_AGENTS
+selects the terminal clients (default "pi,omp"); CI sets "pi" to skip omp's
+cold prompt. Browser rendering and terminal screen interaction are separate
+manual checks, not claimed by this test.
 """
 
 from __future__ import annotations
@@ -23,10 +25,11 @@ from pathlib import Path
 
 from tokencrate import engine, env, runtime, session, uis
 
-# The first omp prompt here is a cold prefill of about 16,000 tokens on the
-# CI runner's CPU: it took over six minutes in passing runs and over ten in
-# a slower one. A stuck client still fails well inside the job's hour.
+# The first omp prompt here is a cold prefill of about 16,000 tokens: on a
+# 4-vCPU CI runner it took six to eleven minutes.
 RPC_TIMEOUT = float(os.environ.get("RPC_TIMEOUT", "1200"))
+MARKERS = {"pi": "hello", "omp": "welcome"}
+AGENTS = os.environ.get("TOKENCRATE_CONCURRENT_AGENTS", "pi,omp").split(",")
 
 
 def request(url: str, body: dict | None = None, **headers) -> object:
@@ -179,7 +182,10 @@ def run(root: Path, project: Path) -> None:
     second = ui_ids("paseo")
     assert first == ui_ids("pi-web")
     assert before == stable_identity()
-    print(f"four-client start: router/processes={before}, pi-web={first}, paseo={second}, ports={ports}", flush=True)
+    print(
+        f"client start: agents={AGENTS}, router/processes={before}, pi-web={first}, paseo={second}, ports={ports}",
+        flush=True,
+    )
     home = session.agent_home_directory(settings, "pi", project)
     config = json.loads((home / ".paseo/config.json").read_text())
     assert config["agents"]["providers"]["pi"]["additionalModels"][0]["id"] == "tokencrate/ci-small", config
@@ -199,9 +205,9 @@ def run(root: Path, project: Path) -> None:
                 raise AssertionError(f"{name} accepted foreign Host/Origin")
     clients = []
     try:
-        clients = [RpcClient(root, name, project) for name in ("pi", "omp")]
-        for client, marker in zip(clients, ("hello", "welcome"), strict=True):
-            client.prompt(marker)
+        clients = [RpcClient(root, name, project) for name in AGENTS]
+        for client, name in zip(clients, AGENTS, strict=True):
+            client.prompt(MARKERS[name])
         base = f"http://127.0.0.1:{ports['pi-web']}"
         created = request(base + "/api/sessions", {"cwd": str(project)})
         print("PI WEB session:", created, flush=True)
@@ -258,7 +264,7 @@ def run(root: Path, project: Path) -> None:
         assert first == ui_ids("pi-web") and second == ui_ids("paseo")
         assert before == stable_identity(), (before, stable_identity())
         assert runtime.model_states(settings)["ci-small"] == "loaded"
-        print("all four clients answered with the same router/model process identity", flush=True)
+        print(f"{len(clients) + 2} clients answered with the same router/model process identity", flush=True)
         targets = uis.peer_targets(selected)
         assert targets, "no UI peers discovered for containment"
         probe_script = r"""

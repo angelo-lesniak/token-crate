@@ -32,6 +32,8 @@ jobs:
     env:
       CONTAINER_ENGINE: docker
       LLM_GPU: "false"
+      # omp's cold ~16,000-token prompt takes over ten minutes on the CPU.
+      TOKENCRATE_CONCURRENT_AGENTS: pi
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
