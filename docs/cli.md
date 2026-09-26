@@ -49,10 +49,20 @@ bin/tokencrate doctor [--preset id]
 ```
 
 Checks the host and prints one line per check; `up` runs the same checks
-before it downloads anything and stops on a `[fail]` line. The checks
+before it downloads anything and stops on a `[fail]` line.
+
+A [preset](models.md) says how llama-server runs a downloaded model
+and declares the GPU and system memory it needs. `doctor` checks the host
+against the preset named with `--preset`, or `LLM_DEFAULT_PRESET`
+without the flag. It reads the requirements from the preset's file under
+`config/presets/`, so nothing needs to be rendered or downloaded first.
+With neither set, the preset checks below are skipped. The checks
 cover:
 
-- Git and Linux on x86-64, as warnings: starting the stack needs neither;
+- whether Git is installed (`skills fetch` needs it) and whether the host
+  is Linux on x86-64, the only supported platform; either one missing is
+  a warning, not a failure, because `up` can start the stack without
+  them;
 - the container engine and its Compose provider against the engine
   requirements in the [README](../README.md#start-here); Podman older
   than 6, the oldest tested version, is a warning;
@@ -74,11 +84,11 @@ cover:
 - whether `LLM_PORT` can be bound on loopback (a failure unless
   TokenCrate's own llama container publishes that port).
 
-The preset's requirements come from its file under `config/presets/`;
-nothing needs to be rendered or downloaded first. An unknown preset is a
-warning, and only the host checks run; `smoke`, `bench`, `agent`, and
-`ui` refuse an unknown preset and one the pinned build cannot load, and
-`up` refuses such a default preset.
+For an unknown preset name, `doctor` prints a warning and runs every
+other check. The commands that use a preset are stricter: `smoke`,
+`bench`, `agent`, and `ui` refuse a preset that is unknown or that the
+pinned llama.cpp build cannot load, and `up` refuses such an
+`LLM_DEFAULT_PRESET`.
 
 ```bash
 bash bin/tokencrate doctor --preset qwen3.8-27b-q4-mtp
@@ -194,11 +204,14 @@ minutes. The checks cover:
   reply that exhausts its token budget ends with `length`, which can
   indicate a reasoning loop);
 - a streamed tool call;
-- a chat-template render that must keep that later system message, only
-  for a model set that ships the patched template;
-- a render that must change with the reasoning effort (the first two
-  efforts the preset declares; a preset with fewer than two passes it
-  with `nothing to compare`);
+- for a model set that ships the
+  [patched chat template](models.md#the-patched-chat-template) (the Qwen
+  sets), that the template accepts that mid-conversation system
+  message; the model's own template rejects it;
+- that the chat template uses the reasoning effort: the same conversation
+  rendered with the preset's first two efforts must give two different
+  prompts (a preset that declares fewer than two passes with
+  `nothing to compare`);
 - tokenization.
 
 `--basic` skips the reply-termination and streamed-tool-call checks,
@@ -207,9 +220,9 @@ transport and template.
 
 **Agent checks:** with `--agent`, `smoke` starts the container the way `agent`
 does, against a scratch project and agent home in a temporary directory,
-and checks its network containment from inside the container. The preset
-must be rendered as loadable, and every set in `LLM_SKILL_SETS` must be
-fetched. The check proves that the routes are absent, not what the
+and checks its network containment from inside the container. It needs
+what [`agent`](#agent) needs: a preset the running router serves, and
+every set in `LLM_SKILL_SETS` fetched. The check proves that the routes are absent, not what the
 reachable model does. It reports:
 
 - one network interface, no route through a gateway (IPv4 or IPv6), and
@@ -228,12 +241,10 @@ reachable model does. It reports:
   packages, tools note, and subagent definitions. `--sets` overrides
   `LLM_AGENT_SETS` for the check.
 
-For pi, each selected set's `check` lines
-([Agent sets](agent-sets.md#writing-a-set)) also run as the container user
-without network access, one report line per set: the shipped sets build
-the xunit template from the image's NuGet cache, answer a DAP request
-over stdio, answer `--version` for Chromium and Paseo, resolve PI WEB's
-pi and node-pty, and build and run an Odin program.
+For pi, each selected set also runs its own check as the container user
+without network access, and adds one report line. What a set checks is
+defined by the `check` key of its manifest
+([Agent sets](agent-sets.md#writing-a-set)).
 
 The report ends with the container's mount table and the number of
 failures.
@@ -293,9 +304,10 @@ mounted read-write at the same absolute path it has on the host. For pi,
 the image uses `LLM_AGENT_SETS` unless `--sets` overrides it for this
 session. The value is a comma-separated list (spaces, empty entries, and
 repeats are ignored); an empty string selects plain pi. `--sets` applies
-only to pi; oh-my-pi rejects it. A selection without an image is built
-before startup; see
-[Agent sets](agent-sets.md). The project defaults to the current directory;
+only to pi; oh-my-pi rejects it. Each combination of sets has its own
+image; the first session with a new combination builds it before the
+agent starts, downloading the sets' toolchains (see
+[Agent sets](agent-sets.md)). The project defaults to the current directory;
 `--dir` selects another. The project directory must:
 
 - lie below your home directory, or below a directory listed in
@@ -308,17 +320,19 @@ before startup; see
 - carry no space, comma, colon, dollar sign, or quote in its path, which
   a Compose mount cannot express.
 
-Git metadata must fit inside the project mount. A linked worktree,
-submodule, or repository subdirectory that depends on metadata outside
-that mount is refused before startup. Use the repository root or a
-standalone clone; the wrapper does not mount another checkout's Git
-directory implicitly.
+The container sees only the project directory, so Git works there only
+when the repository's `.git` data lies inside it. The wrapper refuses a
+project whose `.git` data is elsewhere: a linked worktree, a submodule,
+or a subdirectory of a repository. Use the repository root or a
+standalone clone instead.
 
 The agent talks to the running llama service over an internal network with
 no internet access. `--egress` puts the session on the default network
 instead, for example to install packages, and the wrapper prints a
 warning. `--egress` and `--cloud` are the only ways to give a session
-internet access; no setting remembers either.
+internet access. Neither can be turned on in `.env` or any other
+setting, so each session that needs a route out must pass the flag
+again.
 
 `--cloud` (pi only) also mounts the cloud keys file that
 `LLM_CLOUD_KEYS_FILE` names, read-only, into this one session, and
@@ -348,20 +362,33 @@ The session container is named `tokencrate-agent-<id>`. A hang-up or
 `SIGTERM` to the wrapper stops it; a `SIGKILL` leaves it running with the
 keys it exported, until `down` or the agent exits.
 
-The llama service must be running and the preset rendered as loadable
-(`up` does both). The running router must match the rendered
-configuration; after a failed `up`, resolve its error and run `up`
-again. On Docker the session refuses, as `up` does,
-while the `agents` or `ui` network keeps a gateway address
-([Privacy and containment](privacy.md#defaults-and-their-limits)).
-Every skill set named in `LLM_SKILL_SETS` must be known, fetched, and
-complete; otherwise the command refuses to start.
+The command refuses to start unless:
 
-Arguments after `--` are passed to the agent binary. A print-only
-command run under `timeout` from a terminal needs `</dev/null`;
-otherwise Compose attaches the terminal and the process stops on
-`SIGTTOU` before the container starts. See [Coding agents and
-skills](agents.md) for what the container can and cannot touch.
+- the last `up` added the preset to the router, which it does when the
+  preset's model files are downloaded and the pinned llama.cpp build can
+  load them;
+- the llama service is running with the configuration the last `up`
+  rendered; after a failed `up`, fix its error and run `up` again;
+- every skill set named in `LLM_SKILL_SETS` is known, fetched, and
+  complete;
+- on Docker, neither the `agents` nor the `ui` network has a gateway
+  address, the same check `up` makes
+  ([Privacy and containment](privacy.md#defaults-and-their-limits)).
+
+Arguments after `--` are passed to the agent binary; with pi's `-p`,
+the agent answers one prompt, prints the reply, and exits. A script that
+wraps such a call in `timeout` must redirect its input from `/dev/null`:
+
+```bash
+timeout 600 bash bin/tokencrate agent pi --dir ~/src/my-project -- -p "Summarize this repository" </dev/null
+```
+
+Without the redirection, `timeout` runs the command in the terminal's
+background, Compose tries to attach the terminal, the terminal stops the
+command with `SIGTTOU`, and the run hangs with no output; the stop
+reaches `timeout` too, so it never fires.
+See [Coding agents and skills](agents.md) for what the container can and
+cannot touch.
 
 Run the wrapper from the checkout and name the project with `--dir`:
 
@@ -449,8 +476,10 @@ workflow](agents.md#use-four-clients-with-one-model).
 network in addition to the `ui` network, where its forwarder reaches it,
 and the wrapper prints the warning of [`agent --egress`](#agent).
 `--cloud` also mounts the cloud keys file into the UI container,
-read-only, with the refusals and the warning of `agent --cloud`, and
-implies `--egress`; every UI is pi. The forwarder gets neither. The UI
+read-only, and implies `--egress`. It prints the warning of
+`agent --cloud` and refuses in the same cases, except the one for
+oh-my-pi, since every UI runs pi. The forwarder, which publishes the
+UI's port on the host, gets neither the route out nor the keys. The UI
 holds the route and the keys until `ui stop <set>`, `down`, or a launch
 of the set without the flag. [Cloud providers](agents.md#cloud-providers)
 says who can use them meanwhile and
@@ -526,13 +555,19 @@ bin/tokencrate skills fetch <set> [<set> ...] | all
 bin/tokencrate skills status <set> [<set> ...] | all
 ```
 
-`fetch` clones each pinned commit, copies the skill directory, verifies its
-tree digest and `SKILL.md` frontmatter, and publishes it below
-`LLM_SKILLS_DIR/<set>/<skill>`. After a set succeeds, `fetch` removes
-plain, non-hidden skill directories the set no longer declares, so keep
-private skills in `LLM_LOCAL_SKILLS_DIR`. `status` recomputes the
-digests of fetched skills without network access. Agents load the sets
-named in `LLM_SKILL_SETS`.
+A skill set is a group of [skills](agents.md#skills), each pinned to an
+upstream commit in `config/skill-sets/<set>.toml`. Agents load the
+fetched sets that `LLM_SKILL_SETS` names.
+
+`fetch` downloads each skill of the named sets into
+`LLM_SKILLS_DIR/<set>/<skill>`: it clones the pinned commit, copies the
+skill's directory, and checks its tree digest and the frontmatter of its
+`SKILL.md`. It then deletes every other directory in the set's folder,
+so a skill you put there yourself is lost on the next fetch; keep your
+own skills in `LLM_LOCAL_SKILLS_DIR`, which `fetch` never touches.
+
+`status` checks, without network access, that the fetched files still
+match their pinned digests.
 
 ```bash
 bash bin/tokencrate skills fetch pocock-core skill-crate

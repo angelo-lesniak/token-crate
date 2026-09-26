@@ -7,26 +7,29 @@ It pins the llama.cpp build, agent versions, and model files, and verifies
 model downloads by checksum. Containers do not update their software at
 startup.
 
-TokenCrate uses one NVIDIA graphics card. Each preset states the GPU memory
-it needs; see [Scope and support](#scope-and-support).
+TokenCrate is built for a single NVIDIA graphics card. A preset is a
+model with its llama.cpp settings and states the GPU memory it needs;
+see [Scope and support](#scope-and-support).
 
 Use it when you want to:
 
-- choose a [model and preset](docs/models.md#included-presets) for your GPU:
-  Qwen3.8-27B, gpt-oss-20b, or a 125B model with 96 GB of system memory;
-- open pi or oh-my-pi in a project directory with pinned skills and no
-  internet access by default;
+- run a [preset](docs/models.md#included-presets) that fits your card, for
+  example Qwen3.8-27B at 4-bit quantization with a 128K context and
+  multi-token prediction;
+- run the pi or oh-my-pi coding agent on a project directory, with pinned
+  skills and, by default, no internet access;
 - add coding extensions, a debugger, a browser, or C#, Node/Vue, and Odin
-  toolchains to pi through reviewed agent sets, or write your own;
+  toolchains to pi by choosing [agent sets](docs/agent-sets.md), or write
+  your own set;
 - use pi in a browser with PI WEB or Paseo;
 - switch reasoning effort per request without reloading the model;
-- offer a [cloud model](docs/agents.md#cloud-providers) beside the local
-  one for a session or a browser UI you start with `--cloud`, with keys
-  from a file of your own.
+- use a [cloud model](docs/agents.md#cloud-providers) beside the local one
+  in a session or browser UI started with `--cloud`, with API keys from a
+  file you keep.
 
 ## Start here
 
-The example below downloads the 17.6 GB Qwen3.8-27B Q4 model set and
+The example below downloads the Qwen3.8-27B Q4 model set and
 the llama.cpp server image. The first `agent` or `smoke --agent` command
 builds the agent image, which downloads a few hundred megabytes of
 packages and takes several minutes. Allow tens of minutes, mostly for the
@@ -46,9 +49,6 @@ Install these host tools:
   (Arch package: `nvidia-container-toolkit`) with a driver of major version
   580 or newer (CUDA 13).
 
-The engine must run on this computer; see [connection
-settings](docs/configuration.md#configuration).
-
 Generate the NVIDIA CDI configuration, and regenerate it after every driver
 upgrade:
 
@@ -65,21 +65,20 @@ cd tokencrate
 bash bin/tokencrate init
 ```
 
-`init` creates the storage directories and a `.env` with mode `0600`
-that holds only a comment. Every setting and its default is in
-`.env.example`; a line copied into `.env` changes it. Set
-`LLM_MODELS_DIR` if you need to store models on another disk, and
-`GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` for the agent's commits.
+`init` creates the storage directories and a settings file, `.env`,
+that only you can read and that sets nothing yet. `.env.example` lists every setting with
+its default; to change one, copy its line into `.env` and edit it. Set
+`LLM_MODELS_DIR` to store models on another disk, and
+`GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` for the commits the agent makes.
 
-If both Docker and Podman are installed, TokenCrate selects Podman first;
-set `CONTAINER_ENGINE=docker` or `CONTAINER_ENGINE=podman` in `.env` for a
-fixed choice.
+If both Docker and Podman are installed, TokenCrate uses Podman; set
+`CONTAINER_ENGINE=docker` in `.env` to use Docker.
 
-With `--model-set`, `up` prints the model license and downloads without
-waiting for confirmation. Stop it if you do not accept the license.
+`up --model-set` prints the model's license and starts the download
+without asking. Stop it with Ctrl+C if you do not accept the license.
 
-Check the host, download the model set, start the stack, and check tool
-calls and the chat template:
+Check the host, download the model, start the model server, and test
+its API:
 
 ```bash
 bash bin/tokencrate doctor
@@ -94,10 +93,11 @@ Every row of the `smoke` table must say `pass`.
 Open <http://127.0.0.1:4207/> for the built-in chat UI. If the chat UI
 is all you need, stop here; the rest of this section adds a coding agent.
 
-Fetch the two skill sets named in `LLM_SKILL_SETS` from github.com, check
-the agent's network access, and open pi in a project. `agent` refuses to
-start until the skill sets are on disk. Replace `~/src/my-project` with
-an existing project directory:
+Skills are instructions an agent loads when a task matches them. The
+commands below fetch the two default skill sets from GitHub, which
+`agent` needs before it starts, check that the agent container has no
+route to the internet, and open pi in a project. Replace
+`~/src/my-project` with an existing project directory:
 
 ```bash
 bash bin/tokencrate skills fetch pocock-core skill-crate
@@ -105,13 +105,13 @@ bash bin/tokencrate smoke --agent pi
 bash bin/tokencrate agent pi --dir ~/src/my-project
 ```
 
-The agent check must reach the model endpoint from inside the container
-and find no route through a gateway and no name resolution. pi starts
-with the default preset and the pinned skills loaded.
+The agent check must report no failures: the container reaches the
+model and nothing else. pi starts with the default preset and the
+skills loaded.
 
-The project is mounted read-write at its host path. It and the retained
-transcript directories under `LLM_AGENTS_DIR` are the only host directories
-the agent can change. The project must lie below your home directory or a
+The project is mounted read-write at its host path. Apart from the
+project, the agent can change only the directories under
+`LLM_AGENTS_DIR` that keep its sessions. The project must lie below your home directory or a
 directory listed in `LLM_PROJECT_ROOTS`; see [`agent`](docs/cli.md#agent)
 for all path rules.
 
@@ -153,29 +153,27 @@ If a command fails, start with the
 
 ## Scope and support
 
-TokenCrate targets x86-64 Linux containers with one NVIDIA GPU through
-NVIDIA Container Toolkit and CDI devices. Arch Linux is the main native
-target. The design uses one inference backend (`llama-server` in router
-mode), one model layout, and agents that run only in containers. If you
-want a desktop application with a model catalog or a multi-user server,
-other projects are simpler.
+TokenCrate runs on x86-64 Linux with one NVIDIA GPU and is developed on
+Arch Linux. It uses one inference server, llama.cpp's `llama-server`, and
+runs agents only in containers. If you want a desktop application with a
+model catalog, or a server for several users, other projects are simpler.
 
-The shipped presets declare 15 to 30 GiB. If none of them fits your card,
-write one of your own, a TOML file under `config/presets/` with a smaller
+If no shipped preset fits your card, write your own with a smaller
 context or quantization
 ([Presets for other cards](docs/models.md#presets-for-other-cards)).
 
 | Platform and engine | Status |
 | --- | --- |
 | Linux with rootless Podman 6 or newer, `crun`, and podman-compose, or with Docker Engine 28 or newer and Compose v2 | Supported; [what is validated](docs/validation.md#status) |
+| Windows 11 with WSL2, running Podman or Docker Engine inside the Linux distribution | Untested; `doctor` treats it as Linux on x86-64 |
 | Native Windows containers, macOS, AMD GPUs, ARM64 | Not supported |
 
 ## Privacy
 
 The API is published on `127.0.0.1` only; no setting exposes it elsewhere.
 Agent containers have no route to the internet unless you enable access
-for a session or a browser UI. TokenCrate disables known telemetry switches in its bundled
-components.
+for a session or a browser UI. TokenCrate turns off the telemetry
+settings it knows of in the software it bundles.
 
 These defaults reduce accidental exposure. They do not make an unreviewed
 skill or model safe. Read [privacy and containment](docs/privacy.md) before
