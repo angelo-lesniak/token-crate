@@ -23,15 +23,28 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the run it replaces.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   integration:
     # No GPU on the runner: the same images serve the fixture models on the
-    # CPU and the wrapper runs its real commands against them.
+    # CPU and the wrapper runs its real commands against them. Each matrix
+    # job starts its own stack and runs the tests that CI_JOBS in
+    # tests/integration.py assigns to it.
+    name: integration (${{ matrix.job }})
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [clients, pi, probes]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CONTAINER_ENGINE: docker
       LLM_GPU: "false"
+      TOKENCRATE_CI_JOB: ${{ matrix.job }}
       # omp's cold ~16,000-token prompt takes over ten minutes on the CPU.
       TOKENCRATE_CONCURRENT_AGENTS: pi
     steps:

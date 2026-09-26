@@ -112,7 +112,10 @@ Cleanup removes the resources created by the run.
 
 Use `-k <pattern>` to select checks by name; setup and `down` still run
 around them. CI runs the integration checks weekly and for pull requests
-that touch the paths in `.github/workflows/integration.yml`.
+that touch the paths in `.github/workflows/integration.yml`, as parallel
+jobs with a stack each. `CI_JOBS` in `tests/integration.py` assigns every
+test to a job, and `TOKENCRATE_CI_JOB=<job>` runs one job's tests; a test
+missing from `CI_JOBS`, or a name there without a test, stops the run.
 
 ## Documentation changes
 

@@ -442,5 +442,34 @@ class IntegrationTests(unittest.TestCase):
             compose("down", "--timeout", "2")
 
 
+# CI runs the suite as parallel jobs, each with its own stack. Every test
+# names its job here, so a new test cannot drop out of CI unnoticed.
+CI_JOBS = {
+    "test_agent_checks_pass": "clients",
+    "test_concurrent_clients": "clients",
+    "test_home_lifecycle_pi": "clients",
+    "test_home_lifecycle_omp": "clients",
+    "test_home_lifecycle_pi_web": "clients",
+    "test_home_lifecycle_paseo": "clients",
+    "test_pi_runs_each_selection": "pi",
+    "test_probes_swap_the_loaded_model": "probes",
+    "test_thinking_level_reaches_the_template": "probes",
+}
+
+
+def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: str | None) -> unittest.TestSuite:
+    """With TOKENCRATE_CI_JOB set, only that job's tests run."""
+    every = set(unittest.TestLoader().getTestCaseNames(IntegrationTests))
+    if every != CI_JOBS.keys():
+        raise RuntimeError(f"CI_JOBS does not match the tests: {sorted(every ^ CI_JOBS.keys())}")
+    job = os.environ.get("TOKENCRATE_CI_JOB")
+    if not job:
+        return tests
+    if job not in CI_JOBS.values():
+        raise RuntimeError(f"TOKENCRATE_CI_JOB={job} names no job in CI_JOBS")
+    selected = [name for name in loader.getTestCaseNames(IntegrationTests) if CI_JOBS[name] == job]
+    return unittest.TestSuite(IntegrationTests(name) for name in selected)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
