@@ -51,9 +51,9 @@ SELECTIONS = ("coding", "coding,debug,dotnet,web,browser", "coding,debug,odin")
 # A prompt the agent never answers has nothing to wake it: a lost model
 # response leaves the process in its event loop with no request open, and
 # the agent has no timeout of its own. The bound is generous because the
-# fixture model runs on the CPU and oh-my-pi's first request is about
-# 19,000 tokens: one turn is most of a minute there, and a stuck agent
-# idles for many minutes, so the two are far apart.
+# fixture models run on the CPU. oh-my-pi's first request on ci-small is
+# about 16,000 tokens and takes over ten minutes there without a cached
+# prompt, so only the concurrent clients test prompts it, with its own bound.
 PROMPT_TIMEOUT = float(os.environ.get("PROMPT_TIMEOUT", "600"))
 HOME = session.HOME_IN_CONTAINER
 README_TEXT = "# Integration project\n\nA scratch project for the agent checks.\n"
@@ -213,14 +213,6 @@ class IntegrationTests(unittest.TestCase):
                 self.assertTrue(result.stdout.strip(), "pi command produced no output")
                 # An extension that fails to load is reported before the answer.
                 self.assertNotRegex(result.stdout, r"(?i)failed to load|error loading")
-        self.assert_project_untouched()
-
-    def test_omp_answers(self) -> None:
-        result = self.prompt(
-            "oh-my-pi", "omp", "--dir", str(self.project), "--", "-p", "Reply with the single word hello."
-        )
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("hello", result.stdout.lower())
         self.assert_project_untouched()
 
     def test_thinking_level_reaches_the_template(self) -> None:
