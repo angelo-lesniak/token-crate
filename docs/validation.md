@@ -29,6 +29,7 @@ The table summarizes the [records](#records).
 | The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check), and on the GPU preset with real traffic behind them, spec-decode counters included; `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; RTX 5090 on `qwen3.8-27b-q4-mtp` | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report), [The metrics run on the GPU](#the-metrics-run-on-the-gpu) |
 | The `metrics` agent set times pi's requests through a first-party extension that writes `ttft` and `duration` on the assistant message in oh-my-pi's fields, so `stats` fills a pi row of its Timings table; the request pi sends is byte-identical with and without the set | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint inside the container | [The metrics set and its timings extension](#the-metrics-set-and-its-timings-extension) |
+| The served stats page shows a live panel of the model server (requests processing and queued, prompt and generation tokens per second, two charts over ten minutes) from `/live`, which the server fills by polling the loopback API at most every 2 seconds while a page is open and only for a preset two consecutive polls reported loaded; `/live` answers only the server's own loopback `Host` names; the saved page carries no panel | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU with the `ci-small` fixture preset; the page rendered in Chromium 153.0.8010.52 | [The live panel of the served stats page](#the-live-panel-of-the-served-stats-page) |
 | `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot) and tables match the Markdown and carry no transcript content, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52 | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
@@ -346,6 +347,61 @@ behavior, or image details below. Repeat these observations after a
 - The UI at the root is a build with router-mode model selection.
 
 ## Records
+
+### The live panel of the served stats page
+
+Purpose: prove that `stats --serve` shows the running model server's
+occupancy and throughput from its own counters, that the server polls
+only a loaded preset, that `/live` keeps the page's loopback rules, and
+that the saved page stays static. Date: 2026-09-27. Environment: the
+virtual machine of [The CPU integration check](#the-cpu-integration-check),
+rootless Podman 6.1.2, the pinned router (llama.cpp b11028) on the CPU
+with the `ci-small` fixture preset (Qwen3-0.6B, `parallel = 1`) started
+with `up`; `stats --serve` over a copy of the stub transcripts of [The
+metrics set and its timings extension](#the-metrics-set-and-its-timings-extension);
+pairs of streaming chat completions (300 tokens each) sent every six
+seconds while `/live` was fetched every two; the served page
+screenshotted light and dark by the pinned pi image's Chromium
+153.0.8010.52 over the host's loopback.
+
+- Fourteen fetches of `/live` returned one more sample each. The first
+  named the preset without counters (seen loaded once); from the second
+  on the gauges followed the pairs of requests: `processing 1, queued
+  1` while both waited, `processing 1, queued 0` once the first had
+  finished, `processing 0, queued 0` between pairs. Rates from the
+  third sample on: about 9.3 prompt tokens/s and 147 generated tokens/s
+  while a request streamed (a 104-token prompt and 300 generated tokens
+  per request on the CPU), 0 between pairs.
+- Every sample named `ci-small`, the one preset rendered for the run
+  (the router's log was not kept; which presets the server asks for is
+  pinned by the fake-router audit below).
+- `/live` answered 200 for the server's own loopback names and 403 for
+  a foreign `Host`; the JSON carries the API address, and per sample the
+  time, reachability, the preset's name, whether it was scraped, the
+  two gauges, and the two rates, and nothing else.
+- Both screenshots show the panel above the report: the state line
+  `ci-small loaded`, the four tiles with the last sample, the
+  throughput chart with the generated-tokens line stepping between 0
+  and about 147 per request pair and the prompt line near 9, the
+  occupancy chart with processing and queued as stepped lines between 0
+  and 1, time-of-day labels on both x axes, legends under each chart,
+  the dark palette applied, and no label collisions.
+- The saved page (`stats` without `--serve`) carries no live script and
+  no `/live` reference; the strict gate pins that, the `/live` Host
+  matrix, and the sampler against a fake router: a preset is scraped
+  only after two polls report it loaded (an audit of every `/metrics`
+  path asked), a counter going backwards yields no rate for that tick,
+  a swap names the new preset a tick before scraping it, a hostile
+  preset name and a text label never enter a sample, the ring is
+  bounded, and an unreachable API gives unreachable samples.
+- SIGTERM stopped the server cleanly (exit 143 through the wrapper's
+  signal handler).
+
+Not covered: the panel on the GPU host during a real agent session
+(the host run samples `/live` while an agent works), a preset swap and
+a stack restart seen by a running page (covered by the fake-router
+tests only), `--models-max` above 1, and a wall clock that steps
+backwards while the page is open (samples out of order are skipped).
 
 ### The metrics set and its timings extension
 

@@ -9,6 +9,8 @@ import json
 import re
 import threading
 import unittest
+import unittest.mock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from string import Template
 from tempfile import TemporaryDirectory
@@ -47,6 +49,132 @@ def make_session(model: str) -> stats.Session:
         duration_ms=None,
     )
     return stats.Session("pi", requests=[request])
+
+
+class FakeRouter:
+    """A loopback stand-in for the model server's API: `/models` with one
+    loaded preset, an unloaded one, and a hostile name; `/metrics` whose
+    counters advance per scrape, with a labelled line, a non-numeric
+    value, and a text label that must never reach a sample."""
+
+    def __init__(self) -> None:
+        self.scrapes = 0
+        self.reset_at: int | None = None
+        self.loaded = "ci-small"
+        self.asked: list[str] = []
+        router = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_arguments) -> None:
+                return
+
+            def do_GET(self) -> None:
+                if self.path == "/models":
+                    body = json.dumps(
+                        {
+                            "data": [
+                                {"id": router.loaded, "status": {"value": "loaded"}},
+                                {"id": "ci-tiny", "status": {"value": "unloaded"}},
+                                {"id": "<script>alert(1)</script>", "status": {"value": "loaded"}},
+                                {"id": "SLEEPY", "status": {"value": "sleeping"}},
+                            ]
+                        }
+                    ).encode()
+                elif self.path.startswith("/metrics"):
+                    router.asked.append(self.path)
+                    if self.path != f"/metrics?model={router.loaded}":
+                        self.send_response(400)
+                        self.end_headers()
+                        return
+                    router.scrapes += 1
+                    tick = router.scrapes - (router.reset_at or 0) if router.reset_at else router.scrapes
+                    body = (
+                        f"# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed\n"
+                        f"llamacpp:prompt_tokens_total {100 * tick}\n"
+                        f"llamacpp:tokens_predicted_total {10 * tick}\n"
+                        f"llamacpp:requests_processing 1\n"
+                        f"llamacpp:requests_deferred 2\n"
+                        f"llamacpp:n_busy_slots_per_decode nan\n"
+                        f'llamacpp:spec_decode_num_accepted_tokens_per_pos_total{{position="0"}} 5\n'
+                        f'llamacpp:prompt{{text="TOPSECRET-PROMPT"}} 1\n'
+                    ).encode()
+                else:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class LiveSamplerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.router = FakeRouter()
+        self.addCleanup(self.router.close)
+
+    def test_samples_carry_gauges_and_rates_of_the_settled_preset_only(self) -> None:
+        clock = [1000.0]
+        sampler = statspage.LiveSampler(self.router.url, interval=2, clock=lambda: clock[0])
+        first = sampler.snapshot()[-1]
+        # Seen loaded once: named, not yet scraped (a swap in between would
+        # otherwise ask the router to load a preset that just unloaded).
+        self.assertEqual((first.up, first.model, first.scraped, first.processing), (True, "ci-small", False, None))
+        self.assertEqual(self.router.scrapes, 0)
+        clock[0] += 2
+        second = sampler.snapshot()[-1]
+        self.assertEqual((second.scraped, second.processing, second.deferred, second.prompt_rate), (True, 1, 2, None))
+        clock[0] += 2
+        third = sampler.snapshot()[-1]
+        # The fake advances its counters by 100 and 10 per scrape.
+        self.assertEqual((third.prompt_rate, third.generation_rate), (50.0, 5.0))
+        self.assertGreater(third.t, 1_700_000_000)
+        # A counter that went backwards is a restart: no rate for that tick.
+        self.router.reset_at = self.router.scrapes + 1
+        clock[0] += 2
+        self.assertIsNone(sampler.snapshot()[-1].prompt_rate)
+        clock[0] += 2
+        self.assertEqual(sampler.snapshot()[-1].prompt_rate, 50.0)
+        # A swap: the new preset is named, and scraped from the next tick on.
+        self.router.loaded = "ci-tiny"
+        clock[0] += 2
+        swapped = sampler.snapshot()[-1]
+        self.assertEqual((swapped.model, swapped.scraped, swapped.processing), ("ci-tiny", False, None))
+        clock[0] += 2
+        self.assertEqual(sampler.snapshot()[-1].processing, 1)
+        # Only settled presets were ever asked for their counters.
+        self.assertEqual(sorted(set(sampler.asked)), ["ci-small", "ci-tiny"])
+        self.assertEqual(self.router.asked, [f"/metrics?model={name}" for name in sampler.asked])
+        for sample in sampler.samples:
+            for value in vars(sample).values():
+                self.assertIsInstance(value, (bool, int, float, str, type(None)))
+            self.assertNotIn("script", str(sample.model))
+            self.assertNotIn("TOPSECRET", json.dumps(vars(sample)))
+
+    def test_a_snapshot_within_the_interval_scrapes_nothing_and_the_ring_is_bounded(self) -> None:
+        sampler = statspage.LiveSampler(self.router.url, interval=60)
+        for _ in range(3):
+            sampler.snapshot()
+        self.assertEqual(len(sampler.samples), 1)
+        with unittest.mock.patch.object(statspage, "LIVE_SAMPLES", 3):
+            sampler = statspage.LiveSampler(self.router.url, interval=0)
+            for _ in range(8):
+                sampler.snapshot()
+        self.assertEqual(len(sampler.samples), 3)
+
+    def test_a_stack_that_is_down_gives_unreachable_samples(self) -> None:
+        self.router.close()
+        sampler = statspage.LiveSampler(self.router.url, interval=0)
+        sample = sampler.snapshot()[-1]
+        self.assertEqual((sample.up, sample.model, sample.scraped, sample.prompt_rate), (False, None, False, None))
 
 
 class StatsPageTests(unittest.TestCase):
@@ -120,7 +248,7 @@ class StatsPageTests(unittest.TestCase):
         # `substitute` would raise on a slot the renderer misses; this pins
         # the other direction, a skeleton edit that drops or renames one.
         identifiers = Template(statspage.asset("stats.html")).get_identifiers()
-        slots = ["chart", "footnote", "meta", "refresh", "script", "style", "tables", "tiles"]
+        slots = ["chart", "footnote", "live", "meta", "refresh", "script", "style", "tables", "tiles"]
         self.assertEqual(sorted(identifiers), slots + ["vendorscript", "vendorstyle"])
 
 
@@ -130,7 +258,9 @@ class StatsServeTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.agents_dir = Path(tmp.name)
         write_transcripts(self.agents_dir)
-        self.server = statspage.stats_server(self.agents_dir, 0)
+        self.router = FakeRouter()
+        self.addCleanup(self.router.close)
+        self.server = statspage.stats_server(self.agents_dir, 0, self.router.url)
         self.addCleanup(self.server.server_close)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
@@ -148,8 +278,15 @@ class StatsServeTests(unittest.TestCase):
         status, body = self.fetch("/")
         self.assertEqual(status, 200)
         self.assertIn("<title>TokenCrate stats</title>", body)
-        # The served page reloads itself; the saved one does not.
+        # The served page reloads itself and carries the live panel's
+        # script; the saved one has neither.
         self.assertIn('<meta http-equiv="refresh" content="60">', body)
+        self.assertIn('<script id="live-script" data-api="127.0.0.1:', body)
+        self.assertIn('fetch("/live"', body)
+        saved = statspage.html(stats.read_sessions(self.agents_dir))
+        self.assertNotIn("live-script", saved)
+        self.assertNotIn("/live", saved)
+        self.assertNotIn("http-equiv", saved)
         status, _ = self.fetch("/", host=f"localhost:{self.port}")
         self.assertEqual(status, 200)
         for foreign in ("evil.example", f"evil.example:{self.port}", "127.0.0.1", "127.0.0.1:1"):
@@ -159,9 +296,27 @@ class StatsServeTests(unittest.TestCase):
         status, _ = self.fetch("/elsewhere")
         self.assertEqual(status, 404)
 
+    def test_live_answers_json_of_numbers_on_the_same_names_only(self) -> None:
+        status, body = self.fetch("/live")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(sorted(data), ["api", "samples"])
+        self.assertEqual(data["api"], self.router.url.partition("://")[2])
+        self.assertEqual(len(data["samples"]), 1)
+        sample = data["samples"][0]
+        self.assertEqual(
+            sorted(sample), ["deferred", "generation_rate", "model", "processing", "prompt_rate", "scraped", "t", "up"]
+        )
+        self.assertEqual((sample["up"], sample["model"]), (True, "ci-small"))
+        for foreign in ("evil.example", f"evil.example:{self.port}"):
+            status, _ = self.fetch("/live", host=foreign)
+            self.assertEqual(status, 403, foreign)
+        status, _ = self.fetch("/live/x")
+        self.assertEqual(status, 404)
+
     def test_without_transcripts_the_server_answers_503(self) -> None:
         with TemporaryDirectory(prefix="tokencrate-stats-") as empty:
-            server = statspage.stats_server(Path(empty), 0)
+            server = statspage.stats_server(Path(empty), 0, self.router.url)
             self.addCleanup(server.server_close)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             self.addCleanup(server.shutdown)
@@ -175,7 +330,7 @@ class StatsServeTests(unittest.TestCase):
 
     def test_an_occupied_port_is_a_one_sentence_refusal(self) -> None:
         with self.assertRaises(TokenCrateError) as caught:
-            statspage.stats_server(self.agents_dir, self.port)
+            statspage.stats_server(self.agents_dir, self.port, self.router.url)
         self.assertIn(f"cannot serve the stats page on 127.0.0.1:{self.port}", str(caught.exception))
 
 

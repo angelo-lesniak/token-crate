@@ -10,7 +10,12 @@ hash-pinned files under `tokencrate/pages/vendor/`. The skeleton is a
 every transcript-supplied string is escaped at the call site that formats
 it, and the JSON data island carries only trusted agent labels and
 numbers, with `</` escaped. `serve` re-reads the transcripts per request
-on a loopback-only server that answers only its own `Host` names.
+on a loopback-only server that answers only its own `Host` names, and adds
+a live panel to the served page: the page polls the server's `/live`
+endpoint, which polls the model server's loopback API for the loaded
+preset's request gauges and token counters, at most every LIVE_INTERVAL
+seconds and only while a page asks, into a bounded ring of samples that
+holds nothing but numbers and the preset's name.
 """
 
 from __future__ import annotations
@@ -21,13 +26,18 @@ import html as html_text
 import json
 import math
 import re
+import threading
 import time
+from collections import deque
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from string import Template
 
 from . import TokenCrateError
+from .localhttp import http_get
+from .presets import PRESET_NAME_RE
 from .session import AGENTS
 from .stats import FOOTNOTE, Request, Session, build_tables, read_sessions, share, summary_line
 
@@ -36,6 +46,16 @@ from .stats import FOOTNOTE, Request, Session, build_tables, read_sessions, shar
 SERVE_PORT = 4210
 # How often the served page asks the browser to reload it.
 REFRESH_SECONDS = 60
+# The live panel: the shortest time between two scrapes of the model
+# server, the ring's length (ten minutes at that pace), and the timeout of
+# each loopback request.
+LIVE_INTERVAL = 2.0
+LIVE_SAMPLES = 300
+LIVE_TIMEOUT = 2
+# What a scrape keeps of `GET /metrics?model=`: the two token counters the
+# rates come from and the two request gauges. Every other line is dropped.
+LIVE_COUNTERS = ("llamacpp:prompt_tokens_total", "llamacpp:tokens_predicted_total")
+LIVE_GAUGES = ("llamacpp:requests_processing", "llamacpp:requests_deferred")
 
 
 @functools.cache
@@ -132,8 +152,20 @@ def ecdf_chart(sessions: list[Session]) -> str:
     )
 
 
-def html(sessions: list[Session], refresh: int | None = None) -> str:
-    """The stats report as one self-contained HTML page."""
+def live_panel(api: str) -> str:
+    """The served page's live panel: one script that builds the panel and
+    polls `/live`; `api` (host:port of the model server, as `stats_server`
+    derives it) names what is polled when it cannot be reached."""
+    return (
+        '<script id="live-script" '
+        f'data-api="{html_text.escape(api)}" data-interval="{int(LIVE_INTERVAL * 1000)}">\n'
+        f"{asset('live.js')}</script>"
+    )
+
+
+def html(sessions: list[Session], refresh: int | None = None, live: str | None = None) -> str:
+    """The stats report as one self-contained HTML page; `live` (the model
+    server's host:port) adds the served page's live panel."""
     requests = [request for session in sessions for request in session.requests]
     contexts = [request.context for request in requests]
     prompt = sum(request.input + request.cache_read for request in requests)
@@ -171,18 +203,142 @@ def html(sessions: list[Session], refresh: int | None = None) -> str:
         tables="\n".join(sections),
         footnote=prose(FOOTNOTE),
         script=asset("stats.js"),
+        live=live_panel(live) if live else "",
     )
+
+
+# --- Live samples of the model server ----------------------------------------
+
+
+@dataclass
+class Sample:
+    """One look at the model server: wall time in seconds, whether the API
+    answered, the loaded preset, whether its counters were scraped, its
+    request gauges, and the token rates since the previous scrape (None
+    until the preset has been scraped twice, and after a counter went
+    backwards, which is a restart)."""
+
+    t: float
+    up: bool
+    model: str | None
+    scraped: bool
+    processing: int | None
+    deferred: int | None
+    prompt_rate: float | None
+    generation_rate: float | None
+
+
+def prometheus_values(body: str, names: tuple[str, ...]) -> dict[str, float]:
+    """The unlabelled samples of `names` from Prometheus text; a name whose
+    value is not a finite number is absent."""
+    values = {}
+    for line in body.splitlines():
+        name, _, rest = line.partition(" ")
+        if name in names:
+            try:
+                value = float(rest.strip())
+            except ValueError:
+                continue
+            if math.isfinite(value):
+                values[name] = value
+    return values
+
+
+class LiveSampler:
+    """The ring of samples behind `/live`. A snapshot scrapes the model
+    server first when the previous scrape is at least `interval` old, so
+    however many pages poll, the API sees one request pair per interval
+    and none while no page is open. Only a preset that `GET /models`
+    reported loaded on this and the previous snapshot is asked for its
+    counters: a scrape routes to the preset, and asking for one that just
+    unloaded would load it again."""
+
+    def __init__(self, service_url: str, interval: float = LIVE_INTERVAL, clock=time.monotonic) -> None:
+        self.service_url = service_url.rstrip("/")
+        self.interval = interval
+        self.clock = clock
+        self.samples: deque[Sample] = deque(maxlen=LIVE_SAMPLES)
+        self.lock = threading.Lock()
+        self.scraped_at: float | None = None
+        self.loaded: str | None = None
+        self.previous: tuple[str, dict[str, float], float] | None = None
+        self.asked: list[str] = []
+
+    def snapshot(self) -> list[Sample]:
+        with self.lock:
+            now = self.clock()
+            if self.scraped_at is None or now - self.scraped_at >= self.interval:
+                self.scraped_at = now
+                self.samples.append(self.scrape())
+            return list(self.samples)
+
+    def loaded_preset(self) -> tuple[bool, str | None]:
+        """Whether the API answers, and the loaded preset's validated name."""
+        body = http_get(f"{self.service_url}/models", timeout=LIVE_TIMEOUT)
+        if body is None:
+            return False, None
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return True, None
+        models = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            return True, None
+        loaded = sorted(
+            str(model["id"])
+            for model in models
+            if isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and PRESET_NAME_RE.fullmatch(model["id"])
+            and isinstance(model.get("status"), dict)
+            and model["status"].get("value") == "loaded"
+        )
+        return True, loaded[0] if loaded else None
+
+    def scrape(self) -> Sample:
+        up, model = self.loaded_preset()
+        sample = Sample(time.time(), up, model, False, None, None, None, None)
+        settled = up and model is not None and model == self.loaded
+        self.loaded = model
+        if not settled:
+            self.previous = None
+            return sample
+        self.asked.append(model)
+        body = http_get(f"{self.service_url}/metrics?model={model}", timeout=LIVE_TIMEOUT)
+        if body is None:
+            self.previous = None
+            return sample
+        sample.scraped = True
+        gauges = prometheus_values(body, LIVE_GAUGES)
+        counters = prometheus_values(body, LIVE_COUNTERS)
+        at = self.clock()
+        sample.processing = int(gauges[LIVE_GAUGES[0]]) if LIVE_GAUGES[0] in gauges else None
+        sample.deferred = int(gauges[LIVE_GAUGES[1]]) if LIVE_GAUGES[1] in gauges else None
+        # A rate needs both counters in this scrape and the previous one of
+        # the same preset; a counter that went backwards is a restart.
+        complete = all(name in counters for name in LIVE_COUNTERS)
+        if complete and self.previous and self.previous[0] == model and at > self.previous[2]:
+            deltas = [counters[name] - self.previous[1][name] for name in LIVE_COUNTERS]
+            if min(deltas) >= 0:
+                elapsed = at - self.previous[2]
+                sample.prompt_rate = round(deltas[0] / elapsed, 1)
+                sample.generation_rate = round(deltas[1] / elapsed, 1)
+        self.previous = (model, counters, at) if complete else None
+        return sample
 
 
 # --- The loopback server (`stats --serve`) ---------------------------------
 
 
-def stats_server(agents_dir: Path, port: int) -> ThreadingHTTPServer:
+def stats_server(agents_dir: Path, port: int, service_url: str) -> ThreadingHTTPServer:
     """The page on 127.0.0.1:`port`, re-reading the transcripts on every
-    request. Only the server's own loopback `Host` names are answered, so
-    a page on another site cannot use the browser's name resolution to
-    reach it; without CORS headers the response body stays unreadable
-    cross-origin either way."""
+    request, and `/live`, the samples of the model server at `service_url`.
+    Only the server's own loopback `Host` names are answered, so a page on
+    another site cannot use the browser's name resolution to reach it;
+    without CORS headers the response body stays unreadable cross-origin
+    either way."""
+    sampler = LiveSampler(service_url)
+    api = service_url.partition("://")[2].rstrip("/")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_arguments) -> None:
@@ -206,10 +362,14 @@ def stats_server(agents_dir: Path, port: int) -> ThreadingHTTPServer:
             bound = self.server.server_address[1]
             if self.headers.get("Host", "") not in (f"127.0.0.1:{bound}", f"localhost:{bound}"):
                 return self.refuse(403, "stats answers only its own loopback host names")
-            if self.path.partition("?")[0] != "/":
+            path = self.path.partition("?")[0]
+            if path == "/live":
+                body = {"api": api, "samples": [asdict(s) for s in sampler.snapshot()]}
+                return self.answer(200, json.dumps(body).encode("utf-8"), "application/json")
+            if path != "/":
                 return self.refuse(404, "the stats page is at /")
             try:
-                page = html(read_sessions(agents_dir), refresh=REFRESH_SECONDS)
+                page = html(read_sessions(agents_dir), refresh=REFRESH_SECONDS, live=api)
             except TokenCrateError as error:
                 return self.refuse(503, str(error))
             self.answer(200, page.encode("utf-8"), "text/html; charset=utf-8")
@@ -220,9 +380,9 @@ def stats_server(agents_dir: Path, port: int) -> ThreadingHTTPServer:
         raise TokenCrateError(f"cannot serve the stats page on 127.0.0.1:{port}: {error}") from None
 
 
-def serve(agents_dir: Path, port: int) -> int:
+def serve(agents_dir: Path, port: int, service_url: str) -> int:
     """Serve until interrupted; Ctrl-C, SIGHUP, or SIGTERM stop it."""
-    with stats_server(agents_dir, port) as server:
+    with stats_server(agents_dir, port, service_url) as server:
         print(f"Serving the stats page at http://127.0.0.1:{server.server_address[1]}/ (Ctrl-C stops it)")
         server.serve_forever()
     return 0

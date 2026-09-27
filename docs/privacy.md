@@ -32,7 +32,10 @@ bypass host HTTP proxy settings. [`stats`](cli.md#stats) reads the
 retained transcripts below `LLM_AGENTS_DIR` on the host, takes only
 usage numbers and metadata from them, and writes a report without
 message content; `stats --serve` offers that report on a loopback port
-to local readers only, refusing other `Host` names.
+to local readers only, refusing other `Host` names, and while a page is
+open polls the model server's loopback port for the loaded preset's
+request counts and token counters, which it keeps in memory for ten
+minutes.
 
 The llama container joins the default network to publish its loopback
 port; UI forwarders join `ui-publish`. Both have outbound routes.

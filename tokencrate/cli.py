@@ -436,7 +436,7 @@ def dispatch(command: str, arguments: list[str]) -> int:
         # Reads the retained transcripts on the host; no engine, stack, or
         # preset is needed, so the report works with everything down.
         if options.serve:
-            return statspage.serve(settings.agents_dir, int(options.port or statspage.SERVE_PORT))
+            return statspage.serve(settings.agents_dir, int(options.port or statspage.SERVE_PORT), settings.service_url)
         sessions = stats.read_sessions(settings.agents_dir)
         text = stats.report(sessions)
         print(text, end="")

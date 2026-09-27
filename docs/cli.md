@@ -340,11 +340,24 @@ below `LLM_AGENTS_DIR` removes it from the report.
 
 `--serve` serves the page at `http://127.0.0.1:4210/` (`--port` selects
 another port) until Ctrl-C, re-reading the transcripts and refreshing
-the page every 60 seconds, and saves nothing. The server binds loopback
-only and answers only requests whose `Host` header names its own
-address, so a web page cannot reach it through the browser's name
-resolution; anything local that can open the port can read the report's
-numbers.
+the page every 60 seconds, and saves nothing. The served page adds a
+live panel above the report: the requests the model server is
+processing and has queued, and its prompt and generation rates in
+tokens per second, as tiles and as two charts over the last ten
+minutes. The page polls the server's `/live` path, and the server polls
+the model server's loopback port (`LLM_PORT`), at most every 2 seconds
+and only while a page is open: `GET /models`, and for the preset that
+was loaded on this and the previous poll, `GET /metrics?model=`. A
+request routes to its preset, so a poll that lands in a model swap can
+ask the router for the preset that just unloaded, which loads it again;
+the two-poll rule keeps that to a swap between two consecutive
+requests. The panel shows when the stack is down or nothing is loaded;
+its samples live in the server's memory (ten minutes) and are never
+saved, and a saved page has no panel. The server binds loopback only
+and answers only requests whose `Host` header names its own address,
+so a web page cannot reach it through the browser's name resolution;
+anything local that can open the port can read the report's numbers
+and the live samples.
 
 ```bash
 bash bin/tokencrate stats --serve
