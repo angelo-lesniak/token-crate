@@ -140,7 +140,7 @@ class IntegrationTests(unittest.TestCase):
 
     def probe(self, *arguments: str) -> str:
         output = tokencrate(*arguments, capture=True).stdout
-        self.reports.extend(re.findall(r"^Saved [a-z]+ report to (.+)$", output, re.MULTILINE))
+        self.reports.extend(re.findall(r"^Saved [a-z]+ (?:report|samples) to (.+)$", output, re.MULTILINE))
         return output
 
     def prompt(self, what: str, *arguments: str) -> subprocess.CompletedProcess:

@@ -102,7 +102,7 @@ settings to replace them with the current server defaults.
 | `build/agents/omp/models.yml` | Generated oh-my-pi model list, stored as JSON text |
 | `build/locks/<engine>-<project-hash>.lock` | Lock for model/UI startup and shutdown; two checkouts with one `COMPOSE_PROJECT_NAME` on one engine share the stack but not the lock |
 | `local/cloud-keys.env` | The cloud keys file (`LLM_CLOUD_KEYS_FILE`), copied from `cloud-keys.env.example`; mounted only by `agent --cloud` and `ui --cloud` |
-| `reports/` | Smoke and benchmark reports |
+| `reports/` | Smoke, bench, and stats reports; `bench` writes its measurements as JSON next to the Markdown |
 
 In the model library, `<source>` is the manifest's path: a filename, or
 a quantization directory and filename for a split set.

@@ -29,6 +29,7 @@ from . import (
     runtime,
     session,
     skills,
+    stats,
     uis,
     warn,
 )
@@ -57,6 +58,8 @@ Usage:
       Prove from inside an agent container what is reachable: only the model, or with --egress also the routes out.
   bin/tokencrate bench [--preset id]... [--iterations n] [--long]
       Measure prompt-processing and generation speed per preset and save a report.
+  bin/tokencrate stats
+      Summarize token usage and context sizes from the retained agent transcripts and save a report.
   bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [-- args]
       Open a coding agent in the current (or named) project directory; --cloud (pi only) mounts LLM_CLOUD_KEYS_FILE.
   bin/tokencrate agent-sets list
@@ -283,12 +286,19 @@ def run_probe(
         patched = bool(found and configuration.model_sets[found.model_set].chat_template_file)
         results = probe.smoke(url, preset, basic=options.basic, efforts=efforts, patched_template=patched)
         text, status = probe.smoke_report(preset, url, results, probe.server_facts(url, preset))
+        rows = None
     else:
         rows = probe.bench(url, selected, options.iterations, options.long)
-        text, status = probe.bench_report(url, rows, probe.server_facts(url, selected[0])), 0
+        facts = probe.server_facts(url, selected[0])
+        text, status = probe.bench_report(url, rows, facts), 0
     print(text, end="")
     path = runtime.save_report(settings, kind, text)
     print(f"Saved {kind} report to {path}")
+    if rows is not None:
+        # The same stem as the Markdown report, so the pair stays together.
+        samples = path.with_suffix(".json")
+        samples.write_text(probe.bench_json(url, rows, facts), encoding="utf-8")
+        print(f"Saved bench samples to {samples}")
     if status != 0:
         warn(f"the {kind} run failed with status {status}")
     return status
@@ -412,6 +422,14 @@ def dispatch(command: str, arguments: list[str]) -> int:
     elif command == "bench":
         options = parse_options(settings, command, arguments)
         return run_probe(settings, engines.detect(settings), configuration(), "bench", options)
+    elif command == "stats":
+        parse_options(settings, command, arguments)
+        # Reads the retained transcripts on the host; no engine, stack, or
+        # preset is needed, so the report works with everything down.
+        text = stats.report(settings.agents_dir)
+        print(text, end="")
+        path = runtime.save_report(settings, "stats", text)
+        print(f"Saved stats report to {path}")
     elif command == "agent":
         if not arguments:
             raise TokenCrateError(

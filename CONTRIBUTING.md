@@ -34,7 +34,7 @@ as set in `ruff.toml`.
 | `models`, `presets`, `agentmodels` | Model downloads, preset validation and rendering, and agent model lists |
 | `session` | What one agent container start is made of |
 | `agents`, `uis`, `agentsets`, `skills` | Terminal sessions and the containment check, browser UIs, image selections, and skill sets |
-| `doctor`, `probe`, `checkpins` | Host checks, API probes and benchmarks, and upstream pin lookups |
+| `doctor`, `probe`, `stats`, `checkpins` | Host checks, API probes and benchmarks, transcript statistics, and upstream pin lookups |
 
 Usage and error text in `cli.py` are part of the documented interface.
 `docs/cli.md` must show every usage line verbatim.

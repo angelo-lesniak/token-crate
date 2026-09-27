@@ -28,14 +28,19 @@ offered them.
 
 Commands run on the host as your user. Those not listed above reach only
 loopback ports or use no network. Requests to local model and UI APIs
-bypass host HTTP proxy settings.
+bypass host HTTP proxy settings. [`stats`](cli.md#stats) reads the
+retained transcripts below `LLM_AGENTS_DIR` on the host, takes only
+usage numbers and metadata from them, and writes a report without
+message content.
 
 The llama container joins the default network to publish its loopback
 port; UI forwarders join `ui-publish`. Both have outbound routes.
 Forwarders send requests only to their UI backend. With the shipped
 text-only presets, llama-server and the built-in chat UI make no outbound
 requests of their own. The built-in chat UI stores conversations in the
-browser.
+browser. llama-server also serves aggregate Prometheus counters
+(`GET /metrics?model=`) on the published loopback port; they hold
+numeric token, request, and KV-cache figures, never prompt text.
 
 llama.cpp runs in offline mode (`LLAMA_ARG_OFFLINE=1` in `compose.yaml`),
 which stops model downloads from URLs or Hugging Face at startup. The

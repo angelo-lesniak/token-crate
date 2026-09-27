@@ -126,7 +126,10 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(list(config), ["*", *LOADABLE_PRESETS])
         # Every child inherits the shared section; the router adds host, port,
         # and alias itself, so no section names them.
-        self.assertEqual(config["*"], {"jinja": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"})
+        self.assertEqual(
+            config["*"],
+            {"jinja": "true", "metrics": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"},
+        )
         for forbidden in ("host", "port", "alias"):
             self.assertNotIn(forbidden, text)
         # Only the default preset loads at start; the file is plain `key = value` lines.

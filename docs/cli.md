@@ -212,7 +212,9 @@ minutes. The checks cover:
   rendered with the preset's first two efforts must give two different
   prompts (a preset that declares fewer than two passes with
   `nothing to compare`);
-- tokenization.
+- tokenization;
+- the Prometheus counters (`GET /metrics?model=`), which the rendered
+  `[*]` section turns on for every preset on the same loopback port.
 
 `--basic` skips the reply-termination and streamed-tool-call checks,
 which need a capable model, so that a tiny model can still check the
@@ -286,12 +288,47 @@ llama-server's `timings`, averaged over `--iterations` requests (default 3).
 `--long` adds a run with a long prompt; the report's prompt-tokens column
 shows the measured length of every run. Without `--preset`, the default
 preset is measured. The report is written to
-`reports/bench-<timestamp>.md`. Presets are loaded in turn, so measuring
-several presets swaps models.
+`reports/bench-<timestamp>.md`, and `reports/bench-<timestamp>.json`
+holds the same measurements with six `timings` values per iteration and
+the server build, so one llama.cpp build's numbers can be compared
+against another's after an [upgrade](configuration.md#upgrading). Presets are
+loaded in turn, so measuring several presets swaps models.
 
 ```bash
 bash bin/tokencrate bench --preset qwen3.8-27b-q4 --preset qwen3.8-27b-q4-mtp
 ```
+
+## stats
+
+```text
+bin/tokencrate stats
+```
+
+Summarizes the retained transcripts below `LLM_AGENTS_DIR`
+([storage layout](configuration.md#storage-layout)): every terminal and
+browser-UI session that received at least one answer counts. The command
+reads only the host directories, so it works with the stack down. The
+report is printed and written to `reports/stats-<timestamp>.md`.
+
+The tables show, per agent and per provider and model: requests,
+summed input and output tokens, the cache-read share, and the
+context-size distribution (nearest-rank p50/p90/max and the share of
+requests above 16K/32K/48K tokens), for judging a preset's `ctx_size`
+and `parallel` against real sessions. Per agent they also show
+sessions with their peak contexts and the first-request p50 (what a
+fresh agent costs before the task starts), tool calls with their error
+counts, every stop reason with its count, compactions, and, from
+oh-my-pi transcripts, time to first token and request duration; pi
+records no timings. A session's requests against a cloud provider
+appear under that provider's name. The report's final paragraph
+defines each measure.
+
+The command reads usage numbers and metadata only, never message
+content, and the report carries no conversation text, session names, or
+project paths ([Privacy](privacy.md#what-leaves-the-machine)). The
+numbers describe whatever transcripts are on disk; `smoke --agent` uses
+a temporary home and adds none, and deleting a project's directories
+below `LLM_AGENTS_DIR` removes it from the report.
 
 ## agent
 

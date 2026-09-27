@@ -4,9 +4,9 @@
 completion, a streamed tool call, and a system message in the middle of a
 conversation (the case the stock Qwen3.8 template rejects). `bench` measures
 prompt-processing and generation speed from llama-server's `timings` object.
-The report functions return Markdown text; the CLI runs the probe on the host
-against the published loopback port, prints the report, and saves it under
-reports/.
+The report functions return Markdown text (`bench_json` the machine-readable
+side of the bench); the CLI runs the probe on the host against the published
+loopback port, prints the report, and saves it under reports/.
 """
 
 from __future__ import annotations
@@ -264,6 +264,17 @@ def smoke(
             raise TokenCrateError("tokenize returned no tokens")
         return f"{len(tokens)} tokens for 'hello world'"
 
+    def metrics_counters():
+        # The renderer turns the counters on for every child ([*] metrics);
+        # this proves the pinned build serves them for the probed preset.
+        body = request(f"{url}/metrics?model={urllib.parse.quote(model, safe='')}", timeout=120)
+        if not isinstance(body, str):
+            raise TokenCrateError("the /metrics response is not Prometheus text")
+        names = sorted({line.split("{")[0].split(" ")[0] for line in body.splitlines() if line.startswith("llamacpp:")})
+        if not names:
+            raise TokenCrateError("no llamacpp counters in the /metrics response")
+        return f"{len(names)} llamacpp metric(s), including {names[0]}"
+
     def template_render():
         # llama-server renders the chat template without generating, so this
         # proves the (patched) template accepts a system message after the
@@ -302,6 +313,7 @@ def smoke(
         record("template keeps later system messages", template_render)
     record("reasoning effort reaches the template", effort_reaches_template)
     record("tokenize", tokenize)
+    record("metrics counters", metrics_counters)
     return results
 
 
@@ -322,10 +334,7 @@ def bench(url: str, presets: list[str], iterations: int, long: bool) -> list[dic
         if long:
             runs.append(("long", bench_prompt(8000)))
         for label, prompt in runs:
-            prompt_speeds: list[float] = []
-            generation_speeds: list[float] = []
-            prompt_tokens = 0
-            generated_tokens = 0
+            samples: list[dict] = []
             for _ in range(iterations):
                 # cache_prompt=False makes every iteration process the whole
                 # prompt again; otherwise llama-server reuses the cached prefix
@@ -341,19 +350,28 @@ def bench(url: str, presets: list[str], iterations: int, long: bool) -> list[dic
                 timings = response.get("timings") or {}
                 if not timings:
                     raise TokenCrateError("the response has no timings object; is this llama-server?")
-                prompt_speeds.append(float(timings.get("prompt_per_second") or 0))
-                generation_speeds.append(float(timings.get("predicted_per_second") or 0))
-                prompt_tokens = int(timings.get("prompt_n") or 0)
-                generated_tokens = int(timings.get("predicted_n") or 0)
+                # Every iteration's timings, for the JSON report: prompt_ms
+                # is the wait before the first token of this request.
+                samples.append(
+                    {
+                        "prompt_n": int(timings.get("prompt_n") or 0),
+                        "predicted_n": int(timings.get("predicted_n") or 0),
+                        "prompt_ms": float(timings.get("prompt_ms") or 0),
+                        "predicted_ms": float(timings.get("predicted_ms") or 0),
+                        "prompt_per_second": float(timings.get("prompt_per_second") or 0),
+                        "predicted_per_second": float(timings.get("predicted_per_second") or 0),
+                    }
+                )
             rows.append(
                 {
                     "preset": preset,
                     "run": label,
-                    "prompt_tokens": prompt_tokens,
-                    "generated_tokens": generated_tokens,
-                    "prompt_tps": sum(prompt_speeds) / len(prompt_speeds),
-                    "generation_tps": sum(generation_speeds) / len(generation_speeds),
+                    "prompt_tokens": samples[-1]["prompt_n"],
+                    "generated_tokens": samples[-1]["predicted_n"],
+                    "prompt_tps": sum(sample["prompt_per_second"] for sample in samples) / len(samples),
+                    "generation_tps": sum(sample["predicted_per_second"] for sample in samples) / len(samples),
                     "iterations": iterations,
+                    "samples": samples,
                 }
             )
     return rows
@@ -415,3 +433,18 @@ def bench_report(url: str, rows: list[dict], facts: dict) -> str:
         "Speeds are averages of llama-server's per-request `timings` with prompt caching disabled for the request.",
     ]
     return "\n".join(lines) + "\n"
+
+
+def bench_json(url: str, rows: list[dict], facts: dict) -> str:
+    """The bench measurements as JSON, saved next to the Markdown report:
+    six `timings` values per iteration for every preset and run, with the
+    build, so one llama.cpp build's numbers can be compared against
+    another's."""
+    document = {
+        "schema": 1,
+        "date": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "endpoint": url,
+        "build": facts.get("build"),
+        "rows": rows,
+    }
+    return json.dumps(document, indent=2) + "\n"

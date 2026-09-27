@@ -27,6 +27,7 @@ The table summarizes the [records](#records).
 | `agent pi --cloud` refuses a missing keys file, a directory, a file inside the project, and oh-my-pi, each with one sentence before the pre-flight; the file reaches the named session container through the `run`'s own `-v`, read-only, with no key value in `inspect` or on the command line; the entrypoint exports its lines, refuses a malformed one, and pi offers the keyed provider's bundled catalogue; `--egress` alone offers no cloud model | Validated | Arch Linux VM, rootless Podman 6.1.2, placeholder key; RTX 5090, rootless Podman 6.1.2, an OpenRouter key with a free model answering | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | A `SIGTERM` or `SIGHUP` to the wrapper of a running `agent` session stops the session container and leaves no Compose provider process; `Ctrl-C` ends the session with status 130 | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
+| The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check); `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; transcripts from the GPU host | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
 | An oh-my-pi session sends the Anthropic key to the address a project's `.env` or `.env.local` names (8 requests to a listener inside the container with the file, 0 without), so `agent omp --cloud` is refused | Validated | Arch Linux VM, rootless Podman 6.1.2, pinned oh-my-pi image offline | [oh-my-pi and project env files](#oh-my-pi-and-project-env-files) |
@@ -81,6 +82,10 @@ The engine-free gate and the CPU integration check do not cover these:
   record](#the-128k-mtp-presets));
 - the UI launchers' readiness timeouts for a daemon that never answers:
   no recorded run had a daemon fail to start;
+- the `/metrics` counters on the GPU presets: their content over a real
+  coding session, and the spec-decode counters of the MTP presets for
+  acceptance-rate tuning; the CPU run checked only that the counters
+  answer;
 - the provider in pi's interactive model picker, a cloud answer through
   PI WEB's browser session or Paseo's create-agent form, and the
   reported cost: every recorded cloud answer came from a scripted prompt
@@ -321,7 +326,10 @@ behavior, or image details below. Repeat these observations after a
   fails when the default preset turns `unloaded` after `loading`.
 - Requests without `model` answer 400 `model name is missing from the
   request`; `GET /props`, `POST /tokenize`, and `GET /metrics` need
-  `?model=` or a `model` field, which the probe sends.
+  `?model=` or a `model` field, which the probe sends. A request routes
+  to its preset, so asking `/metrics` for an unloaded preset is expected
+  to load it first (the swap above; not observed for `/metrics`): scrape
+  only presets `GET /models` reports loaded.
 - Preset file: keys are llama-server option names without dashes
   (`jinja = true` becomes `--jinja`, `ui-config-file`
   `--webui-config-file`, `gpu-layers` `--n-gpu-layers`); a key given twice
@@ -340,6 +348,42 @@ behavior, or image details below. Repeat these observations after a
 - The UI at the root is a build with router-mode model selection.
 
 ## Records
+
+### Metrics counters and the stats report
+
+Purpose: prove that the router rendered with `metrics = true` in `[*]`
+answers with counters at `GET /metrics?model=` for a loaded and a
+swapped preset (the `smoke` check `metrics counters`), that
+`bench` writes its JSON measurements next to the Markdown report, and
+that `stats` reports over real transcripts without carrying content.
+Date: 2026-09-26. Environment: the virtual machine, rootless Podman
+6.1.2 with podman-compose 1.6.0 and `crun`, kernel 7.2.6,
+`LLM_GPU=false` with the CPU fixture models.
+
+- `python3 tests/integration.py -k probes_swap` passed: the router
+  started with `metrics = true` in the rendered `[*]` section, the full
+  probe on `ci-small` and the basic probe on `ci-tiny` passed every
+  check including `metrics counters`, and the swap between the presets
+  held.
+- `bench --preset ci-small --iterations 2` saved
+  `bench-<timestamp>.json` next to the Markdown report, with build
+  `b11028-972d2313b` and one `timings` sample per iteration
+  (`prompt_ms` 287 for the 223-token prompt).
+- `stats` over the GPU host's 41 retained transcripts, read over the
+  VM's share mount, reported 288 requests: pi's first-request p50 of
+  7,987 tokens against oh-my-pi's 19,032 (the first-request costs of
+  the [pi](#pi-and-the-agent-sets) and [oh-my-pi](#oh-my-pi) records),
+  an 89 percent cache-read share across all requests, 12 percent of pi
+  requests above 48K tokens, and time to first token and duration from
+  the oh-my-pi
+  transcripts alone. The report carried no message content, session
+  names, or project paths.
+
+Not covered: the counters' content on the GPU presets over a real
+workload and the spec-decode counters of the MTP presets; a scrape of
+an unloaded preset, which by the routing rule of
+[Router behavior](#router-behavior-the-wrapper-relies-on) loads it
+first, was not repeated for `/metrics`.
 
 ### The llama API and the presets
 

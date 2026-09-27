@@ -31,10 +31,13 @@ MODELS_ROOT_IN_CONTAINER = "/models"
 CHAT_TEMPLATES_IN_CONTAINER = "/etc/tokencrate/chat-templates"
 UI_CONFIG_IN_CONTAINER = "/etc/tokencrate/ui-config.json"
 # The [*] section, which every child server inherits: the Jinja template
-# engine (tool calls and chat_template_kwargs) and the UI defaults (the
-# router loads the same file for the UI at the root; the UI reads whichever
+# engine (tool calls and chat_template_kwargs), the Prometheus counters
+# (GET /metrics?model= on the loopback port; smoke checks them, and a
+# request for an unloaded preset is expected to load it first), and the
+# UI defaults (the router
+# loads the same file for the UI at the root; the UI reads whichever
 # /props it fetched last).
-SHARED_KEYS = (("jinja", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
+SHARED_KEYS = (("jinja", "true"), ("metrics", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
 SECTION_RE = re.compile(r"^\[([^\]]+)\]$", re.MULTILINE)
 # The choices are the values the shipped presets use or a validation
 # record has measured; a value llama-server accepts but no preset has run
