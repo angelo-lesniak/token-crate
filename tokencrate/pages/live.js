@@ -45,7 +45,7 @@
     section.appendChild(wrapper);
     return mount;
   }
-  var throughputMount = figure("Throughput — tokens per second, last ten minutes");
+  var throughputMount = figure("Throughput — tokens per second as the server counts them (at each request's end), last ten minutes");
   var occupancyMount = figure("Occupancy — requests processing and queued, last ten minutes");
   meta.parentNode.insertBefore(section, meta.nextSibling);
 

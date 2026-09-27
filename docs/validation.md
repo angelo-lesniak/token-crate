@@ -28,8 +28,8 @@ The table summarizes the [records](#records).
 | A `SIGTERM` or `SIGHUP` to the wrapper of a running `agent` session stops the session container and leaves no Compose provider process; `Ctrl-C` ends the session with status 130 | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check), and on the GPU preset with real traffic behind them, spec-decode counters included; `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; RTX 5090 on `qwen3.8-27b-q4-mtp` | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report), [The metrics run on the GPU](#the-metrics-run-on-the-gpu) |
-| The `metrics` agent set times pi's requests through a first-party extension that writes `ttft` and `duration` on the assistant message in oh-my-pi's fields, so `stats` fills a pi row of its Timings table; the request pi sends is byte-identical with and without the set | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint inside the container | [The metrics set and its timings extension](#the-metrics-set-and-its-timings-extension) |
-| The served stats page shows a live panel of the model server (requests processing and queued, prompt and generation tokens per second, two charts over ten minutes) from `/live`, which the server fills by polling the loopback API at most every 2 seconds while a page is open and only for a preset two consecutive polls reported loaded; `/live` answers only the server's own loopback `Host` names; the saved page carries no panel | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU with the `ci-small` fixture preset; the page rendered in Chromium 153.0.8010.52 | [The live panel of the served stats page](#the-live-panel-of-the-served-stats-page) |
+| The `metrics` agent set times pi's requests through a first-party extension that writes `ttft` and `duration` on the assistant message in oh-my-pi's fields, so `stats` fills a pi row of its Timings table; the request pi sends is byte-identical with and without the set | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint inside the container; RTX 5090 on `qwen3.8-27b-q4-mtp` with tool calls | [The metrics set and its timings extension](#the-metrics-set-and-its-timings-extension) |
+| The served stats page shows a live panel of the model server (requests processing and queued, prompt and generation tokens per second, two charts over ten minutes) from `/live`, which the server fills by polling the loopback API at most every 2 seconds while a page is open and only for a preset two consecutive polls reported loaded; `/live` answers only the server's own loopback `Host` names; the saved page carries no panel | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU with the `ci-small` fixture preset, and the RTX 5090 on `qwen3.8-27b-q4-mtp` during an agent session; the page rendered in Chromium 153.0.8010.52 | [The live panel of the served stats page](#the-live-panel-of-the-served-stats-page) |
 | `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot) and tables match the Markdown and carry no transcript content, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52 | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
@@ -397,11 +397,35 @@ screenshotted light and dark by the pinned pi image's Chromium
 - SIGTERM stopped the server cleanly (exit 143 through the wrapper's
   signal handler).
 
-Not covered: the panel on the GPU host during a real agent session
-(the host run samples `/live` while an agent works), a preset swap and
-a stack restart seen by a running page (covered by the fake-router
-tests only), `--models-max` above 1, and a wall clock that steps
-backwards while the page is open (samples out of order are skipped).
+- On the GPU host (RTX 5090, `qwen3.8-27b-q4-mtp`, run
+  `metrics-set-20260927T203216Z`), `stats --serve` ran beside the
+  scripted pi session of [The metrics set and its timings
+  extension](#the-metrics-set-and-its-timings-extension) while a loop
+  fetched `/live` every two seconds: 64 samples, the first naming the
+  preset without counters and every later one scraped, `processing 1`
+  in 48 of them and `queued 0` throughout (one client), prompt rates up
+  to 513 tokens/s and generation rates mostly between 27 and 492
+  tokens/s while the agent worked, 0 between turns. One tick reported
+  4,340 generated tokens/s: an increase of about 8,700 in
+  `llamacpp:tokens_predicted_total` in two seconds, at 22:34:05, the
+  second the session's third request ended after 78 s with 8,824
+  output tokens. llama.cpp b11028 adds a request's generated tokens to
+  that counter when the slot is released at the request's end
+  (`tools/server/server-context.cpp`, the slot's `callback_on_reset`
+  flushing `stats.n_gen`), not per token, so a long answer arrives as
+  one burst; the same made the second request's 994 tokens show as 491
+  tokens/s for one tick. The samples integrate to about 10,960
+  generated tokens over the session against 11,070 output tokens in
+  the transcript. On the VM's CPU router the counters advanced exactly
+  by each completed request's completion tokens across cold, cached,
+  and partially cached prompts. The panel's rate is therefore the
+  server's own bookkeeping: exact per request, bursty within one.
+  `down` ended the run; SIGTERM stopped the server.
+
+Not covered: a preset swap and a stack restart seen by a running page
+(covered by the fake-router tests only), `--models-max` above 1, and a
+wall clock that steps backwards while the page is open (samples out
+of order are skipped).
 
 ### The metrics set and its timings extension
 
@@ -416,7 +440,10 @@ started through the entrypoint as `agent pi` starts it, with a stub
 model endpoint inside the container (`--network none`, `--add-host
 llama:127.0.0.1`) that records each chat-completion request body and
 streams `hi there.` with a delay before its first token, the method of
-[Request size of the coding set](#request-size-of-the-coding-set).
+[Request size of the coding set](#request-size-of-the-coding-set); then
+the GPU host (RTX 5090, driver 615.71.09, rootless Podman 6.1.2) with
+`LLM_AGENT_SETS=coding,metrics` on `qwen3.8-27b-q4-mtp`, the scripted
+run `metrics-set-20260927T203216Z` in the validate directory.
 
 - `pi -p 'say hi'` and then `pi --continue -p 'say hi again'` sent two
   requests in each image. Both request bodies are byte-identical
@@ -451,10 +478,23 @@ streams `hi there.` with a delay before its first token, the method of
   non-numeric `ttft`, and another extension's `custom` entry, none of
   whose strings reach the report.
 
-Not covered: a session on the GPU host with real tool calls, browser-UI
-sessions (`pi-web`, `paseo`), and an errored or aborted request against
-a real model server (the extension's stop-reason filter is exercised by
-the hook replay only).
+- On the GPU host, `smoke --agent pi --sets coding,metrics` built the
+  image and passed with 0 failures, `6 pi package(s)` seeded and the
+  set's line `metrics: the timings extension parses`. A scripted
+  two-turn session (write a script, run it, fix it; then list the
+  files, the second turn through `--continue` in a new container) made
+  eight assistant requests, six with tool calls (`write`, `bash`), all
+  eight timed in one transcript: TTFT 126 to 412 ms, durations 536 ms to
+  78.4 s (the turn that ran and fixed the script), contexts 7,524 to
+  19,050 tokens. `stats` over the host's transcripts, which held that
+  session and one like it from an earlier attempt, printed the pi
+  Timings row `| pi | tokencrate | qwen3.8-27b-q4-mtp | 16 | 183 | 412 |
+  1748 | 8634 |` next to the oh-my-pi row of an earlier preset, and
+  carried no message content, session name, or project path.
+
+Not covered: browser-UI sessions (`pi-web`, `paseo`), and an errored or
+aborted request against a real model server (the extension's
+stop-reason filter is exercised by the hook replay only).
 
 ### The metrics run on the GPU
 

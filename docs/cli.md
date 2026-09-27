@@ -344,7 +344,9 @@ the page every 60 seconds, and saves nothing. The served page adds a
 live panel above the report: the requests the model server is
 processing and has queued, and its prompt and generation rates in
 tokens per second, as tiles and as two charts over the last ten
-minutes. The page polls the server's `/live` path, and the server polls
+minutes. The rates follow the server's counters, which llama.cpp
+advances when a request completes, so a long answer shows as one
+burst at its end rather than a steady line. The page polls the server's `/live` path, and the server polls
 the model server's loopback port (`LLM_PORT`), at most every 2 seconds
 and only while a page is open: `GET /models`, and for the preset that
 was loaded on this and the previous poll, `GET /metrics?model=`. A
