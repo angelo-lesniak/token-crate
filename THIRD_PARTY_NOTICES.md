@@ -1,7 +1,8 @@
 # Third-party software
 
-TokenCrate's source code is MIT licensed. Built images are aggregates that
-contain upstream software under its own licenses:
+TokenCrate's own source code is MIT licensed; the vendored chart library
+below carries its own license. Built images are aggregates that contain
+upstream software under its own licenses:
 
 - the runtime image adds a layer to the official llama.cpp server image,
   which contains llama.cpp (MIT) on an NVIDIA CUDA base image subject to the
@@ -45,6 +46,14 @@ Model-set manifests refer to model weights under their upstream licenses. Those
 weights are downloaded to user-controlled storage and are not distributed
 under TokenCrate's MIT license. Users must review and accept each model
 license; `models fetch` prints them before writing files.
+
+The repository vendors uPlot 1.6.32 under `tokencrate/pages/vendor/`
+(`uPlot.iife.js` and `uPlot.min.css`; MIT; <https://github.com/leeoniya/uPlot>):
+byte-for-byte the files of the published npm artifact
+`https://registry.npmjs.org/uplot/-/uplot-1.6.32.tgz`, hash-pinned by
+`tests/test_statspage.py`. The `stats` command inlines both files into every
+saved or served stats page, so sharing a page redistributes uPlot; its
+license header opens `uPlot.iife.js` and therefore every page's copy.
 
 The shipped chat template under `config/chat-templates/` is a modified copy of
 the template embedded in the Qwen3.8 GGUF files (Apache License 2.0).

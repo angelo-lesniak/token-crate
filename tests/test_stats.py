@@ -98,7 +98,7 @@ class StatsReportTests(unittest.TestCase):
         write_transcripts(self.agents_dir)
 
     def test_the_report_aggregates_sessions_requests_models_and_timings(self) -> None:
-        text = stats.report(self.agents_dir)
+        text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertTrue(text.startswith("# TokenCrate stats report\n\n- Date: "), text)
         self.assertIn("- Transcripts: 3 session(s), 6 request(s) below LLM_AGENTS_DIR\n", text)
         # Sessions: count, requests, first-request p50, peak context
@@ -120,7 +120,7 @@ class StatsReportTests(unittest.TestCase):
         self.assertIn("| tokencrate | qwen-fixture | 2 | 800 | 1200 | 1500 | 3400 |", text)
 
     def test_the_report_carries_no_content_names_or_paths(self) -> None:
-        text = stats.report(self.agents_dir)
+        text = stats.report(stats.read_sessions(self.agents_dir))
         for secret in ("TOPSECRET", "PROJECTSECRET", "/srv/", "boom", "999999", "888888", "decoy"):
             self.assertNotIn(secret, text)
 
@@ -132,7 +132,7 @@ class StatsReportTests(unittest.TestCase):
     def test_without_transcripts_the_report_says_where_they_would_be(self) -> None:
         with TemporaryDirectory(prefix="tokencrate-stats-") as empty:
             with self.assertRaises(TokenCrateError) as caught:
-                stats.report(Path(empty))
+                stats.read_sessions(Path(empty))
         self.assertIn("no agent transcripts below", str(caught.exception))
 
     def test_a_planted_symlink_cannot_route_the_reader_outside(self) -> None:
@@ -145,7 +145,7 @@ class StatsReportTests(unittest.TestCase):
             linked.mkdir()
             (linked / "x.jsonl").write_text(assistant("tokencrate", "FOREIGNMODEL", "stop", tokens(1, 1, 0)))
             (sessions / "linked").symlink_to(linked)
-            text = stats.report(self.agents_dir)
+            text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertNotIn("FOREIGNMODEL", text)
 
     def test_a_line_beyond_the_limit_is_skipped(self) -> None:
@@ -162,6 +162,8 @@ class StatsReportTests(unittest.TestCase):
         self.assertEqual(stats.integer(500.5), 0)
         self.assertEqual(stats.integer(True), 0)
         self.assertEqual(stats.integer("500"), 0)
+        self.assertEqual(stats.integer(-5), 0)
+        self.assertEqual(stats.integer(2**60), 2**53)
         self.assertEqual(stats.duration(5), 5.0)
         self.assertIsNone(stats.duration(float("nan")))
         self.assertIsNone(stats.duration(float("inf")))
@@ -192,6 +194,9 @@ class StatsCommandTests(unittest.TestCase):
         saved = list((self.scratch.root / "reports").glob("stats-*.md"))
         self.assertEqual(len(saved), 1, saved)
         self.assertIn("| pi | 2 | 4 |", saved[0].read_text(encoding="utf-8"))
+        self.assertIn("Saved stats page to", result.stdout)
+        page = saved[0].with_suffix(".html")
+        self.assertIn('id="ecdf-data"', page.read_text(encoding="utf-8"))
 
     def test_stats_refuses_options_arguments_and_an_empty_agents_directory(self) -> None:
         result = self.scratch.run("stats", PATH="/usr/bin:/bin")
@@ -201,6 +206,12 @@ class StatsCommandTests(unittest.TestCase):
         self.assertIn("--preset is only valid with doctor, smoke, bench, agent, or ui", result.stderr)
         result = self.scratch.run("stats", "extra")
         self.assertIn("unexpected argument for stats: extra", result.stderr)
+        result = self.scratch.run("stats", "--port", "4260")
+        self.assertIn("--port applies to stats --serve", result.stderr)
+        result = self.scratch.run("stats", "--serve", "--port", "0")
+        self.assertIn("--port requires a port from 1 to 65535", result.stderr)
+        result = self.scratch.run("bench", "--serve")
+        self.assertIn("--serve is only valid with stats", result.stderr)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,8 @@ as set in `ruff.toml`.
 | `models`, `presets`, `agentmodels` | Model downloads, preset validation and rendering, and agent model lists |
 | `session` | What one agent container start is made of |
 | `agents`, `uis`, `agentsets`, `skills` | Terminal sessions and the containment check, browser UIs, image selections, and skill sets |
-| `doctor`, `probe`, `stats`, `checkpins` | Host checks, API probes and benchmarks, transcript statistics, and upstream pin lookups |
+| `doctor`, `probe`, `checkpins` | Host checks, API probes and benchmarks, and upstream pin lookups |
+| `stats`, `statspage` | Transcript reading and aggregation with the Markdown report, and the HTML stats page (from the assets under `tokencrate/pages/`) with its loopback server |
 
 Usage and error text in `cli.py` are part of the documented interface.
 `docs/cli.md` must show every usage line verbatim.
@@ -58,7 +59,7 @@ bash tests/static.sh
 `tests/static.sh` is the engine-free gate. It runs:
 
 - `bash -n` and ShellCheck over the shell files it lists;
-- `node --check` over the two JavaScript files;
+- `node --check` over the JavaScript files it names;
 - an import of each `tokencrate` module on its own, which catches import
   cycles;
 - the unit tests, every `tests/test_*.py`. The entrypoint and forwarder

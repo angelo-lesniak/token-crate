@@ -1,0 +1,56 @@
+:root {
+  color-scheme: light;
+  /* The chart script redraws the canvas from the *-light tokens before
+     printing, since a canvas keeps the colors it was drawn with while
+     print forces the light scheme on everything else. */
+  --muted-light: #898781; --grid-light: #e1e0d9; --axis-light: #c3c2b7;
+  --series-1-light: #2a78d6; --series-2-light: #eb6834;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+  --muted: var(--muted-light); --grid: var(--grid-light); --axis: var(--axis-light);
+  --border: rgba(11, 11, 11, 0.10);
+  --series-1: var(--series-1-light); --series-2: var(--series-2-light);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5; --series-2: #d95926;
+  }
+}
+body { margin: 0; padding: 24px 16px 48px; background: var(--page); color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 880px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 28px 0 8px; }
+p.meta { color: var(--ink-2); margin: 0 0 16px; }
+.tiles { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; min-width: 128px; }
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 24px; font-weight: 600; }
+figure { margin: 16px 0 0; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 12px 4px; position: relative; }
+figcaption { color: var(--ink-2); font-size: 12px; padding: 0 4px 6px; }
+.legend { display: flex; gap: 16px; padding: 0 4px 8px; font-size: 12px; color: var(--ink-2); }
+.legend .key { display: inline-block; width: 14px; height: 0; border-top: 2px solid;
+  vertical-align: middle; margin-right: 6px; border-radius: 1px; }
+#ecdf { min-height: 300px; }
+/* uPlot's stylesheet dashes its crosshair in a fixed color; theme it. */
+.u-hz .u-cursor-x { border-right: 1px solid var(--axis); }
+#tooltip { position: absolute; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-size: 12px; pointer-events: none;
+  visibility: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+#tooltip .at { color: var(--ink-2); }
+#tooltip .row { display: flex; align-items: center; gap: 6px; }
+#tooltip .row b { font-variant-numeric: tabular-nums; }
+#tooltip .key { display: inline-block; width: 10px; height: 0; border-top: 2px solid;
+  border-radius: 1px; }
+table { width: 100%; border-collapse: collapse; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+th, td { padding: 5px 10px; text-align: left; border-top: 1px solid var(--grid); }
+thead th { border-top: none; color: var(--ink-2); font-weight: 600; }
+th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; }
+p.footnote { color: var(--ink-2); font-size: 12px; margin-top: 24px; }
+code { font-family: ui-monospace, monospace; font-size: 12px; }

@@ -27,7 +27,8 @@ The table summarizes the [records](#records).
 | `agent pi --cloud` refuses a missing keys file, a directory, a file inside the project, and oh-my-pi, each with one sentence before the pre-flight; the file reaches the named session container through the `run`'s own `-v`, read-only, with no key value in `inspect` or on the command line; the entrypoint exports its lines, refuses a malformed one, and pi offers the keyed provider's bundled catalogue; `--egress` alone offers no cloud model | Validated | Arch Linux VM, rootless Podman 6.1.2, placeholder key; RTX 5090, rootless Podman 6.1.2, an OpenRouter key with a free model answering | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | A `SIGTERM` or `SIGHUP` to the wrapper of a running `agent` session stops the session container and leaves no Compose provider process; `Ctrl-C` ends the session with status 130 | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
-| The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check); `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; transcripts from the GPU host | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report) |
+| The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check), and on the GPU preset with real traffic behind them, spec-decode counters included; `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; RTX 5090 on `qwen3.8-27b-q4-mtp` | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report), [The metrics run on the GPU](#the-metrics-run-on-the-gpu) |
+| `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot) and tables match the Markdown and carry no transcript content, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52 | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
 | An oh-my-pi session sends the Anthropic key to the address a project's `.env` or `.env.local` names (8 requests to a listener inside the container with the file, 0 without), so `agent omp --cloud` is refused | Validated | Arch Linux VM, rootless Podman 6.1.2, pinned oh-my-pi image offline | [oh-my-pi and project env files](#oh-my-pi-and-project-env-files) |
@@ -82,10 +83,6 @@ The engine-free gate and the CPU integration check do not cover these:
   record](#the-128k-mtp-presets));
 - the UI launchers' readiness timeouts for a daemon that never answers:
   no recorded run had a daemon fail to start;
-- the `/metrics` counters on the GPU presets: their content over a real
-  coding session, and the spec-decode counters of the MTP presets for
-  acceptance-rate tuning; the CPU run checked only that the counters
-  answer;
 - the provider in pi's interactive model picker, a cloud answer through
   PI WEB's browser session or Paseo's create-agent form, and the
   reported cost: every recorded cloud answer came from a scripted prompt
@@ -348,6 +345,79 @@ behavior, or image details below. Repeat these observations after a
 - The UI at the root is a build with router-mode model selection.
 
 ## Records
+
+### The metrics run on the GPU
+
+Purpose: prove the `/metrics` counters on a shipped GPU preset with
+real traffic behind them, including the spec-decode counters of the
+MTP preset, and the bench JSON and stats outputs on the GPU host.
+Date: 2026-09-27. Environment: the GPU host, rootless Podman 6.1.2,
+driver 615.71.09, `LLM_AGENT_SETS=coding`, preset
+`qwen3.8-27b-q4-mtp`; the scripted run in the validate directory's
+`metrics-20260927T125938Z`.
+
+- `up` rebuilt the runtime image from the pinned digest and loaded the
+  default preset in 42 seconds, holding 20,697 MiB against the
+  declared 24 GiB.
+- `smoke` passed all nine checks on the GPU preset, `metrics counters`
+  included (16 llamacpp metric names); generation ran at 134 tokens/s
+  in the completion check.
+- `bench --long` wrote the Markdown report and the JSON samples
+  (build `b11028-972d2313b`, three `timings` samples per run):
+  1,854/3,322 prompt tokens/s and 138.8/156.1 generation tokens/s for
+  the 262- and 6,052-token prompts; the long run's `prompt_ms` of
+  1,819 is the first-token wait on a cold 6K prompt.
+- A scrape of the loaded preset after that traffic returned 18
+  `llamacpp:` series, among them the spec-decode counters:
+  951 drafted and 613 accepted tokens over 320 drafts (64.5 percent
+  of drafted tokens accepted; by draft position 276/193/144 of 320,
+  so 86/60/45 percent), the number MTP tuning needs.
+- `stats` on the host reported its own 41 transcripts (288 requests),
+  matching the VM run over the share, and saved the HTML page; the
+  page carries no message content, session names, or host paths.
+- `down` removed the stack in one second.
+
+Not covered: a scrape of an unloaded preset (the run scrapes only the
+loaded one by design); counter content beyond smoke and bench traffic,
+such as a long agent session; every preset other than the default.
+
+### The stats page and its loopback server
+
+Purpose: prove that `stats` writes its report as a self-contained HTML
+page whose chart and tables match the Markdown, that the chart's
+vendored library is the pinned artifact, and that `stats --serve`
+answers only its own loopback `Host` names. Date: 2026-09-27.
+Environment: the virtual machine; the engine-free harness
+(`tests/test_statspage.py`) on Python 3.14.7, and the page rendered
+headless and offline (`--network none`) with Debian Chromium
+153.0.8010.52 from the pinned pi image over the GPU host's 41 retained
+transcripts.
+
+- Over the synthetic transcripts, the page carries the two inlined
+  uPlot 1.6.32 files (SHA-256 asserted against the published npm
+  artifact; the gate runs `node --check` over the vendored source),
+  the chart mount, the legend, and every table cell of the Markdown
+  report. The data island holds one aligned series per agent - leading
+  zeros, monotone shares, the flat tail at the axis end - and only
+  agent labels and numbers; a `<script>` in a transcript-supplied
+  model name arrives escaped, and none of the fixture's content
+  markers, session names, or paths appear. The saved page has no
+  refresh; the served one reloads every 60 seconds.
+- The server, bound to an ephemeral loopback port, answered 200 with
+  the page for its own `127.0.0.1:<port>` and `localhost:<port>` Host
+  names, 403 for a foreign name, a portless name, and a wrong port,
+  404 off `/`, and 503 with its one-sentence explanation for an agents
+  directory without transcripts; binding an occupied port is a
+  one-sentence refusal.
+- Rendered over the GPU host's transcripts (288 requests), the canvas
+  chart drew one step line per agent with the distribution its tables
+  state - pi crossing 50 percent near 22K tokens, oh-my-pi's first
+  step at 19K - with no label collisions in light or dark mode.
+
+Not covered: the crosshair, tooltip, and keyboard readout in a driven
+browser (the chart script is syntax-checked and reads only the data
+island); the chart's redraw on a color-scheme change or before
+printing; a served page under concurrent readers.
 
 ### Metrics counters and the stats report
 

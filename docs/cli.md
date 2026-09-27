@@ -302,13 +302,19 @@ bash bin/tokencrate bench --preset qwen3.8-27b-q4 --preset qwen3.8-27b-q4-mtp
 
 ```text
 bin/tokencrate stats
+bin/tokencrate stats --serve [--port port]
 ```
 
 Summarizes the retained transcripts below `LLM_AGENTS_DIR`
 ([storage layout](configuration.md#storage-layout)): every terminal and
 browser-UI session that received at least one answer counts. The command
 reads only the host directories, so it works with the stack down. The
-report is printed and written to `reports/stats-<timestamp>.md`.
+report is printed and written to `reports/stats-<timestamp>.md`, and
+`reports/stats-<timestamp>.html` holds the same report as a
+self-contained page for a browser (open it from its file path): the
+tables, plus a chart of the context-size distribution with the share of
+requests each context size would have fit, readable in light and dark
+mode. The page loads no external scripts, styles, or fonts.
 
 The tables show, per agent and per provider and model: requests,
 summed input and output tokens, the cache-read share, and the
@@ -329,6 +335,18 @@ project paths ([Privacy](privacy.md#what-leaves-the-machine)). The
 numbers describe whatever transcripts are on disk; `smoke --agent` uses
 a temporary home and adds none, and deleting a project's directories
 below `LLM_AGENTS_DIR` removes it from the report.
+
+`--serve` serves the page at `http://127.0.0.1:4260/` (`--port` selects
+another port) until Ctrl-C, re-reading the transcripts and refreshing
+the page every 60 seconds, and saves nothing. The server binds loopback
+only and answers only requests whose `Host` header names its own
+address, so a web page cannot reach it through the browser's name
+resolution; anything local that can open the port can read the report's
+numbers.
+
+```bash
+bash bin/tokencrate stats --serve
+```
 
 ## agent
 

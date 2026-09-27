@@ -41,6 +41,8 @@ for file in "${shell_files[@]}"; do
 done
 node --check config/agent-sets/web/js-debug-adapter
 node --check services/agents/ui-forward.js
+node --check tokencrate/pages/stats.js
+node --check tokencrate/pages/vendor/uPlot.iife.js
 
 # Each module imports on its own: the unit tests import them in one order,
 # which can hide an import cycle that another entry point runs into.

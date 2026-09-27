@@ -30,6 +30,7 @@ from . import (
     session,
     skills,
     stats,
+    statspage,
     uis,
     warn,
 )
@@ -60,6 +61,8 @@ Usage:
       Measure prompt-processing and generation speed per preset and save a report.
   bin/tokencrate stats
       Summarize token usage and context sizes from the retained agent transcripts and save a report.
+  bin/tokencrate stats --serve [--port port]
+      Serve the stats page on loopback and re-read the transcripts on each refresh.
   bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [-- args]
       Open a coding agent in the current (or named) project directory; --cloud (pi only) mounts LLM_CLOUD_KEYS_FILE.
   bin/tokencrate agent-sets list
@@ -109,7 +112,8 @@ FLAG_COMMANDS = {
     "--preset": (("doctor", "smoke", "bench", "agent", "ui"), "doctor, smoke, bench, agent, or ui"),
     "--model-set": (("up",), "up"),
     "--sets": (("agent", "smoke", "ui"), "agent, smoke --agent, or ui"),
-    "--port": (("ui",), "ui"),
+    "--port": (("ui", "stats"), "ui or stats --serve"),
+    "--serve": (("stats",), "stats"),
     "--dir": (("agent", "ui"), "agent or ui"),
     "--agent": (("smoke",), "smoke"),
 }
@@ -131,6 +135,7 @@ class Options:
     iterations: int = 3
     long: bool = False
     basic: bool = False
+    serve: bool = False
     sets: str | None = None
     agent_args: list[str] = field(default_factory=list)
 
@@ -163,6 +168,8 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
             options.long = True
         elif argument == "--basic":
             options.basic = True
+        elif argument == "--serve":
+            options.serve = True
         elif argument == "--egress":
             options.egress = True
         elif argument == "--cloud":
@@ -423,13 +430,21 @@ def dispatch(command: str, arguments: list[str]) -> int:
         options = parse_options(settings, command, arguments)
         return run_probe(settings, engines.detect(settings), configuration(), "bench", options)
     elif command == "stats":
-        parse_options(settings, command, arguments)
+        options = parse_options(settings, command, arguments)
+        if options.port and not options.serve:
+            raise TokenCrateError("--port applies to stats --serve")
         # Reads the retained transcripts on the host; no engine, stack, or
         # preset is needed, so the report works with everything down.
-        text = stats.report(settings.agents_dir)
+        if options.serve:
+            return statspage.serve(settings.agents_dir, int(options.port or statspage.SERVE_PORT))
+        sessions = stats.read_sessions(settings.agents_dir)
+        text = stats.report(sessions)
         print(text, end="")
         path = runtime.save_report(settings, "stats", text)
         print(f"Saved stats report to {path}")
+        page = path.with_suffix(".html")
+        page.write_text(statspage.html(sessions), encoding="utf-8")
+        print(f"Saved stats page to {page}")
     elif command == "agent":
         if not arguments:
             raise TokenCrateError(
