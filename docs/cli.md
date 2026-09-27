@@ -336,7 +336,7 @@ numbers describe whatever transcripts are on disk; `smoke --agent` uses
 a temporary home and adds none, and deleting a project's directories
 below `LLM_AGENTS_DIR` removes it from the report.
 
-`--serve` serves the page at `http://127.0.0.1:4260/` (`--port` selects
+`--serve` serves the page at `http://127.0.0.1:4210/` (`--port` selects
 another port) until Ctrl-C, re-reading the transcripts and refreshing
 the page every 60 seconds, and saves nothing. The server binds loopback
 only and answers only requests whose `Host` header names its own

@@ -206,7 +206,7 @@ class StatsCommandTests(unittest.TestCase):
         self.assertIn("--preset is only valid with doctor, smoke, bench, agent, or ui", result.stderr)
         result = self.scratch.run("stats", "extra")
         self.assertIn("unexpected argument for stats: extra", result.stderr)
-        result = self.scratch.run("stats", "--port", "4260")
+        result = self.scratch.run("stats", "--port", "4210")
         self.assertIn("--port applies to stats --serve", result.stderr)
         result = self.scratch.run("stats", "--serve", "--port", "0")
         self.assertIn("--port requires a port from 1 to 65535", result.stderr)

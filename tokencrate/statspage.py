@@ -33,7 +33,7 @@ from .stats import FOOTNOTE, Request, Session, build_tables, read_sessions, shar
 
 # `stats --serve` without `--port`, clear of the API (4207) and UI
 # (4224, 4250) defaults.
-SERVE_PORT = 4260
+SERVE_PORT = 4210
 # How often the served page asks the browser to reload it.
 REFRESH_SECONDS = 60
 
