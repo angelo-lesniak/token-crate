@@ -4,8 +4,9 @@
 same paths `session.PERSISTENT_DIRECTORIES` binds into the containers) and
 reads usage numbers and metadata from every transcript entry: token
 counts, provider and model names, stop reasons, tool names and error
-flags, and oh-my-pi's per-message timings. Message content, session names,
-and working-directory paths stay out of the report. Transcripts are agent
+flags, and the per-message timings oh-my-pi writes and pi writes with the
+`metrics` agent set. Message content, session names, and
+working-directory paths stay out of the report. Transcripts are agent
 output, so the reader stays defensive: only regular files that resolve
 below the agents directory are read (an agent writes its retained
 directories and could plant a symbolic link), one line at a time and up to
@@ -47,9 +48,15 @@ FOOTNOTE = (
     "= input + cacheRead + cacheWrite of a session's first assistant message. Cache-read share = cacheRead "
     "/ (input + cacheRead). Token sums count input and output once per request; summing context would "
     "re-count the conversation every turn. A request whose provider reported no usage counts with zeros. "
-    "Percentiles are nearest-rank observations."
+    "Percentiles are nearest-rank observations. Timings: oh-my-pi records `ttft` and `duration` itself; pi records "
+    "them through the `metrics` agent set, from the moment the request is sent (provider retries included) to the "
+    "first streamed content and to the final message, for completed answers only. The two agents measure "
+    "differently, so their rows stay apart."
 )
-NO_TIMINGS = "No timed requests; only oh-my-pi transcripts carry `ttft` and `duration`."
+NO_TIMINGS = (
+    "No timed requests: oh-my-pi transcripts carry `ttft` and `duration`; pi transcripts carry them when the "
+    "`metrics` agent set is loaded."
+)
 
 
 @dataclass
@@ -319,24 +326,35 @@ def build_tables(sessions: list[Session]) -> list[Table]:
         )
     )
 
-    timed = [request for request in requests if request.ttft_ms is not None and request.duration_ms is not None]
+    # Keyed by agent as well: both agents name the same provider and model,
+    # and each measures its timings by its own definition.
+    timing_rows = []
+    for agent, grouped in present.items():
+        timed = [
+            request
+            for session in grouped
+            for request in session.requests
+            if request.ttft_ms is not None and request.duration_ms is not None
+        ]
+        for (provider, model), timed_group in by_provider_and_model(timed):
+            timing_rows.append(
+                [
+                    agent,
+                    cell(provider),
+                    cell(model),
+                    str(len(timed_group)),
+                    f"{percentile([request.ttft_ms for request in timed_group], 0.5):.0f}",
+                    f"{percentile([request.ttft_ms for request in timed_group], 0.9):.0f}",
+                    f"{percentile([request.duration_ms for request in timed_group], 0.5):.0f}",
+                    f"{percentile([request.duration_ms for request in timed_group], 0.9):.0f}",
+                ]
+            )
     tables.append(
         Table(
             "Timings",
-            ("Provider", "Model", "Requests", "TTFT p50 ms", "p90", "Duration p50 ms", "p90"),
-            (False, False, True, True, True, True, True),
-            [
-                [
-                    cell(provider),
-                    cell(model),
-                    str(len(grouped)),
-                    f"{percentile([request.ttft_ms for request in grouped], 0.5):.0f}",
-                    f"{percentile([request.ttft_ms for request in grouped], 0.9):.0f}",
-                    f"{percentile([request.duration_ms for request in grouped], 0.5):.0f}",
-                    f"{percentile([request.duration_ms for request in grouped], 0.9):.0f}",
-                ]
-                for (provider, model), grouped in by_provider_and_model(timed)
-            ],
+            ("Agent", "Provider", "Model", "Requests", "TTFT p50 ms", "p90", "Duration p50 ms", "p90"),
+            (False, False, False, True, True, True, True, True),
+            timing_rows,
             empty_note=NO_TIMINGS,
         )
     )

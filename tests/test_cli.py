@@ -399,7 +399,7 @@ class CliTests(unittest.TestCase):
         # that selection, and the UI and its forwarder start detached under
         # their fixed names in the ui profile; without a flag, never under
         # the egress overlay.
-        self.assertIn("Agent sets: coding, pi-web (image tag suffix ", started)
+        self.assertIn("Agent sets: coding, metrics, pi-web (image tag suffix ", started)
         self.assertIn("--profile ui --env-file pins.env build agent-ui", started)
         self.assertIn(
             "--profile ui --env-file pins.env run --detach --no-deps -T --name tokencrate-ui-pi-web agent-ui", started

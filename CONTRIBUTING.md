@@ -268,7 +268,10 @@ only with evidence against its stated reason.
   [request-size record](docs/validation.md#request-size-of-the-coding-set).
   Their value on a local model remains a hypothesis. Reconsider after
   comparing plain pi and the bundle on the same coding tasks with a shipped
-  27B preset: completion, wrong edits, tokens, turns, and wall time.
+  27B preset: completion, wrong edits, tokens, turns, and wall time. The
+  `metrics` set is in the default selection because it changes no request
+  (its extension records timings only) and the stats Timings table is
+  empty for pi without it.
 - **Default skill sets:** `LLM_SKILL_SETS=pocock-core,skill-crate` keeps
   eleven skill descriptions available. An empty default would remove
   `skills fetch` and its startup requirement from initial setup.

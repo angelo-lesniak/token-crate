@@ -323,11 +323,13 @@ requests above 16K/32K/48K tokens), for judging a preset's `ctx_size`
 and `parallel` against real sessions. Per agent they also show
 sessions with their peak contexts and the first-request p50 (what a
 fresh agent costs before the task starts), tool calls with their error
-counts, every stop reason with its count, compactions, and, from
-oh-my-pi transcripts, time to first token and request duration; pi
-records no timings. A session's requests against a cloud provider
-appear under that provider's name. The report's final paragraph
-defines each measure.
+counts, every stop reason with its count, compactions, and time to
+first token and request duration per agent: oh-my-pi records them
+itself, pi records them when the [`metrics` agent
+set](agent-sets.md#shipped-sets), part of the default selection, is
+loaded. A session's requests
+against a cloud provider appear under that provider's name. The
+report's final paragraph defines each measure.
 
 The command reads usage numbers and metadata only, never message
 content, and the report carries no conversation text, session names, or

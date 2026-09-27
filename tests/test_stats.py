@@ -46,9 +46,12 @@ PI_SESSION = "\n".join(
         assistant("tokencrate", "qwen-fixture", "toolUse", tokens(500, 100, 1000)),
         entry(type="message", id="t", message={"role": "toolResult", "toolName": "read", "isError": False}),
         "{not json",
-        assistant("tokencrate", "qwen-fixture", "stop", tokens(400, 100, 16000)),
+        # Timed by the metrics set's extension, in oh-my-pi's fields.
+        assistant("tokencrate", "qwen-fixture", "stop", tokens(400, 100, 16000), ttft=300, duration=900),
         entry(type="compaction", id="c", tokensBefore=16500, summary="TOPSECRET-SUMMARY"),
-        assistant("tokencrate", "qwen-fixture", "stop", tokens(3000, 200, 0, 800)),
+        # Another extension's entry, and timing fields that are not numbers.
+        entry(type="custom", id="x", customType="TOPSECRET-EXT", data={"note": "TOPSECRET-DATA", "ttft": 5}),
+        assistant("tokencrate", "qwen-fixture", "stop", tokens(3000, 200, 0, 800), ttft="TOPSECRET-TTFT", duration=[1]),
     ]
 )
 CLOUD_SESSION = assistant("openrouter", "acme/model|x", "stop", tokens(2000, 50, 0))
@@ -116,8 +119,11 @@ class StatsReportTests(unittest.TestCase):
         self.assertIn("| openrouter | acme/model/x | 1 | 2000 | 50 |", text)
         self.assertIn("| pi | 1 | 0 | stop 3, toolUse 1 |", text)
         self.assertIn("| omp | 1 | 1 | stop 1, toolUse 1 |", text)
-        # Timings exist only where a transcript carries ttft and duration.
-        self.assertIn("| tokencrate | qwen-fixture | 2 | 800 | 1200 | 1500 | 3400 |", text)
+        # Timings exist only where a transcript carries numeric ttft and
+        # duration, one row per agent: the two agents measure differently.
+        self.assertIn("| pi | tokencrate | qwen-fixture | 1 | 300 | 300 | 900 | 900 |", text)
+        self.assertIn("| omp | tokencrate | qwen-fixture | 2 | 800 | 1200 | 1500 | 3400 |", text)
+        self.assertNotIn("No timed requests", text)
 
     def test_the_report_carries_no_content_names_or_paths(self) -> None:
         text = stats.report(stats.read_sessions(self.agents_dir))

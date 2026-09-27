@@ -1,0 +1,10 @@
+schema = 1
+description = "A pi extension that records each request's time to first token and duration on the transcript's assistant message, which the stats Timings table reads"
+pi_packages = ["timings"]
+# The extension registers no tool, command, or prompt text and the set has
+# no note, so the request pi sends does not grow. The check parses the
+# file the image ships.
+check = [
+  "node --check /opt/tokencrate/sets/metrics/timings/index.js",
+  "echo 'the timings extension parses'",
+]

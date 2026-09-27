@@ -15,7 +15,7 @@ bash bin/tokencrate agent pi --dir ~/src/my-project          # the sets in LLM_A
 bash bin/tokencrate agent pi --sets coding,debug,odin --dir ~/src/my-project
 ```
 
-`LLM_AGENT_SETS` in `.env` selects the default sets (`coding`). Use
+`LLM_AGENT_SETS` in `.env` selects the default sets (`coding,metrics`). Use
 `--sets` to override the selection for one session, or `--sets ''` for
 plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
 [`ui`](cli.md#ui) for command options.
@@ -29,6 +29,7 @@ plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
 | `dotnet` | The .NET SDK, csharp-ls, netcoredbg, a read-only NuGet cache warmed with the `console`, `classlib`, `xunit`, and `web` templates; uncached packages need `--egress`, an explicit source, and a writable project cache (`NUGET_PACKAGES`) | `debug` |
 | `web` | TypeScript, typescript-language-server, the Vue language tools and `vue-tsc`, js-debug behind a stdio bridge; `npm install` needs `--egress` | `debug` |
 | `browser` | The Chrome DevTools tools against Debian's Chromium, headless, without its own sandbox (the container is the sandbox) | `coding` |
+| `metrics` | A pi extension that records each request's time to first token and duration on the transcript's assistant message, in the fields oh-my-pi writes, so [`stats`](cli.md#stats) fills its Timings table for pi; no tool, no note, so the request does not grow | Any |
 | `odin` | The Odin compiler, OLS and `odinfmt` on the same monthly tag, clang as the linker, `lldb-dap`, SDL2, Vulkan, `glslc`; no display, so SDL uses its dummy drivers | `debug` |
 | `pi-web` | PI WEB, a browser UI for pi, started with `ui pi-web` | Any |
 | `paseo` | Paseo, a daemon with a browser UI that runs several pi sessions, started with `ui paseo`; about 0.5 GB | Any |

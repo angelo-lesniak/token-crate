@@ -28,6 +28,7 @@ The table summarizes the [records](#records).
 | A `SIGTERM` or `SIGHUP` to the wrapper of a running `agent` session stops the session container and leaves no Compose provider process; `Ctrl-C` ends the session with status 130 | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check), and on the GPU preset with real traffic behind them, spec-decode counters included; `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; RTX 5090 on `qwen3.8-27b-q4-mtp` | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report), [The metrics run on the GPU](#the-metrics-run-on-the-gpu) |
+| The `metrics` agent set times pi's requests through a first-party extension that writes `ttft` and `duration` on the assistant message in oh-my-pi's fields, so `stats` fills a pi row of its Timings table; the request pi sends is byte-identical with and without the set | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint inside the container | [The metrics set and its timings extension](#the-metrics-set-and-its-timings-extension) |
 | `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot) and tables match the Markdown and carry no transcript content, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52 | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
@@ -345,6 +346,59 @@ behavior, or image details below. Repeat these observations after a
 - The UI at the root is a build with router-mode model selection.
 
 ## Records
+
+### The metrics set and its timings extension
+
+Purpose: prove that the `metrics` agent set's pi extension writes each
+request's time to first token and duration into the transcript, that
+`stats` reports them, and that the set leaves the request pi sends to
+the model unchanged. Date: 2026-09-27. Environment: the virtual machine
+of [The CPU integration check](#the-cpu-integration-check), rootless
+Podman 6.1.2, the `agent-pi` images for the `coding` and the
+`coding,metrics` selections built from the pinned Node base image; pi
+started through the entrypoint as `agent pi` starts it, with a stub
+model endpoint inside the container (`--network none`, `--add-host
+llama:127.0.0.1`) that records each chat-completion request body and
+streams `hi there.` with a delay before its first token, the method of
+[Request size of the coding set](#request-size-of-the-coding-set).
+
+- `pi -p 'say hi'` and then `pi --continue -p 'say hi again'` sent two
+  requests in each image. Both request bodies are byte-identical
+  between the images (28,369 and 28,478 bytes, 17 tools), the second
+  one with the timed assistant message of the first turn in its
+  history: the extension registers no tool, command, or prompt text,
+  the set has no note, and pi builds the request's assistant messages
+  from role and content only.
+- With the `coding,metrics` image, the transcript's assistant messages
+  carry `ttft: 168` and `duration: 226`, then `ttft: 172` and
+  `duration: 232` (milliseconds) against a stub that delays the first
+  token by 150 ms; a run against a 400 ms delay carried `ttft: 419` and
+  `duration: 475`. Each message keeps its usage and stop reason; the
+  `coding` image's transcript carries no timing fields.
+- `stats` over the transcripts of the 150 ms and 400 ms runs prints
+  the Timings row `| pi | tokencrate | stub | 2 | 169 | 419 | 228 | 475 |`,
+  and the Timings table names the agent in its first column, so pi's
+  rows and oh-my-pi's rows never merge (both name provider `tokencrate`
+  and the same model, and each measures by its own definition).
+- `smoke --agent pi --sets coding,metrics` on the CPU stack with the
+  `ci-small` fixture preset: `Agent check completed with 0 failure(s).`,
+  every containment line `[ok]`, `agent sets seeded: 6 pi package(s)
+  and the tools note`, and the set's line `metrics: the timings
+  extension parses`.
+- The strict gate passes: `node --check` over the extension, the
+  rendered manifest of every shipped set, a node-driven replay of pi's
+  hook sequence against the extension (a completed answer gains the two
+  fields and keeps its content and usage; an errored answer, one that
+  streamed nothing, a message without a request before it, and user
+  and tool-result messages are returned untouched; the request hook
+  returns nothing), and the stats fixtures with a timed pi message, a
+  non-numeric `ttft`, and another extension's `custom` entry, none of
+  whose strings reach the report.
+
+Not covered: a session on the GPU host with real tool calls, browser-UI
+sessions (`pi-web`, `paseo`), and an errored or aborted request against
+a real model server (the extension's stop-reason filter is exercised by
+the hook replay only).
 
 ### The metrics run on the GPU
 

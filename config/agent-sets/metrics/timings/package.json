@@ -1,0 +1,9 @@
+{
+  "name": "tokencrate-timings",
+  "private": true,
+  "type": "module",
+  "description": "Records each request's time to first token and duration on the assistant message, in the fields oh-my-pi writes, so the stats command reads both agents alike.",
+  "pi": {
+    "extensions": ["./index.js"]
+  }
+}
