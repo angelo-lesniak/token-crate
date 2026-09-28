@@ -55,6 +55,17 @@ byte-for-byte the files of the published npm artifact
 saved or served stats page, so sharing a page redistributes uPlot; its
 license header opens `uPlot.iife.js` and therefore every page's copy.
 
+The [dashboard](docs/configuration.md#dashboard) profile runs two
+upstream images as pinned in `pins.env`, without modifying or
+redistributing them: VictoriaMetrics (`victoriametrics/victoria-metrics`,
+Apache-2.0; <https://github.com/VictoriaMetrics/VictoriaMetrics>) and
+Grafana (`grafana/grafana`, AGPL-3.0; <https://github.com/grafana/grafana>),
+and with the GPU a third, NVIDIA's DCGM exporter
+(`nvcr.io/nvidia/k8s/dcgm-exporter`, Apache-2.0;
+<https://github.com/NVIDIA/dcgm-exporter>, whose image also carries
+DCGM under NVIDIA's own license). The provisioned dashboard and
+datasource files under `config/dashboard/` are TokenCrate's own.
+
 The shipped chat template under `config/chat-templates/` is a modified copy of
 the template embedded in the Qwen3.8 GGUF files (Apache License 2.0).
 

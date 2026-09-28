@@ -23,6 +23,7 @@ offered them.
 | The runtime image build | ghcr.io (the llama.cpp server image) | At `up`, when the image is missing or its inputs changed |
 | An agent image build | docker.io (the Node or Bun base image), the Debian and npm mirrors, and the `url` of every asset and Git checkout in the selected [agent sets](agent-sets.md): github.com with the asset hosts it redirects to (`objects.githubusercontent.com` and similar) for `debug`, `dotnet`, `web`, and `odin`, and builds.dotnet.microsoft.com and nuget.org for `dotnet` | At the first `agent`, `smoke --agent`, or `ui <set>` with that selection |
 | The forwarder's base image pull | docker.io (the Node image) | At the first `ui <set>` |
+| The [dashboard](configuration.md#dashboard) image pulls | docker.io (the VictoriaMetrics, Grafana, and Node images) and, with `LLM_GPU=true`, nvcr.io (the DCGM exporter image) | At the first `up` with `LLM_DASHBOARD=true` |
 | `--egress` and `--cloud` sessions and browser UIs | Whatever the agent, the UI, or your commands contact | Only when you ask for it |
 | The conversation so far: every prompt, file content, and tool output of the session, the turns the local model answered included | The provider whose model you picked in the agent, over its own endpoint | Only in a `--cloud` session or browser UI, with each request to that model |
 
@@ -44,7 +45,16 @@ text-only presets, llama-server and the built-in chat UI make no outbound
 requests of their own. The built-in chat UI stores conversations in the
 browser. llama-server also serves aggregate Prometheus counters
 (`GET /metrics?model=`) on the published loopback port; they hold
-numeric token, request, and KV-cache figures, never prompt text.
+numeric token, request, and KV-cache figures, never prompt text. The
+[dashboard](configuration.md#dashboard) profile's exporter reads those
+counters for the loaded preset over the internal `dashboard` network,
+VictoriaMetrics keeps them under `data/dashboard`, and Grafana shows
+them on loopback; with the GPU, the DCGM exporter adds the card's
+numbers over the same network. None of them makes a request of its
+own beyond that
+(Grafana's usage reports, update checks, plugin-key fetches, and news
+feed are off), and Grafana alone has a route out, through the network
+that publishes its port.
 
 llama.cpp runs in offline mode (`LLAMA_ARG_OFFLINE=1` in `compose.yaml`),
 which stops model downloads from URLs or Hugging Face at startup. The
@@ -107,7 +117,16 @@ internet: PI WEB's user-started package installs and updates, Paseo's
 - Terminal agents share the internal `agents` network with each other
   and the model. All browser UIs, their forwarders, and the model share
   the internal `ui` network; each forwarder also joins `ui-publish` to
-  publish its loopback port. Terminal sessions cannot resolve a UI
+  publish its loopback port. The dashboard profile's containers
+  share the internal `dashboard` network with the model, and Grafana
+  joins `dashboard-publish` for its port; no agent or UI container is
+  on either, so an agent cannot read, write, or delete the samples,
+  and Grafana answers everyone on this host as a viewer who can read
+  the samples and change nothing: no password, like the browser UIs,
+  and its datasource reaches the store through a gate that forwards
+  read paths only, so a page on this host cannot import or delete
+  samples through Grafana's proxy either.
+ Terminal sessions cannot resolve a UI
   started without `--egress` or `--cloud`, and a session without a
   route out cannot reach any UI. A UI started with `--egress` or
   `--cloud` joins the default network as well. An `--egress` or
@@ -148,8 +167,10 @@ internet: PI WEB's user-started package installs and updates, Paseo's
   ordinary internal bridge retains a host gateway through which agents
   could reach services bound to all interfaces. This requires Engine 28
   or newer; `doctor` rejects older versions. Compose preserves existing
-  network settings, so `up` and agent starts refuse either network if it
-  has a gateway. Run `down` to remove those networks before recreating them.
+  network settings, so `up` and agent starts refuse any of the three
+  internal networks (`agents`, `ui`, and, with the dashboard, `dashboard`)
+  if it has a gateway. Run `down` to remove those networks before
+  recreating them.
 
   On rootless Podman, the gateway belongs to the user's network namespace
   and does not expose host services. `doctor` warns about Podman older
@@ -181,6 +202,7 @@ internet: PI WEB's user-started package installs and updates, Paseo's
 bash bin/tokencrate smoke --agent pi            # no route out of the agent container
 bash bin/tokencrate smoke --agent pi --egress   # a route out, no UI peer but an egress UI (run it while a UI runs)
 podman network inspect tokencrate_agents tokencrate_ui --format '{{.Internal}}'   # true, true
+podman network inspect tokencrate_dashboard --format '{{.Internal}}'              # true (with the dashboard)
 ```
 
 On Docker, the internal networks must also carry no gateway address:
@@ -188,4 +210,5 @@ On Docker, the internal networks must also carry no gateway address:
 ```bash
 docker network inspect tokencrate_agents tokencrate_ui --format '{{.Internal}}'   # true, true
 docker network inspect tokencrate_agents --format '{{json .IPAM.Config}}'   # no Gateway
+docker network inspect tokencrate_dashboard --format '{{json .IPAM.Config}}'   # no Gateway (with the dashboard)
 ```

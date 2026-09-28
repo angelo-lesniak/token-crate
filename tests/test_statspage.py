@@ -96,6 +96,8 @@ class FakeRouter:
                         f"llamacpp:requests_deferred 2\n"
                         f"llamacpp:n_busy_slots_per_decode nan\n"
                         f'llamacpp:spec_decode_num_accepted_tokens_per_pos_total{{position="0"}} 5\n'
+                        f"llamacpp:spec_decode_num_accepted_tokens_total {5 * tick}\n"
+                        f"llamacpp:spec_decode_num_draft_tokens_total {8 * tick}\n"
                         f'llamacpp:prompt{{text="TOPSECRET-PROMPT"}} 1\n'
                     ).encode()
                 else:
@@ -132,6 +134,7 @@ class LiveSamplerTests(unittest.TestCase):
         clock[0] += 2
         second = sampler.snapshot()[-1]
         self.assertEqual((second.scraped, second.processing, second.deferred, second.prompt_rate), (True, 1, 2, None))
+        self.assertEqual(second.acceptance, 0.625)
         clock[0] += 2
         third = sampler.snapshot()[-1]
         # The fake advances its counters by 100 and 10 per scrape.
@@ -159,6 +162,30 @@ class LiveSamplerTests(unittest.TestCase):
             self.assertNotIn("script", str(sample.model))
             self.assertNotIn("TOPSECRET", json.dumps(vars(sample)))
 
+    def test_one_scrape_runs_at_a_time(self) -> None:
+        # A poll that lands while a scrape is in flight (a slow router) returns
+        # the ring as it is instead of starting a second, overlapping scrape.
+        import threading
+
+        sampler = statspage.LiveSampler(self.router.url, interval=0)
+        started = threading.Event()
+        release = threading.Event()
+        original = sampler.scrape
+
+        def slow_scrape():
+            started.set()
+            release.wait(5)
+            return original()
+
+        sampler.scrape = slow_scrape
+        thread = threading.Thread(target=sampler.snapshot)
+        thread.start()
+        started.wait(5)
+        self.assertEqual(sampler.snapshot(), [])
+        release.set()
+        thread.join(5)
+        self.assertEqual(len(sampler.snapshot()), 2)
+
     def test_a_snapshot_within_the_interval_scrapes_nothing_and_the_ring_is_bounded(self) -> None:
         sampler = statspage.LiveSampler(self.router.url, interval=60)
         for _ in range(3):
@@ -169,6 +196,34 @@ class LiveSamplerTests(unittest.TestCase):
             for _ in range(8):
                 sampler.snapshot()
         self.assertEqual(len(sampler.samples), 3)
+
+    def test_the_gpu_reading_keeps_numbers_only(self) -> None:
+        # A fake nvidia-smi: memory and power as the query prints them, a
+        # `[N/A]` field, a second GPU that is ignored, and a failing one.
+        with TemporaryDirectory(prefix="tokencrate-smi-") as tmp:
+            fake = Path(tmp) / "nvidia-smi"
+            fake.write_text(
+                '#!/bin/sh\ncase "$FAKE_SMI" in\n'
+                "  na) echo '21244, [N/A]' ;;\n"
+                "  fail) exit 9 ;;\n"
+                "  *) echo '21244, 312.55'; echo '100, 50' ;;\n"
+                "esac\n"
+            )
+            fake.chmod(0o755)
+            command = [str(fake), *statspage.NVIDIA_SMI_QUERY]
+            with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "ok"}):
+                self.assertEqual(statspage.gpu_reading(command), (21244, 312.6))
+                sampler = statspage.LiveSampler(self.router.url, interval=0, gpu_command=command)
+                sample = sampler.snapshot()[-1]
+                self.assertEqual((sample.gpu_memory_mib, sample.gpu_power_w), (21244, 312.6))
+            with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "na"}):
+                self.assertEqual(statspage.gpu_reading(command), (21244, None))
+            with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "fail"}):
+                self.assertEqual(statspage.gpu_reading(command), (None, None))
+            self.assertEqual(statspage.gpu_reading([str(fake) + "-missing"]), (None, None))
+        self.assertIsNone(statspage.nvidia_smi_command(False))
+        with unittest.mock.patch("shutil.which", return_value="/usr/bin/nvidia-smi"):
+            self.assertEqual(statspage.nvidia_smi_command(True), ["/usr/bin/nvidia-smi", *statspage.NVIDIA_SMI_QUERY])
 
     def test_a_stack_that_is_down_gives_unreachable_samples(self) -> None:
         self.router.close()
@@ -198,7 +253,12 @@ class StatsPageTests(unittest.TestCase):
         self.assertEqual([series["slot"] for series in data["series"]], [1, 2])
         # The tables carry the same cells as the Markdown report.
         self.assertIn("<tr><td>pi</td>", page)
-        self.assertIn('<td class="n">2</td><td class="n">4</td><td class="n">1500</td>', page)
+        self.assertIn('<td class="n">2</td><td class="n">4</td><td class="n">0</td><td class="n">0s</td>', page)
+        # The meta line names the filters the page was made with.
+        filtered = statspage.html(
+            stats.read_sessions(self.agents_dir, stats.Filter(agent="pi")), selection=stats.Filter(agent="pi")
+        )
+        self.assertIn("below LLM_AGENTS_DIR (agent pi)</p>", filtered)
         self.assertIn("<td>openrouter</td><td>acme/model/x</td>", page)
         # Escaping: a transcript string cannot smuggle markup into the page.
         self.assertNotIn("<script>alert", statspage.html([make_session("<script>alert(1)</script>")]))
@@ -305,8 +365,23 @@ class StatsServeTests(unittest.TestCase):
         self.assertEqual(len(data["samples"]), 1)
         sample = data["samples"][0]
         self.assertEqual(
-            sorted(sample), ["deferred", "generation_rate", "model", "processing", "prompt_rate", "scraped", "t", "up"]
+            sorted(sample),
+            [
+                "acceptance",
+                "deferred",
+                "generation_rate",
+                "gpu_memory_mib",
+                "gpu_power_w",
+                "model",
+                "processing",
+                "prompt_rate",
+                "scraped",
+                "t",
+                "up",
+            ],
         )
+        # Without a GPU command the tiles stay empty.
+        self.assertEqual((sample["acceptance"], sample["gpu_memory_mib"], sample["gpu_power_w"]), (None, None, None))
         self.assertEqual((sample["up"], sample["model"]), (True, "ci-small"))
         for foreign in ("evil.example", f"evil.example:{self.port}"):
             status, _ = self.fetch("/live", host=foreign)

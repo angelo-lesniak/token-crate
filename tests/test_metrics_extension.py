@@ -16,9 +16,14 @@ EXTENSION = PROJECT_ROOT / "config" / "agent-sets" / "metrics" / "timings" / "in
 # factory: the handlers' return values are what pi would act on.
 DRIVER = r"""
 import { pathToFileURL } from "node:url";
-const factory = (await import(pathToFileURL(process.argv[1]).href)).default;
+const module = await import(pathToFileURL(process.argv[1]).href);
+const factory = module.default;
 const handlers = {};
-factory({ on(name, handler) { (handlers[name] ||= []).push(handler); } });
+const commands = {};
+factory({
+  on(name, handler) { (handlers[name] ||= []).push(handler); },
+  registerCommand(name, options) { commands[name] = options; },
+});
 const emit = (name, event) => {
   let result;
   for (const handler of handlers[name] || []) {
@@ -34,7 +39,7 @@ const answer = (stopReason) => ({
   usage: { input: 5, output: 2, totalTokens: 7 },
   content: [{ type: "text", text: "hi" }],
 });
-const results = { registered: Object.keys(handlers).sort() };
+const results = { registered: Object.keys(handlers).sort(), commands: Object.keys(commands) };
 
 results.payload = emit("before_provider_request", { type: "before_provider_request", payload: { messages: [] } });
 await sleep(40);
@@ -56,6 +61,28 @@ results.tool = emit("message_end", { message: { role: "toolResult", toolName: "b
 emit("before_provider_request", { type: "before_provider_request", payload: {} });
 emit("message_update", { message: answer("pending"), assistantMessageEvent: { type: "toolcall_start" } });
 results.again = emit("message_end", { message: answer("toolUse") });
+
+// /usage over a transcript as pi's session manager returns it: content,
+// names, and a hostile level that must not reach the line.
+const timed = (ttft, duration, usage) => ({ type: "message", message: { ...answer("stop"), usage, ttft, duration } });
+const entries = [
+  { type: "session", id: "s", cwd: "/srv/TOPSECRET" },
+  { type: "thinking_level_change", thinkingLevel: "xhigh" },
+  { type: "message", message: { role: "user", content: "TOPSECRET-PROMPT" } },
+  timed(300, 900, { input: 500, output: 100, cacheRead: 1000, cacheWrite: 0, totalTokens: 1600 }),
+  { type: "message", message: { role: "toolResult", toolName: "read", isError: false, content: "TOPSECRET" } },
+  { type: "message", message: { ...answer("error"), usage: undefined } },
+  timed(500, 12400, { input: 400, output: 200, cacheRead: 16000, cacheWrite: 0, totalTokens: 16600 }),
+  { type: "message", message: { role: "toolResult", toolName: "bash", isError: true } },
+  { type: "message", message: { ...answer("stop"), usage: { input: "9", output: 2.5, cacheRead: -1 } } },
+  { type: "custom", customType: "TOPSECRET-EXT", data: { note: "TOPSECRET" } },
+];
+const notified = [];
+const ui = { notify: (text, type) => notified.push([text, type]) };
+const ctx = { ui, sessionManager: { getEntries: () => entries } };
+await commands.usage.handler("", ctx);
+await commands.usage.handler("", { ...ctx, sessionManager: { getEntries: () => [] } });
+results.usage = notified;
 console.log(JSON.stringify(results));
 """
 
@@ -72,6 +99,7 @@ class MetricsExtensionTests(unittest.TestCase):
         )
         results = json.loads(run.stdout)
         self.assertEqual(results["registered"], ["before_provider_request", "message_end", "message_update"])
+        self.assertEqual(results["commands"], ["usage"])
         # The request hook returns nothing: a value would replace the payload.
         self.assertNotIn("payload", results)
         completed = results["completed"]["message"]
@@ -88,6 +116,22 @@ class MetricsExtensionTests(unittest.TestCase):
         self.assertEqual(again["stopReason"], "toolUse")
         self.assertIn("ttft", again)
         self.assertIn("duration", again)
+        # /usage: the stats definitions over the transcript (three requests,
+        # the errored one with no usage skipped, non-integers as zeros, the
+        # last request's context and the peak, timings over the timed two,
+        # two tool calls with one error), one status line, no content.
+        self.assertEqual(
+            results["usage"],
+            [
+                [
+                    "usage: 3 requests, 900 in / 300 out, cache-read 95%, context 0 (peak 16,600), "
+                    "ttft p50 300 ms, duration p50 0.9 s, 2 tools, 1 error",
+                    "info",
+                ],
+                ["usage: no requests in this transcript yet", "info"],
+            ],
+        )
+        self.assertNotIn("TOPSECRET", run.stdout)
 
 
 if __name__ == "__main__":

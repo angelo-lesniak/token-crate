@@ -285,8 +285,9 @@ else:
         self.assertIn(f"- Endpoint: {self.url}\n- build: b10920\n\n| Preset | Run |", text)
         self.assertIn("| fixture-preset | short | 12 | 8 | 500.0 | 42.0 | 2 |", text)
         self.assertTrue(text.endswith("prompt caching disabled for the request.\n"), text)
-        document = json.loads(probe.bench_json(self.url, rows, {"build": "b10920"}))
+        document = json.loads(probe.bench_json(self.url, rows, {"build": "b10920", "n_ctx": 4096}))
         self.assertEqual((document["schema"], document["endpoint"], document["build"]), (1, self.url, "b10920"))
+        self.assertEqual(document["n_ctx"], 4096)
         self.assertEqual([row["run"] for row in document["rows"]], ["short", "long"])
         self.assertEqual(document["rows"][0]["samples"][1]["prompt_ms"], 24.0)
 
@@ -306,6 +307,71 @@ else:
         ]
         self.assertNotIn("template keeps later system messages", names)
         self.assertIn("mid-conversation system message", names)
+
+    def test_bench_history_lists_every_saved_run_and_nothing_else(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory(prefix="tokencrate-bench-") as tmp:
+            reports = Path(tmp)
+            self.assertIn("No bench history", probe.bench_history(reports))
+            row = {
+                "preset": "ci-small",
+                "run": "short",
+                "prompt_tokens": 223,
+                "prompt_tps": 1854.07,
+                "generation_tps": 138.79,
+                "iterations": 3,
+                "samples": [],
+            }
+            document = {
+                "schema": 1,
+                "date": "2026-09-27T15:00:35+0200",
+                "endpoint": "http://127.0.0.1:4208",
+                "build": "b11028-972d2313b",
+                "n_ctx": 65536,
+                "rows": [row, {**row, "run": "long", "prompt_tokens": 6052}],
+            }
+            (reports / "bench-20260927-150035.json").write_text(json.dumps(document))
+            # An older file without n_ctx and without a build; a hostile row
+            # and a hostile build; the rows that are not measurements.
+            older = {
+                "schema": 1,
+                "build": None,
+                "rows": [
+                    {**row, "prompt_tps": 100.0, "generation_tps": 10.0},
+                    {**row, "preset": "<script>alert(1)</script>"},
+                    {**row, "preset": "x" * 65},
+                    {**row, "run": "TOPSECRET"},
+                    {**row, "prompt_tps": "fast"},
+                    {**row, "generation_tps": -1},
+                    {**row, "prompt_tps": float("inf")},
+                    "not a row",
+                ],
+            }
+            (reports / "bench-20260918-101620.json").write_text(json.dumps(older).replace("Infinity", "1e999"))
+            (reports / "bench-20260919-000000.json").write_text(json.dumps({**document, "build": "b1 | TOPSECRET"}))
+            (reports / "bench-20260920-000000.json").write_text("{not json")
+            (reports / "bench-20260921-000000.json").write_text(json.dumps({"schema": 2, "rows": [row]}))
+            (reports / "bench-20260922-000000.json").write_text(json.dumps(["rows"]))
+            (reports / "bench-TOPSECRET.json").write_text(json.dumps(document))
+            (reports / "bench-20260923-000000.json").write_text(json.dumps(document) + " " * (1024 * 1024))
+            (reports / "bench-20260924-000000.json").write_text(
+                '{"schema": 1, "rows": [], "n_ctx": ' + "9" * 5000 + "}"
+            )
+            text = probe.bench_history(reports)
+        self.assertEqual(
+            [line for line in text.splitlines() if line.startswith("| 20")],
+            [
+                "| 2026-09-18 10:16 | ? | ? | ci-small | short | 223 | 100.0 | 10.0 | 3 |",
+                "| 2026-09-19 00:00 | ? | 65536 | ci-small | short | 223 | 1854.1 | 138.8 | 3 |",
+                "| 2026-09-19 00:00 | ? | 65536 | ci-small | long | 6052 | 1854.1 | 138.8 | 3 |",
+                "| 2026-09-27 15:00 | b11028-972d2313b | 65536 | ci-small | short | 223 | 1854.1 | 138.8 | 3 |",
+                "| 2026-09-27 15:00 | b11028-972d2313b | 65536 | ci-small | long | 6052 | 1854.1 | 138.8 | 3 |",
+            ],
+        )
+        for secret in ("TOPSECRET", "script", "127.0.0.1", "+0200", "xxxxx"):
+            self.assertNotIn(secret, text)
 
     def test_smoke_reports_failures(self):
         # The stock template rejects a later system message, the model calls

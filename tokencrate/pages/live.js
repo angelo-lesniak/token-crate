@@ -29,7 +29,9 @@
   var tiles = element("div", "tiles");
   var values = {};
   [["processing", "Requests processing"], ["deferred", "Requests queued"],
-   ["prompt", "Prompt tokens/s"], ["generation", "Generated tokens/s"]].forEach(function (tile) {
+   ["prompt", "Prompt tokens/s"], ["generation", "Generated tokens/s"],
+   ["acceptance", "Draft acceptance"], ["memory", "GPU memory (MiB)"], ["power", "GPU power (W)"]
+  ].forEach(function (tile) {
     var box = element("div", "tile");
     box.appendChild(element("div", "label", tile[1]));
     values[tile[0]] = element("div", "value", "–");
@@ -142,6 +144,12 @@
     values.deferred.textContent = number(last.deferred, 0);
     values.prompt.textContent = number(last.prompt_rate, 1);
     values.generation.textContent = number(last.generation_rate, 1);
+    // The share of drafted tokens the MTP preset accepted since its load;
+    // a preset without a draft model has none. The GPU tiles show what the
+    // host's nvidia-smi reported beside the scrape, when it has one.
+    values.acceptance.textContent = typeof last.acceptance === "number" ? Math.round(100 * last.acceptance) + "%" : "–";
+    values.memory.textContent = number(last.gpu_memory_mib, 0);
+    values.power.textContent = number(last.gpu_power_w, 1);
   }
 
   var timer = null;

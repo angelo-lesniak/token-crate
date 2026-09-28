@@ -25,9 +25,17 @@ import functools
 import html as html_text
 import json
 import math
+import os
 import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +47,7 @@ from . import TokenCrateError
 from .localhttp import http_get
 from .presets import PRESET_NAME_RE
 from .session import AGENTS
-from .stats import FOOTNOTE, Request, Session, build_tables, read_sessions, share, summary_line
+from .stats import FOOTNOTE, Filter, Request, Session, build_tables, read_sessions, share, summary_line
 
 # `stats --serve` without `--port`, clear of the API (4207) and UI
 # (4224, 4250) defaults.
@@ -56,6 +64,13 @@ LIVE_TIMEOUT = 2
 # rates come from and the two request gauges. Every other line is dropped.
 LIVE_COUNTERS = ("llamacpp:prompt_tokens_total", "llamacpp:tokens_predicted_total")
 LIVE_GAUGES = ("llamacpp:requests_processing", "llamacpp:requests_deferred")
+# The speculative-decoding counters of an MTP preset, cumulative since its
+# load; absent on a preset without a draft model.
+SPEC_COUNTERS = ("llamacpp:spec_decode_num_accepted_tokens_total", "llamacpp:spec_decode_num_draft_tokens_total")
+# The GPU query the sampler runs beside each scrape when the host has the
+# tool and LLM_GPU is true: memory in use (MiB) and power draw (W), as
+# numbers only, one line per GPU (the first is kept).
+NVIDIA_SMI_QUERY = ("--query-gpu=memory.used,power.draw", "--format=csv,noheader,nounits")
 
 
 @functools.cache
@@ -163,9 +178,15 @@ def live_panel(api: str) -> str:
     )
 
 
-def html(sessions: list[Session], refresh: int | None = None, live: str | None = None) -> str:
+def html(
+    sessions: list[Session],
+    refresh: int | None = None,
+    live: str | None = None,
+    selection: Filter | None = None,
+) -> str:
     """The stats report as one self-contained HTML page; `live` (the model
-    server's host:port) adds the served page's live panel."""
+    server's host:port) adds the served page's live panel, `selection`
+    names the filters the meta line reports."""
     requests = [request for session in sessions for request in session.requests]
     contexts = [request.context for request in requests]
     prompt = sum(request.input + request.cache_read for request in requests)
@@ -192,7 +213,7 @@ def html(sessions: list[Session], refresh: int | None = None, live: str | None =
         vendorstyle=asset("vendor/uPlot.min.css"),
         vendorscript=asset("vendor/uPlot.iife.js"),
         style=asset("stats.css"),
-        meta=f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')} &middot; {html_text.escape(summary_line(sessions))}",
+        meta=f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')} &middot; {html_text.escape(summary_line(sessions, selection))}",
         tiles='<div class="tiles">\n'
         + "\n".join(
             f'<div class="tile"><div class="label">{label}</div><div class="value">{value}</div></div>'
@@ -214,9 +235,11 @@ def html(sessions: list[Session], refresh: int | None = None, live: str | None =
 class Sample:
     """One look at the model server: wall time in seconds, whether the API
     answered, the loaded preset, whether its counters were scraped, its
-    request gauges, and the token rates since the previous scrape (None
-    until the preset has been scraped twice, and after a counter went
-    backwards, which is a restart)."""
+    request gauges, the token rates since the previous scrape (None until
+    the preset has been scraped twice, and after a counter went backwards,
+    which is a restart), the share of drafted tokens the MTP preset accepted
+    since its load, and the GPU's memory and power when the host reports
+    them."""
 
     t: float
     up: bool
@@ -226,6 +249,9 @@ class Sample:
     deferred: int | None
     prompt_rate: float | None
     generation_rate: float | None
+    acceptance: float | None = None
+    gpu_memory_mib: int | None = None
+    gpu_power_w: float | None = None
 
 
 def prometheus_values(body: str, names: tuple[str, ...]) -> dict[str, float]:
@@ -244,6 +270,45 @@ def prometheus_values(body: str, names: tuple[str, ...]) -> dict[str, float]:
     return values
 
 
+def nvidia_smi_command(gpu: bool) -> list[str] | None:
+    """The GPU query when the stack uses the GPU and the host has the tool,
+    resolved once to its absolute path; None otherwise."""
+    found = shutil.which("nvidia-smi") if gpu else None
+    return [found, *NVIDIA_SMI_QUERY] if found else None
+
+
+def gpu_reading(command: list[str]) -> tuple[int | None, float | None]:
+    """The first GPU's memory in use and power draw from the query's CSV
+    line; a field that is not a number (`[N/A]`) is None, as is everything
+    when the command fails or takes longer than the scrape timeout."""
+    try:
+        run = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=LIVE_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    if run.returncode:
+        return None, None
+    fields = [number(field) for field in (run.stdout.splitlines() or [""])[0].split(",")[:2]] + [None, None]
+    memory, power = fields[0], fields[1]
+    return (int(memory) if memory is not None else None, round(power, 1) if power is not None else None)
+
+
+def number(text: str) -> float | None:
+    """A finite number from one CSV field; None for `[N/A]` and the like."""
+    try:
+        value = float(text.strip())
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
 class LiveSampler:
     """The ring of samples behind `/live`. A snapshot scrapes the model
     server first when the previous scrape is at least `interval` old, so
@@ -251,25 +316,49 @@ class LiveSampler:
     and none while no page is open. Only a preset that `GET /models`
     reported loaded on this and the previous snapshot is asked for its
     counters: a scrape routes to the preset, and asking for one that just
-    unloaded would load it again."""
+    unloaded would load it again. The lock covers the ring and the timing
+    only, never a request, so a slow router or GPU query delays one poll,
+    not every page; one scrape runs at a time, so samples stay in order
+    and the previous counters belong to the scrape before."""
 
-    def __init__(self, service_url: str, interval: float = LIVE_INTERVAL, clock=time.monotonic) -> None:
+    def __init__(
+        self,
+        service_url: str,
+        interval: float = LIVE_INTERVAL,
+        clock=time.monotonic,
+        gpu_command: list[str] | None = None,
+    ) -> None:
         self.service_url = service_url.rstrip("/")
         self.interval = interval
         self.clock = clock
+        self.gpu_command = gpu_command
         self.samples: deque[Sample] = deque(maxlen=LIVE_SAMPLES)
         self.lock = threading.Lock()
         self.scraped_at: float | None = None
+        self.scraping = False
         self.loaded: str | None = None
         self.previous: tuple[str, dict[str, float], float] | None = None
-        self.asked: list[str] = []
+        # The presets asked for their counters, for the tests' audit.
+        self.asked: deque[str] = deque(maxlen=LIVE_SAMPLES)
 
     def snapshot(self) -> list[Sample]:
         with self.lock:
             now = self.clock()
-            if self.scraped_at is None or now - self.scraped_at >= self.interval:
+            due = not self.scraping and (self.scraped_at is None or now - self.scraped_at >= self.interval)
+            if due:
                 self.scraped_at = now
-                self.samples.append(self.scrape())
+                self.scraping = True
+        if due:
+            try:
+                sample = self.scrape()
+                if self.gpu_command:
+                    sample.gpu_memory_mib, sample.gpu_power_w = gpu_reading(self.gpu_command)
+            finally:
+                with self.lock:
+                    self.scraping = False
+            with self.lock:
+                self.samples.append(sample)
+        with self.lock:
             return list(self.samples)
 
     def loaded_preset(self) -> tuple[bool, str | None]:
@@ -311,9 +400,12 @@ class LiveSampler:
         sample.scraped = True
         gauges = prometheus_values(body, LIVE_GAUGES)
         counters = prometheus_values(body, LIVE_COUNTERS)
+        spec = prometheus_values(body, SPEC_COUNTERS)
         at = self.clock()
         sample.processing = int(gauges[LIVE_GAUGES[0]]) if LIVE_GAUGES[0] in gauges else None
         sample.deferred = int(gauges[LIVE_GAUGES[1]]) if LIVE_GAUGES[1] in gauges else None
+        if all(name in spec for name in SPEC_COUNTERS) and spec[SPEC_COUNTERS[1]] > 0:
+            sample.acceptance = round(min(1.0, spec[SPEC_COUNTERS[0]] / spec[SPEC_COUNTERS[1]]), 3)
         # A rate needs both counters in this scrape and the previous one of
         # the same preset; a counter that went backwards is a restart.
         complete = all(name in counters for name in LIVE_COUNTERS)
@@ -330,14 +422,21 @@ class LiveSampler:
 # --- The loopback server (`stats --serve`) ---------------------------------
 
 
-def stats_server(agents_dir: Path, port: int, service_url: str) -> ThreadingHTTPServer:
-    """The page on 127.0.0.1:`port`, re-reading the transcripts on every
-    request, and `/live`, the samples of the model server at `service_url`.
-    Only the server's own loopback `Host` names are answered, so a page on
-    another site cannot use the browser's name resolution to reach it;
-    without CORS headers the response body stays unreadable cross-origin
-    either way."""
-    sampler = LiveSampler(service_url)
+def stats_server(
+    agents_dir: Path,
+    port: int,
+    service_url: str,
+    selection: Filter | None = None,
+    *,
+    gpu_command: list[str] | None = None,
+) -> ThreadingHTTPServer:
+    """The page on 127.0.0.1:`port`, re-reading the transcripts (through
+    `selection`) on every request, and `/live`, the samples of the model
+    server at `service_url`. Only the server's own loopback `Host` names
+    are answered, so a page on another site cannot use the browser's name
+    resolution to reach it; without CORS headers the response body stays
+    unreadable cross-origin either way."""
+    sampler = LiveSampler(service_url, gpu_command=gpu_command)
     api = service_url.partition("://")[2].rstrip("/")
 
     class Handler(BaseHTTPRequestHandler):
@@ -352,6 +451,9 @@ def stats_server(agents_dir: Path, port: int, service_url: str) -> ThreadingHTTP
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
+                # `--detach` reads this to know the server it started is
+                # the one answering the port.
+                self.send_header(PID_HEADER, str(os.getpid()))
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -369,7 +471,9 @@ def stats_server(agents_dir: Path, port: int, service_url: str) -> ThreadingHTTP
             if path != "/":
                 return self.refuse(404, "the stats page is at /")
             try:
-                page = html(read_sessions(agents_dir), refresh=REFRESH_SECONDS, live=api)
+                page = html(
+                    read_sessions(agents_dir, selection), refresh=REFRESH_SECONDS, live=api, selection=selection
+                )
             except TokenCrateError as error:
                 return self.refuse(503, str(error))
             self.answer(200, page.encode("utf-8"), "text/html; charset=utf-8")
@@ -380,9 +484,198 @@ def stats_server(agents_dir: Path, port: int, service_url: str) -> ThreadingHTTP
         raise TokenCrateError(f"cannot serve the stats page on 127.0.0.1:{port}: {error}") from None
 
 
-def serve(agents_dir: Path, port: int, service_url: str) -> int:
-    """Serve until interrupted; Ctrl-C, SIGHUP, or SIGTERM stop it."""
-    with stats_server(agents_dir, port, service_url) as server:
+def serve(
+    agents_dir: Path,
+    port: int,
+    service_url: str,
+    selection: Filter | None = None,
+    *,
+    gpu: bool = False,
+    root: Path | None = None,
+) -> int:
+    """Serve until interrupted; Ctrl-C, SIGHUP, or SIGTERM stop it. A
+    server that `--detach` started finds its own PID in the file under
+    `root` and removes the file when it ends."""
+    with stats_server(agents_dir, port, service_url, selection, gpu_command=nvidia_smi_command(gpu)) as server:
         print(f"Serving the stats page at http://127.0.0.1:{server.server_address[1]}/ (Ctrl-C stops it)")
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            if root is not None:
+                forget(root, os.getpid())
     return 0
+
+
+# --- A detached server (`stats --serve --detach`, `stats --stop`) ----------
+
+# Where the wrapper notes the server it started in the background, beside
+# the engine locks; `status` reads it, `stats --stop` and `down` end it.
+PID_FILE = "build/stats-serve.pid"
+LOG_FILE = "build/stats-serve.log"
+PID_HEADER = "X-TokenCrate-Stats-Pid"
+DETACH_TIMEOUT = 10
+# The child's command line, as `detach` spells it; nothing else is ever
+# signalled.
+CHILD_ARGUMENTS = ("-m", "tokencrate", "stats", "--serve")
+
+
+def pid_file(root: Path) -> Path:
+    return root / PID_FILE
+
+
+def read_pid_file(root: Path) -> dict | None:
+    """The record of a detached server ({pid, port, started}), or None."""
+    try:
+        record = json.loads(pid_file(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and isinstance(record.get("pid"), int) and isinstance(record.get("port"), int):
+        return record
+    return None
+
+
+def process_start(pid: int) -> int | None:
+    """The process's start time in clock ticks since boot (/proc), which a
+    reused PID never repeats; None where /proc has no answer."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        return int(stat.rpartition(")")[2].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def is_stats_process(pid: int, started: int | None = None) -> bool:
+    """Whether `pid` is alive and is the server `detach` started: its
+    command line runs `-m tokencrate stats --serve` and, when the record
+    carries one, its start time matches, so a PID the kernel handed to
+    another program after the server ended is never signalled. Without
+    /proc, liveness alone decides."""
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    try:
+        arguments = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", errors="replace").split("\0")
+    except OSError:
+        return True
+    expected = list(CHILD_ARGUMENTS)
+    runs_server = any(arguments[i : i + len(expected)] == expected for i in range(len(arguments)))
+    same_start = started is None or process_start(pid) == started
+    return runs_server and same_start
+
+
+def running_server(root: Path) -> dict | None:
+    """The detached server's record when its process still runs; a stale
+    file (the process is gone, or another program has its PID) is removed."""
+    record = read_pid_file(root)
+    if record is None:
+        return None
+    if is_stats_process(record["pid"], record.get("started")):
+        return record
+    pid_file(root).unlink(missing_ok=True)
+    return None
+
+
+def forget(root: Path, pid: int) -> None:
+    """Remove the record when it is `pid`'s own, never a newer server's."""
+    record = read_pid_file(root)
+    if record is not None and record["pid"] == pid:
+        pid_file(root).unlink(missing_ok=True)
+
+
+def port_answers(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def served_by(port: int) -> int | None:
+    """The PID the server on `port` names in its answer, or None when
+    nothing answers or the answer is not a stats page."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/live", timeout=2) as response:
+            value = response.headers.get(PID_HEADER, "")
+    except urllib.error.HTTPError as error:
+        value = error.headers.get(PID_HEADER, "") if error.headers else ""
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    return int(value) if value.isdigit() else None
+
+
+def detach(root: Path, port: int, arguments: list[str]) -> int:
+    """Start `stats --serve` with `arguments` as a background process of
+    its own session, logging to build/stats-serve.log, and return once
+    the port answers with that process's PID. The record is created
+    exclusively before the start, so two `--detach` at once cannot both
+    succeed, and removed again if the child fails."""
+    if running := running_server(root):
+        raise TokenCrateError(
+            f"a stats server is already serving on 127.0.0.1:{running['port']} (pid {running['pid']}); "
+            "run: bash bin/tokencrate stats --stop"
+        )
+    if port_answers(port):
+        raise TokenCrateError(f"host port {port} is already in use; choose another with --port")
+    pid_file(root).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = pid_file(root).open("x", encoding="utf-8")
+    except FileExistsError:
+        raise TokenCrateError("another stats --serve --detach is starting; run: bash bin/tokencrate status") from None
+    with handle, (root / LOG_FILE).open("wb") as log:
+        child = subprocess.Popen(
+            [sys.executable, "-u", *CHILD_ARGUMENTS, *arguments],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+        handle.write(json.dumps({"pid": child.pid, "port": port, "started": process_start(child.pid)}) + "\n")
+    deadline = time.monotonic() + DETACH_TIMEOUT
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            forget(root, child.pid)
+            raise TokenCrateError(
+                f"the stats server ended with status {child.returncode} before it answered; see {LOG_FILE}"
+            )
+        if served_by(port) == child.pid:
+            print(
+                f"Serving the stats page at http://127.0.0.1:{port}/ in the background "
+                f"(pid {child.pid}; stats --stop ends it)"
+            )
+            return 0
+        time.sleep(0.1)
+    child.terminate()
+    forget(root, child.pid)
+    raise TokenCrateError(
+        f"the stats server did not answer on 127.0.0.1:{port} within {DETACH_TIMEOUT}s; see {LOG_FILE}"
+    )
+
+
+def stop(root: Path) -> bool:
+    """End the detached server, if one runs; True when one was stopped."""
+    running = running_server(root)
+    if running is None:
+        return False
+    pid, started = running["pid"], running.get("started")
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + DETACH_TIMEOUT
+    while time.monotonic() < deadline and is_stats_process(pid, started):
+        time.sleep(0.1)
+    if is_stats_process(pid, started):
+        raise TokenCrateError(f"the stats server (pid {pid}) did not end on SIGTERM")
+    forget(root, pid)
+    return True
+
+
+def status_line(root: Path) -> str | None:
+    """One line for `status`, or None without a detached server."""
+    running = running_server(root)
+    if running is None:
+        return None
+    answering = "serving" if port_answers(running["port"]) else "not answering"
+    return (
+        f"Stats page: {answering} at http://127.0.0.1:{running['port']}/ (pid {running['pid']}; stats --stop ends it)"
+    )

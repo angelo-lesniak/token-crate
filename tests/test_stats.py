@@ -9,7 +9,7 @@ import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tests.support import Scratch
+from tests.support import Scratch, free_port
 from tokencrate import TokenCrateError, stats
 
 CWD_DIRECTORY = "--srv-PROJECTSECRET--"
@@ -19,12 +19,21 @@ def entry(**fields) -> str:
     return json.dumps(fields)
 
 
-def assistant(provider: str, model: str, stop: str, usage: dict | None, **extra) -> str:
+def assistant(provider: str, model: str, stop: str, usage: dict | None, at: str = "16:00:00", **extra) -> str:
     message: dict = {"role": "assistant", "provider": provider, "model": model, "stopReason": stop, **extra}
     message["content"] = [{"type": "text", "text": "TOPSECRET-ANSWER"}]
     if usage is not None:
         message["usage"] = {"cost": {"total": 0}, **usage}
-    return entry(type="message", id="e1", timestamp="2026-09-21T16:00:00.000Z", message=message)
+    return entry(type="message", id="e1", timestamp=f"2026-09-21T{at}.000Z", message=message)
+
+
+def user(at: str) -> str:
+    return entry(
+        type="message",
+        id="u",
+        timestamp=f"2026-09-21T{at}.000Z",
+        message={"role": "user", "content": "TOPSECRET-PROMPT"},
+    )
 
 
 def tokens(input: int, output: int, cache_read: int, cache_write: int = 0) -> dict:
@@ -42,34 +51,61 @@ PI_SESSION = "\n".join(
     [
         entry(type="session", version=3, id="a", timestamp="2026-09-21T16:00:00.000Z", cwd="/srv/PROJECTSECRET"),
         entry(type="session_info", id="i", name="TOPSECRET-NAME"),
-        entry(type="message", id="u", message={"role": "user", "content": "TOPSECRET-PROMPT"}),
-        assistant("tokencrate", "qwen-fixture", "toolUse", tokens(500, 100, 1000)),
-        entry(type="message", id="t", message={"role": "toolResult", "toolName": "read", "isError": False}),
+        # pi writes the level before the first message; the level entry
+        # and the session header carry timestamps the duration ignores.
+        entry(type="thinking_level_change", id="l", timestamp="2026-09-21T15:00:00.000Z", thinkingLevel="xhigh"),
+        user("16:00:00"),
+        assistant("tokencrate", "qwen-fixture", "toolUse", tokens(500, 100, 1000), "16:00:10"),
+        entry(
+            type="message",
+            id="t",
+            timestamp="2026-09-21T16:00:11.000Z",
+            message={"role": "toolResult", "toolName": "read", "isError": False},
+        ),
         "{not json",
         # Timed by the metrics set's extension, in oh-my-pi's fields.
-        assistant("tokencrate", "qwen-fixture", "stop", tokens(400, 100, 16000), ttft=300, duration=900),
+        assistant("tokencrate", "qwen-fixture", "stop", tokens(400, 100, 16000), "16:01:00", ttft=300, duration=900),
         entry(type="compaction", id="c", tokensBefore=16500, summary="TOPSECRET-SUMMARY"),
         # Another extension's entry, and timing fields that are not numbers.
         entry(type="custom", id="x", customType="TOPSECRET-EXT", data={"note": "TOPSECRET-DATA", "ttft": 5}),
-        assistant("tokencrate", "qwen-fixture", "stop", tokens(3000, 200, 0, 800), ttft="TOPSECRET-TTFT", duration=[1]),
+        # A level change mid-session, a malformed level, and a malformed
+        # timestamp on the last request.
+        entry(type="thinking_level_change", id="l2", thinkingLevel="low"),
+        entry(type="thinking_level_change", id="l3", thinkingLevel="<b>TOPSECRET</b>"),
+        user("16:04:00"),
+        entry(type="thinking_level_change", id="l4", thinkingLevel="low"),
+        assistant(
+            "tokencrate",
+            "qwen-fixture",
+            "stop",
+            tokens(3000, 200, 0, 800),
+            "not-a-time",
+            ttft="TOPSECRET-TTFT",
+            duration=[1],
+        ),
     ]
 )
-CLOUD_SESSION = assistant("openrouter", "acme/model|x", "stop", tokens(2000, 50, 0))
+CLOUD_SESSION = assistant("openrouter", "acme/model|x", "stop", tokens(2000, 50, 0), "18:00:00")
 OMP_SESSION = "\n".join(
     [
         entry(type="session", version=3, id="b", timestamp="2026-09-21T17:00:00.000Z", cwd="/srv/PROJECTSECRET"),
+        entry(type="thinking_level_change", id="l", timestamp="2026-09-21T17:00:00.000Z", thinkingLevel="high"),
+        user("17:00:00"),
         assistant(
             "tokencrate",
             "qwen-fixture",
             "stop",
             tokens(19000, 40, 0),
+            "17:00:04",
             ttft=1200.5,
             duration=3400.5,
             contextSnapshot={"promptTokens": 19000, "nonMessageTokens": 16000, "compactionEpoch": 0},
         ),
         entry(type="message", id="t", message={"role": "toolResult", "toolName": "bash", "isError": True}),
-        assistant("tokencrate", "qwen-fixture", "error", None, errorMessage="boom"),
-        assistant("tokencrate", "qwen-fixture", "toolUse", tokens(100, 60, 19000), ttft=800.0, duration=1500.0),
+        assistant("tokencrate", "qwen-fixture", "error", None, "17:30:00", errorMessage="boom"),
+        assistant(
+            "tokencrate", "qwen-fixture", "toolUse", tokens(100, 60, 19000), "18:12:30", ttft=800.0, duration=1500.0
+        ),
     ]
 )
 
@@ -104,10 +140,12 @@ class StatsReportTests(unittest.TestCase):
         text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertTrue(text.startswith("# TokenCrate stats report\n\n- Date: "), text)
         self.assertIn("- Transcripts: 3 session(s), 6 request(s) below LLM_AGENTS_DIR\n", text)
-        # Sessions: count, requests, first-request p50, peak context
+        # Sessions: count, requests, turns p50, duration p50/p90 (first to
+        # last message; the cloud session has one message, so the pi p90 is
+        # the timed session's four minutes), first-request p50, peak context
         # p50/p90/max, compactions with the p50 context before them.
-        self.assertIn("| pi | 2 | 4 | 1500 | 2050 | 16500 | 16500 | 1 (p50 before: 16500) |", text)
-        self.assertIn("| omp | 1 | 2 | 19000 | 19160 | 19160 | 19160 | 0 |", text)
+        self.assertIn("| pi | 2 | 4 | 0 | 0s | 4m 00s | 1500 | 2050 | 16500 | 16500 | 1 (p50 before: 16500) |", text)
+        self.assertIn("| omp | 1 | 2 | 1 | 1h 12m | 1h 12m | 19000 | 19160 | 19160 | 19160 | 0 |", text)
         # Requests: input and output are summed once per request; the context
         # columns are nearest-rank percentiles and the >16K/32K/48K shares.
         self.assertIn("| pi | 4 | 5900 | 450 | 74% | 2050 | 16500 | 16500 | 25% | 0% | 0% |", text)
@@ -119,6 +157,12 @@ class StatsReportTests(unittest.TestCase):
         self.assertIn("| openrouter | acme/model/x | 1 | 2000 | 50 |", text)
         self.assertIn("| pi | 1 | 0 | stop 3, toolUse 1 |", text)
         self.assertIn("| omp | 1 | 1 | stop 1, toolUse 1 |", text)
+        # Thinking levels: the last change before each request; a malformed
+        # level is "?", the cloud session has no level entry.
+        self.assertIn("| pi | xhigh | 2 | 100 | 100 |", text)
+        self.assertIn("| pi | low | 1 | 200 | 200 |", text)
+        self.assertIn("| pi | ? | 1 | 50 | 50 |", text)
+        self.assertIn("| omp | high | 2 | 40 | 60 |", text)
         # Timings exist only where a transcript carries numeric ttft and
         # duration, one row per agent: the two agents measure differently.
         self.assertIn("| pi | tokencrate | qwen-fixture | 1 | 300 | 300 | 900 | 900 |", text)
@@ -134,6 +178,50 @@ class StatsReportTests(unittest.TestCase):
         sessions = stats.read_sessions(self.agents_dir)
         self.assertEqual([session.agent for session in sessions], ["pi", "pi", "omp"])
         self.assertEqual(sum(len(session.requests) for session in sessions), 6)
+
+    def test_since_and_agent_keep_whole_sessions(self) -> None:
+        # A session counts whole when its last message is at or after the
+        # cutoff; the summary names the filters; nothing matching is its own
+        # sentence, distinct from an empty directory.
+        cutoff = stats.since_cutoff("2026-09-21T17:30:00+00:00")
+        kept = stats.read_sessions(self.agents_dir, stats.Filter(since=cutoff))
+        self.assertEqual([session.agent for session in kept], ["pi", "omp"])
+        self.assertEqual(sum(len(session.requests) for session in kept), 3)
+        text = stats.report(kept, stats.Filter(since=cutoff))
+        self.assertIn("2 session(s), 3 request(s) below LLM_AGENTS_DIR (since 2026-09-21T17:30:00+00:00)", text)
+        only_pi = stats.read_sessions(self.agents_dir, stats.Filter(agent="pi"))
+        self.assertEqual({session.agent for session in only_pi}, {"pi"})
+        self.assertEqual(len(stats.read_sessions(self.agents_dir, stats.Filter(since=cutoff, agent="pi"))), 1)
+        with self.assertRaises(TokenCrateError) as caught:
+            stats.read_sessions(self.agents_dir, stats.Filter(since=stats.since_cutoff("2027-01-01")))
+        self.assertIn("no agent transcripts match since 2027-01-01T00:00:00", str(caught.exception))
+
+    def test_since_takes_a_duration_or_an_iso_time(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+        self.assertEqual(stats.since_cutoff("30m", now), now - timedelta(minutes=30))
+        self.assertEqual(stats.since_cutoff("12h", now), now - timedelta(hours=12))
+        self.assertEqual(stats.since_cutoff("7d", now), now - timedelta(days=7))
+        self.assertEqual(stats.since_cutoff("2w", now), now - timedelta(weeks=2))
+        self.assertEqual(stats.since_cutoff("2026-09-20T10:00:00Z", now), datetime(2026, 9, 20, 10, tzinfo=UTC))
+        self.assertIsNotNone(stats.since_cutoff("2026-09-20").tzinfo)  # local midnight
+        for bad in ("0d", "yesterday", "7", "2026-13-01", "x" * 60, "999999d", "0001-01-01", "9999-12-31T23:59:59"):
+            with self.assertRaises(TokenCrateError, msg=bad):
+                stats.since_cutoff(bad, now)
+
+    def test_timestamps_and_levels_are_read_defensively(self) -> None:
+        self.assertEqual(stats.timestamp("2026-09-21T16:00:00.000Z"), 1790006400.0)
+        self.assertIsNone(stats.timestamp("2026-09-21T16:00:00.000Z" + "0" * 40))
+        self.assertIsNone(stats.timestamp("0001-01-01T00:00:00"))
+        self.assertIsNone(stats.timestamp(1789999200))
+        self.assertIsNone(stats.timestamp("TOPSECRET"))
+        self.assertEqual(stats.level_name("xhigh"), "xhigh")
+        self.assertEqual(stats.level_name("X"), "?")
+        self.assertEqual(stats.level_name(None), "?")
+        self.assertEqual(stats.duration_text(38), "38s")
+        self.assertEqual(stats.duration_text(270), "4m 30s")
+        self.assertEqual(stats.duration_text(4320), "1h 12m")
 
     def test_without_transcripts_the_report_says_where_they_would_be(self) -> None:
         with TemporaryDirectory(prefix="tokencrate-stats-") as empty:
@@ -153,6 +241,14 @@ class StatsReportTests(unittest.TestCase):
             (sessions / "linked").symlink_to(linked)
             text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertNotIn("FOREIGNMODEL", text)
+
+    def test_an_integer_past_the_digit_limit_is_skipped(self) -> None:
+        # json.loads raises a plain ValueError for it, not a JSONDecodeError.
+        session = stats.Session("pi")
+        stats.read_line(
+            '{"type": "message", "message": {"role": "assistant", "usage": {"input": ' + "9" * 5000 + "}}}", session
+        )
+        self.assertEqual(session.requests, [])
 
     def test_a_line_beyond_the_limit_is_skipped(self) -> None:
         sessions = self.agents_dir / "pi" / "PROJECTSECRET-1a2b3c" / ".pi" / "agent" / "sessions" / CWD_DIRECTORY
@@ -218,6 +314,78 @@ class StatsCommandTests(unittest.TestCase):
         self.assertIn("--port requires a port from 1 to 65535", result.stderr)
         result = self.scratch.run("bench", "--serve")
         self.assertIn("--serve is only valid with stats", result.stderr)
+        result = self.scratch.run("stats", "--since", "yesterday")
+        self.assertIn("--since requires a duration such as 30m, 12h, 7d, or 2w", result.stderr)
+        result = self.scratch.run("bench", "--since", "7d")
+        self.assertIn("--since is only valid with stats", result.stderr)
+        result = self.scratch.run("stats", "--agent", "claude")
+        self.assertIn("--agent requires pi or omp", result.stderr)
+
+    def test_stats_serves_in_the_background_until_stopped_or_down(self) -> None:
+        import os
+        import signal
+        import urllib.request
+
+        write_transcripts(self.scratch.storage / "agents")
+        port = str(free_port())
+        started = self.scratch.run(
+            "stats", "--serve", "--detach", "--port", port, "--since", "2026-09-01", PATH="/usr/bin:/bin"
+        )
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertIn(f"Serving the stats page at http://127.0.0.1:{port}/ in the background", started.stdout)
+        record = json.loads((self.scratch.root / "build" / "stats-serve.pid").read_text())
+        self.addCleanup(lambda: os.path.exists(f"/proc/{record['pid']}") and os.kill(record["pid"], signal.SIGKILL))
+        self.assertEqual(record["port"], int(port))
+        self.assertIsInstance(record["started"], int)
+        self.assertIn("Serving the stats page", (self.scratch.root / "build" / "stats-serve.log").read_text())
+        # The page answers with the child's own filter, and status names it.
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as response:
+            self.assertIn("(since ", response.read().decode())
+        status = self.scratch.run("status")
+        self.assertIn(f"Stats page: serving at http://127.0.0.1:{port}/ (pid {record['pid']}", status.stdout)
+        # A second one is refused while the first runs.
+        refused = self.scratch.run("stats", "--serve", "--detach", "--port", port)
+        self.assertIn("a stats server is already serving", refused.stderr)
+        self.assertIn("Stopped the stats page.", self.scratch.run("stats", "--stop").stdout)
+        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
+        self.assertFalse(os.path.exists(f"/proc/{record['pid']}"))
+        self.assertIn("No stats page is served in the background.", self.scratch.run("stats", "--stop").stdout)
+        # down ends a detached server with the rest; a stale file is ignored.
+        started = self.scratch.run("stats", "--serve", "--detach", "--port", port, PATH="/usr/bin:/bin")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        record = json.loads((self.scratch.root / "build" / "stats-serve.pid").read_text())
+        self.assertIn("Stopped the stats page.", self.scratch.run("down").stdout)
+        self.assertFalse(os.path.exists(f"/proc/{record['pid']}"))
+        (self.scratch.root / "build" / "stats-serve.pid").write_text(json.dumps({"pid": 2**22 - 1, "port": 4210}))
+        self.assertNotIn("Stats page:", self.scratch.run("status").stdout)
+        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
+        self.assertIn("--stop takes no other stats option", self.scratch.run("stats", "--stop", "--port", port).stderr)
+        self.assertIn("--detach applies to stats --serve", self.scratch.run("stats", "--detach").stderr)
+        self.assertIn("--detach is only valid with stats --serve", self.scratch.run("bench", "--detach").stderr)
+        # A bad cutoff is refused by the parent, and a port another program
+        # holds is refused before anything starts.
+        bad = self.scratch.run("stats", "--serve", "--detach", "--port", port, "--since", "yesterday")
+        self.assertIn("--since requires a duration", bad.stderr)
+        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
+        import socket
+
+        with socket.socket() as holder:
+            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            holder.bind(("127.0.0.1", int(port)))
+            holder.listen(1)
+            busy = self.scratch.run("stats", "--serve", "--detach", "--port", port)
+        self.assertIn(f"host port {port} is already in use", busy.stderr)
+        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
+
+    def test_stats_filters_by_time_and_agent(self) -> None:
+        write_transcripts(self.scratch.storage / "agents")
+        result = self.scratch.run("stats", "--since", "2026-09-21T17:30:00Z", "--agent", "omp", PATH="/usr/bin:/bin")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "1 session(s), 2 request(s) below LLM_AGENTS_DIR (agent omp, since 2026-09-21T17:30:00+00:00)",
+            result.stdout,
+        )
+        self.assertNotIn("| pi |", result.stdout)
 
 
 if __name__ == "__main__":

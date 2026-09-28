@@ -9,7 +9,7 @@ import signal
 import tomllib
 import unittest
 
-from tests.support import SOURCE_ROOT, Scratch, shipped
+from tests.support import SOURCE_ROOT, Scratch, free_port, shipped
 from tokencrate import cli, env, presets
 
 # The build-gate messages name the pinned build, which moves with every
@@ -117,6 +117,54 @@ class CliTests(unittest.TestCase):
         self.assertIn(VALIDATED, output)
         self.assertFalse((self.scratch.root / "build").exists())
         self.expect_failure("unknown option for render: --check", "presets", "render", "--check")
+
+    def test_up_starts_the_dashboard_profile_after_the_model_is_ready(self) -> None:
+        # A loopback listener answers GET /models the way a router with
+        # nothing rendered would; with no default preset that is "healthy",
+        # and the dashboard services follow by name under their profile.
+        import http.server
+        import threading
+
+        self.expect_failure(
+            "LLM_DASHBOARD_PORT requires a port",
+            "up",
+            LLM_DASHBOARD="true",
+            LLM_DASHBOARD_PORT="99999",
+            LLM_GPU="false",
+        )
+        handler = type("Models", (http.server.BaseHTTPRequestHandler,), {})
+        handler.log_message = lambda *_args: None
+        handler.do_GET = lambda self: (
+            self.send_response(200),
+            self.send_header("Content-Length", "11"),
+            self.end_headers(),
+            self.wfile.write(b'{"data":[]}'),
+        )
+        server = http.server.HTTPServer(("127.0.0.1", int(self.scratch.port)), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        dashboard_port = str(free_port())
+        started = self.succeed(
+            "up",
+            "--timeout",
+            "5",
+            FAKE_ENGINE_LLAMA_RUNNING="true",
+            LLM_GPU="false",
+            LLM_DASHBOARD="true",
+            LLM_DASHBOARD_PORT=dashboard_port,
+        )
+        self.assertIn("TokenCrate is healthy", started)
+        self.assertIn(
+            "--profile dashboard --env-file pins.env up --no-build --detach llama-exporter victoriametrics grafana",
+            started,
+        )
+        self.assertNotIn("gpu-exporter", started)
+        self.assertIn(f"Dashboard at http://127.0.0.1:{dashboard_port}/", started)
+        self.assertTrue((self.scratch.root / "data" / "dashboard" / "victoria").is_dir())
+        # Off by default: no profile, no directory, no address.
+        plain = self.succeed("up", "--timeout", "5", FAKE_ENGINE_LLAMA_RUNNING="true", LLM_GPU="false")
+        self.assertNotIn("dashboard", plain)
 
     def test_up_runs_the_host_checks_first_and_stops_on_a_failure(self) -> None:
         # The scratch host has no GPU: with the GPU wanted, doctor fails and
@@ -578,6 +626,12 @@ class CliTests(unittest.TestCase):
         self.expect_failure("unknown option: --refresh", "models", "status", "--refresh", "qwen3.8-27b-ud-q4-k-xl")
         self.expect_failure("--preset is only valid with", "presets", "render", "--preset", "missing")
         self.expect_failure("--basic is only valid with smoke", "bench", "--basic")
+        self.expect_failure("--history is only valid with bench", "stats", "--history")
+        self.expect_failure("--history takes no other bench option", "bench", "--history", "--long")
+        # The history needs no engine and no stack.
+        printed = self.succeed("bench", "--history", PATH="/usr/bin:/bin")
+        self.assertIn("# TokenCrate bench history", printed)
+        self.assertIn("No bench history", printed)
         self.expect_failure("usage: bin/tokencrate pins check", "pins", "check", "node", "extra")
         self.expect_failure("unknown pin component 'rust'", "pins", "check", "rust")
         self.expect_failure("no preset selected", "smoke", FAKE_ENGINE_LLAMA_RUNNING="true")

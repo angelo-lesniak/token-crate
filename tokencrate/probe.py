@@ -12,12 +12,15 @@ loopback port, prints the report, and saves it under reports/.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 
-from . import TokenCrateError
+from . import TokenCrateError, stats
 from .localhttp import request
+from .names import PRESET_NAME_RE
 
 # A chat completion may be the first request, so it waits for the load, and
 # then for up to ANSWER_TOKENS at the slowest shipped preset (a model with
@@ -445,6 +448,92 @@ def bench_json(url: str, rows: list[dict], facts: dict) -> str:
         "date": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "endpoint": url,
         "build": facts.get("build"),
+        "n_ctx": facts.get("n_ctx"),
         "rows": rows,
     }
     return json.dumps(document, indent=2) + "\n"
+
+
+# --- bench --history ---------------------------------------------------------
+
+# The files `bench` saves: the stem is the wrapper's own timestamp, which
+# dates and orders the history; the JSON's own `date` is not read.
+BENCH_FILE_RE = re.compile(r"bench-(\d{8})-(\d{6})\.json")
+BENCH_FILE_LIMIT = 1024 * 1024
+BUILD_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+BENCH_RUNS = ("short", "long")
+HISTORY_HEADER = (
+    "| Date | Build | n_ctx | Preset | Run | Prompt tokens | Prompt tokens/s | Generation tokens/s | Iterations |",
+    "| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: |",
+)
+NO_HISTORY = (
+    "No bench history: `bench` writes reports/bench-<timestamp>.json next to its report, and the history is "
+    "this machine's (reports/ is not tracked)."
+)
+
+
+def bench_history_rows(reports_dir: Path) -> list[str]:
+    """One Markdown row per measured run of every `bench` JSON under
+    `reports_dir`, oldest file first. A file that is not a bench document is
+    skipped whole, a row that is not a measurement is skipped, and nothing
+    but the build, `n_ctx`, the preset, the run label, and the numbers
+    reaches the table, in the shapes the writer above produces."""
+    rows = []
+    for path in sorted(reports_dir.glob("bench-*.json")):
+        match = BENCH_FILE_RE.fullmatch(path.name)
+        if match is None:
+            continue
+        try:
+            if not path.is_file() or path.stat().st_size > BENCH_FILE_LIMIT:
+                continue
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # gone, unreadable, malformed, or an integer past the digit limit
+            continue
+        if not isinstance(document, dict) or document.get("schema") != 1 or not isinstance(document.get("rows"), list):
+            continue
+        build = document.get("build")
+        build = build if isinstance(build, str) and BUILD_RE.fullmatch(build) else "?"
+        n_ctx = document.get("n_ctx")
+        n_ctx = str(n_ctx) if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx >= 0 else "?"
+        day, clock = match.group(1), match.group(2)
+        date = f"{day[:4]}-{day[4:6]}-{day[6:]} {clock[:2]}:{clock[2:4]}"
+        for row in document["rows"]:
+            if not isinstance(row, dict):
+                continue
+            preset, run = row.get("preset"), row.get("run")
+            prompt_tps, generation_tps = (
+                stats.duration(row.get("prompt_tps")),
+                stats.duration(row.get("generation_tps")),
+            )
+            if (
+                not isinstance(preset, str)
+                or not PRESET_NAME_RE.fullmatch(preset)
+                or len(preset) > 64
+                or run not in BENCH_RUNS
+                or prompt_tps is None
+                or generation_tps is None
+                or min(prompt_tps, generation_tps) < 0
+            ):
+                continue
+            rows.append(
+                f"| {date} | {build} | {n_ctx} | {preset} | {run} | {stats.integer(row.get('prompt_tokens'))} | "
+                f"{prompt_tps:.1f} | {generation_tps:.1f} | {stats.integer(row.get('iterations'))} |"
+            )
+    return rows
+
+
+def bench_history(reports_dir: Path) -> str:
+    """The Markdown bench history: the measurements of every saved run, so
+    a llama.cpp pin bump or a preset change shows next to what came before."""
+    lines = ["# TokenCrate bench history", ""]
+    rows = bench_history_rows(reports_dir)
+    if not rows:
+        lines.append(NO_HISTORY)
+    else:
+        lines += [*HISTORY_HEADER, *rows]
+    lines += [
+        "",
+        "One row per measured run of every reports/bench-<timestamp>.json, oldest first; the numbers are the "
+        "report's averages over its iterations. Compare rows of one preset at one n_ctx.",
+    ]
+    return "\n".join(lines) + "\n"

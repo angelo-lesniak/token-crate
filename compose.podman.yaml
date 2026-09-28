@@ -10,3 +10,7 @@ services:
   agent-ui: *keep-id
   ui-forward: *keep-id
   agent-omp: *keep-id
+  llama-exporter: *keep-id
+  victoriametrics: *keep-id
+  grafana: *keep-id
+  gpu-exporter: *keep-id

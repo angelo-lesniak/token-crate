@@ -142,9 +142,24 @@ class PinResolverTests(unittest.TestCase):
         self.assertEqual(result.notes, ("  Image tags: https://hub.docker.com/r/oven/bun/tags",))
 
     def test_the_components_are_exactly_the_pinned_images_and_packages(self) -> None:
-        self.assertEqual(checkpins.COMPONENTS, ("llama-cpp", "pi", "omp", "node", "bun"))
+        self.assertEqual(checkpins.COMPONENTS, ("llama-cpp", "pi", "omp", "node", "bun", "victoriametrics", "grafana"))
         with self.assertRaisesRegex(TokenCrateError, "unknown pin component: cuda"):
             checkpins.resolve_component("cuda", {"CUDA_MIN_DRIVER_MAJOR": "580"})
+
+    def test_the_dashboard_images_follow_release_tags_within_their_major(self) -> None:
+        values = {"VICTORIAMETRICS_TAG": "v1.150.0", "GRAFANA_TAG": "13.2.2"}
+        published = {
+            tag: f"sha256:{index:064x}" for index, tag in enumerate(["v1.152.0", "v1.152.0-cluster", "v1.151.0"])
+        }
+        with mock.patch.object(checkpins, "docker_hub_tags", return_value=published) as listed:
+            result = checkpins.resolve_component("victoriametrics", values)
+        listed.assert_called_once_with("victoriametrics", "victoria-metrics", "v1.")
+        self.assertEqual((result.key, result.latest, result.digest), ("VICTORIAMETRICS_TAG", "v1.152.0", "00" * 32))
+        published = {tag: f"sha256:{index:064x}" for index, tag in enumerate(["13.2.2", "13.2.2-ubuntu", "13.3.0"])}
+        with mock.patch.object(checkpins, "docker_hub_tags", return_value=published) as listed:
+            result = checkpins.resolve_component("grafana", values)
+        listed.assert_called_once_with("grafana", "grafana", "13.")
+        self.assertEqual((result.key, result.latest), ("GRAFANA_TAG", "13.3.0"))
 
     def test_request_rejects_non_https_url_before_opening_it(self) -> None:
         with (
@@ -176,6 +191,8 @@ class ReportTests(unittest.TestCase):
             "omp": current("omp", "OMP_VERSION", "18.1.18"),
             "node": current("node", "NODE_TAG", "24.21.0-bookworm-slim"),
             "bun": current("bun", "BUN_TAG", "1.4.2-slim"),
+            "victoriametrics": current("victoriametrics", "VICTORIAMETRICS_TAG", "v1.152.0"),
+            "grafana": current("grafana", "GRAFANA_TAG", "13.2.2"),
         }
         with (
             mock.patch.object(
@@ -194,6 +211,8 @@ class ReportTests(unittest.TestCase):
             "omp: 18.1.18 (latest eligible)\n"
             "node: 24.21.0-bookworm-slim (latest eligible)\n"
             "bun: 1.4.2-slim (latest eligible)\n"
+            "victoriametrics: v1.152.0 (latest eligible)\n"
+            "grafana: 13.2.2 (latest eligible)\n"
             "\n"
             "Paste into pins.env:\n"
             # The digest belongs to the tag above it; a version pin has none.
@@ -262,7 +281,9 @@ class ReportTests(unittest.TestCase):
         with (
             mock.patch.object(checkpins, "resolve_component") as resolve,
             self.assertRaisesRegex(
-                TokenCrateError, "unknown pin component 'rust'; choose from: llama-cpp, pi, omp, node, bun, all"
+                TokenCrateError,
+                "unknown pin component 'rust'; choose from: llama-cpp, pi, omp, node, bun, "
+                "victoriametrics, grafana, all",
             ),
         ):
             checkpins.check("rust", {"X": "1"})

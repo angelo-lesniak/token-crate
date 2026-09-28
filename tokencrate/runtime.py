@@ -78,14 +78,26 @@ def config_digest(settings: Settings) -> str:
     return hashlib.sha256((settings.build_dir / presets.CONFIG_FILE_NAME).read_bytes()).hexdigest()
 
 
+# The dashboard profile's services, started by name: `compose up llama`
+# starts llama alone, and a profile flag by itself starts nothing. The GPU
+# exporter has its own profile, added when the stack uses the GPU.
+DASHBOARD_SERVICES = ("llama-exporter", "victoriametrics", "grafana")
+DASHBOARD_GPU_SERVICE = "gpu-exporter"
+DASHBOARD_RETENTION = "90 days"
+
+
 def start_stack(settings: Settings, engine: Engine, configuration: presets.Configuration, timeout: int) -> None:
     """Render presets against the downloaded model files, build the runtime
     image, start the llama service in the background, and wait until it is
     ready. The rendered preset file's hash travels as a container label, so
     Compose recreates the container when the file changed and keeps it
-    otherwise."""
+    otherwise. With LLM_DASHBOARD=true the dashboard profile follows."""
     with engine.lock():
         engine.require_port("llama", settings.port)
+        if settings.dashboard:
+            if settings.dashboard_port == settings.port:
+                raise TokenCrateError("LLM_DASHBOARD_PORT must differ from LLM_PORT")
+            engine.require_port("grafana", settings.dashboard_port)
         rendered = render(settings, configuration)
         default_preset = settings.default_preset
         if default_preset and default_preset not in {item.preset.name for item in rendered if item.loadable}:
@@ -98,6 +110,23 @@ def start_stack(settings: Settings, engine: Engine, configuration: presets.Confi
         engine.compose("build", "llama", **extra)
         engine.compose("up", "--no-build", "--detach", "llama", **extra)
         wait_until_ready(settings, engine, timeout)
+        if settings.dashboard:
+            start_dashboard(settings, engine)
+
+
+def start_dashboard(settings: Settings, engine: Engine) -> None:
+    """The dashboard profile beside the running model: VictoriaMetrics'
+    samples live under data/dashboard, Grafana answers on loopback."""
+    (settings.root / "data" / "dashboard" / "victoria").mkdir(parents=True, exist_ok=True)
+    services, profiles = list(DASHBOARD_SERVICES), ["dashboard"]
+    if settings.gpu:
+        services.append(DASHBOARD_GPU_SERVICE)
+        profiles.append("dashboard-gpu")
+    engine.compose("up", "--no-build", "--detach", *services, profiles=tuple(profiles))
+    print(
+        f"Dashboard at http://127.0.0.1:{settings.dashboard_port}/ "
+        f"(Grafana over VictoriaMetrics; the samples of the last {DASHBOARD_RETENTION} stay under data/dashboard)"
+    )
 
 
 def stop_stack(engine: Engine) -> None:
@@ -128,7 +157,7 @@ def require_isolated_networks(engine: Engine) -> None:
     overlay, or by hand under the project's name, would keep its options
     silently. `up` refuses before any download, and every agent session
     refuses before its container starts, until the network is gone."""
-    for network in ("agents", "ui"):
+    for network in ("agents", "ui", "dashboard"):
         document = engine.network_document(network, missing_ok=True)
         if document is None:
             continue

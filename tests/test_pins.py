@@ -26,6 +26,12 @@ class PinsTests(unittest.TestCase):
             "NODE_DIGEST": "b" * 64,
             "BUN_TAG": "1.4.2-slim",
             "BUN_DIGEST": "c" * 64,
+            "VICTORIAMETRICS_TAG": "v1.152.0",
+            "VICTORIAMETRICS_DIGEST": "d" * 64,
+            "GRAFANA_TAG": "13.2.2",
+            "GRAFANA_DIGEST": "e" * 64,
+            "DCGM_EXPORTER_TAG": "4.6.1-4.8.4",
+            "DCGM_EXPORTER_DIGEST": "f" * 64,
             "CUDA_MIN_DRIVER_MAJOR": "580",
         }
         values.update(overrides)
@@ -72,7 +78,7 @@ class PinsTests(unittest.TestCase):
     def test_a_malformed_line_names_its_number(self) -> None:
         self.write()
         self.path.write_text(self.path.read_text() + "not a pin\n")
-        with self.assertRaisesRegex(TokenCrateError, r"pins\.env:12: expected KEY=VALUE"):
+        with self.assertRaisesRegex(TokenCrateError, r"pins\.env:18: expected KEY=VALUE"):
             env.load_pins(self.path)
         self.write()
         self.path.write_text(self.path.read_text().replace("PI_VERSION=", "export PI_VERSION=", 1))

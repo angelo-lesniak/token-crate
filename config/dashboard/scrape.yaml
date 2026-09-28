@@ -1,0 +1,14 @@
+# VictoriaMetrics scrape targets of the dashboard profile: the llama
+# exporter (services/dashboard/llama-exporter.js), which reads the router's
+# counters for the loaded preset only, and the GPU exporter, which exists
+# only with LLM_GPU=true (the job reports down without it). Every 15
+# seconds, kept for the retention compose.yaml sets.
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: llama
+    static_configs:
+      - targets: ["llama-exporter:9100"]
+  - job_name: gpu
+    static_configs:
+      - targets: ["gpu-exporter:9400"]
