@@ -13,3 +13,4 @@ x-isolated: &isolated
 networks:
   agents: *isolated
   ui: *isolated
+  dashboard: *isolated

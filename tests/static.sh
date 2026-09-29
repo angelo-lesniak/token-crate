@@ -39,8 +39,13 @@ shell_files=(
 for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
+node --check config/agent-sets/metrics/timings/index.js
 node --check config/agent-sets/web/js-debug-adapter
 node --check services/agents/ui-forward.js
+node --check services/dashboard/llama-exporter.js
+node --check tokencrate/pages/live.js
+node --check tokencrate/pages/stats.js
+node --check tokencrate/pages/vendor/uPlot.iife.js
 
 # Each module imports on its own: the unit tests import them in one order,
 # which can hide an import cycle that another entry point runs into.
@@ -125,6 +130,9 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   render_compose docker --file compose.yaml --file compose.gpu.yaml --file compose.docker.yaml \
     --file compose.agent-egress.yaml --profile agent-pi --profile agent-omp
   render_compose docker --file compose.yaml --file compose.docker.yaml --profile ui
+  render_compose docker --file compose.yaml --file compose.docker.yaml --profile dashboard
+  render_compose docker --file compose.yaml --file compose.gpu.yaml --file compose.docker.yaml \
+    --profile dashboard --profile dashboard-gpu
 fi
 
 if [[ "$compose_validated" != true ]]; then

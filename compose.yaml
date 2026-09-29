@@ -151,7 +151,7 @@ services:
       - "127.0.0.1:${LLM_PORT:-4207}:8080"
     # The GPU device request lives in compose.gpu.yaml so CPU-only checks can
     # run the same image without a CDI device.
-    networks: [default, agents, ui]
+    networks: [default, agents, ui, dashboard]
     volumes:
       - type: bind
         source: "${LLM_MODELS_DIR:-./data/models}"
@@ -333,6 +333,146 @@ services:
       - *agent-skills-mount
       - *agent-local-skills-mount
 
+  # --- The dashboard profile (LLM_DASHBOARD=true): the model server's
+  # --- counters over weeks. The exporter reads them from the router for the
+  # --- loaded preset only (services/dashboard/llama-exporter.js says why),
+  # --- VictoriaMetrics scrapes the exporter and keeps the samples under
+  # --- data/dashboard, and Grafana shows the provisioned dashboards on
+  # --- loopback. All three sit on the internal `dashboard` network with
+  # --- the model; Grafana also joins `dashboard-publish` for its port, the
+  # --- way a UI forwarder does. No agent reaches any of them.
+  llama-exporter:
+    image: "docker.io/library/node:${NODE_TAG:?pin it in pins.env}@sha256:${NODE_DIGEST:?pin it in pins.env}"
+    profiles: ["dashboard"]
+    init: true
+    read_only: true
+    pids_limit: 64
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    networks: [dashboard]
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=16m"
+    environment:
+      HOME: /tmp
+      LLAMA_URL: http://llama:8080
+      STORE_URL: http://victoriametrics:8428
+    volumes:
+      - type: bind
+        source: "${TOKENCRATE_ROOT:?set by bin/tokencrate}/services/dashboard/llama-exporter.js"
+        target: /etc/tokencrate/llama-exporter.js
+        read_only: true
+    command: ["node", "/etc/tokencrate/llama-exporter.js"]
+
+  victoriametrics:
+    image: "docker.io/victoriametrics/victoria-metrics:${VICTORIAMETRICS_TAG:?pin it in pins.env}@sha256:${VICTORIAMETRICS_DIGEST:?pin it in pins.env}"
+    profiles: ["dashboard"]
+    init: true
+    read_only: true
+    pids_limit: 256
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    networks: [dashboard]
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"
+    volumes:
+      - type: bind
+        source: ./config/dashboard/scrape.yaml
+        target: /etc/tokencrate/scrape.yaml
+        read_only: true
+      # The samples, kept for the retention below; the one host path the
+      # profile writes.
+      - type: bind
+        source: ./data/dashboard/victoria
+        target: /victoria-metrics-data
+    command:
+      - "-promscrape.config=/etc/tokencrate/scrape.yaml"
+      - "-promscrape.config.strictParse"
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=90d"
+      # Queries see samples as soon as they are scraped; the default hides
+      # the last 30 seconds, which put Grafana a minute behind the card.
+      - "-search.latencyOffset=1s"
+      - "-httpListenAddr=:8428"
+      - "-loggerLevel=WARN"
+
+  grafana:
+    image: "docker.io/grafana/grafana:${GRAFANA_TAG:?pin it in pins.env}@sha256:${GRAFANA_DIGEST:?pin it in pins.env}"
+    profiles: ["dashboard"]
+    init: true
+    read_only: true
+    pids_limit: 256
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    networks: [dashboard-publish, dashboard]
+    ports:
+      # Loopback only. Grafana listens on 8080 like every published service,
+      # which is the port the wrapper's port check reads.
+      - "127.0.0.1:${LLM_DASHBOARD_PORT:-4211}:8080"
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"
+      # Grafana's database, plugins, and logs: nothing to keep, since the
+      # dashboards and the datasource are files in the repository.
+      - "/var/lib/grafana:rw,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
+      - "/var/log/grafana:rw,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=64m"
+    environment:
+      HOME: /tmp
+      GF_SERVER_HTTP_PORT: "8080"
+      GF_PATHS_PROVISIONING: /etc/tokencrate/provisioning
+      # No password, like the browser UIs: anyone on this host may read the
+      # dashboards, and nobody may change them (Viewer; the login form and
+      # basic auth are off, so the built-in admin account is unreachable).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Every request Grafana would make of its own: usage reports, update
+      # checks, the plugin catalogue (Grafana 13 would otherwise re-install
+      # its Prometheus plugin from grafana.com at start), plugin signing
+      # keys, the news feed, feedback links.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+    volumes:
+      - type: bind
+        source: ./config/dashboard/grafana
+        target: /etc/tokencrate/provisioning
+        read_only: true
+
+  # The GPU's own numbers for the dashboard (profile `dashboard-gpu`, which
+  # `up` adds to the dashboard profile when LLM_GPU is true): NVIDIA's
+  # dcgm-exporter with its default counters, on the CDI device from
+  # compose.gpu.yaml, as the host user like every service. Its image
+  # declares root and NVIDIA_VISIBLE_DEVICES=all; neither is needed, and
+  # the llama service's `void` keeps CDI the only device source.
+  gpu-exporter:
+    image: "nvcr.io/nvidia/k8s/dcgm-exporter:${DCGM_EXPORTER_TAG:?pin it in pins.env}@sha256:${DCGM_EXPORTER_DIGEST:?pin it in pins.env}"
+    profiles: ["dashboard-gpu"]
+    init: true
+    read_only: true
+    pids_limit: 256
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    networks: [dashboard]
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"
+    environment:
+      HOME: /tmp
+      NVIDIA_VISIBLE_DEVICES: void
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
 networks:
   default:
   # Internal: containers on this network reach each other and no external
@@ -346,3 +486,8 @@ networks:
     internal: true
   # Only forwarders, so their published ports have a route to the host.
   ui-publish:
+  # The dashboard profile with the model; no agent.
+  dashboard:
+    internal: true
+  # Grafana alone, for its published port.
+  dashboard-publish:

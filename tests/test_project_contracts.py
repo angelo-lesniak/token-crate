@@ -33,6 +33,9 @@ BUILD_PIN_KEYS = set(PIN_KEYS) - {"CUDA_MIN_DRIVER_MAJOR"}
 AGENT_SERVICES = ("agent-pi", "agent-omp")
 # The browser-UI service is the pi image with another command; the forwarder publishes it.
 UI_SERVICES = ("agent-ui", "ui-forward")
+# The dashboard profile: the exporter on the Node image, VictoriaMetrics, Grafana,
+# and with the GPU the DCGM exporter in its own profile.
+DASHBOARD_SERVICES = ("llama-exporter", "victoriametrics", "grafana", "gpu-exporter")
 # oh-my-pi reads its global context file from the home, so the repository's
 # copy is bound there read-only. Both agents take their settings from
 # /etc/tokencrate through the entrypoint, which writes them into the home.
@@ -48,8 +51,9 @@ COMPOSE_FILES = (
     "compose.agent-egress.yaml",
 )
 # The internal networks: agents and the model; the browser UI, the model, and
-# the forwarder. ui-publish carries the forwarder's published port alone.
-INTERNAL_NETWORKS = ("agents", "ui")
+# the forwarder; the dashboard profile and the model. ui-publish carries the
+# forwarder's published port alone, dashboard-publish Grafana's.
+INTERNAL_NETWORKS = ("agents", "ui", "dashboard")
 HOME_TMPFS_OPTIONS = (
     "rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
 )
@@ -228,27 +232,34 @@ class ProjectContractTests(unittest.TestCase):
             "1",
             "the llama service must set LLAMA_ARG_OFFLINE=1 so no model server downloads files at start",
         )
-        devices = load_yaml("compose.gpu.yaml").get("services", {}).get("llama", {}).get("devices")
-        self.assertEqual(
-            devices,
-            ["${GPU_DEVICE:-nvidia.com/gpu=all}"],
-            "compose.gpu.yaml must request the CDI device ${GPU_DEVICE:-nvidia.com/gpu=all} for llama",
-        )
+        gpu_services = load_yaml("compose.gpu.yaml").get("services", {})
+        self.assertEqual(set(gpu_services), {"llama", "gpu-exporter"}, "compose.gpu.yaml covers the GPU users")
+        for name, service in gpu_services.items():
+            self.assertEqual(
+                service.get("devices"),
+                ["${GPU_DEVICE:-nvidia.com/gpu=all}"],
+                f"compose.gpu.yaml must request the CDI device ${{GPU_DEVICE:-nvidia.com/gpu=all}} for {name}",
+            )
+        exporter = self.service(compose, "gpu-exporter")
+        self.assertNotIn("devices", exporter, "the GPU exporter's device request belongs in compose.gpu.yaml")
+        self.assertEqual(exporter["environment"].get("NVIDIA_VISIBLE_DEVICES"), "void")
 
     def test_the_networks_are_internal_and_the_services_are_exactly_the_documented_ones(self) -> None:
         compose = load_yaml("compose.yaml")
         networks = compose.get("networks") or {}
         self.assertEqual(
             set(networks),
-            {"default", *INTERNAL_NETWORKS, "ui-publish"},
-            "compose.yaml must define exactly the default, agents, ui, and ui-publish networks",
+            {"default", *INTERNAL_NETWORKS, "ui-publish", "dashboard-publish"},
+            "compose.yaml must define exactly the default, agents, ui, dashboard, ui-publish, and "
+            "dashboard-publish networks",
         )
         for name in INTERNAL_NETWORKS:
             self.assertIs((networks.get(name) or {}).get("internal"), True, f"the {name} network must be internal")
-        self.assertFalse(
-            (networks.get("ui-publish") or {}).get("internal"),
-            "the ui-publish network must not be internal; it carries the forwarder's published port",
-        )
+        for name in ("ui-publish", "dashboard-publish"):
+            self.assertFalse(
+                (networks.get(name) or {}).get("internal"),
+                f"the {name} network must not be internal; it carries a published port",
+            )
         docker = load_yaml("compose.docker.yaml")
         self.assertEqual(
             {key for key in docker if not key.startswith("x-")},
@@ -266,8 +277,8 @@ class ProjectContractTests(unittest.TestCase):
                 )
         self.assertEqual(
             set(compose.get("services") or {}),
-            {"llama", *AGENT_SERVICES, *UI_SERVICES},
-            "compose.yaml must define exactly the llama, agent, and UI services; helpers run in-process",
+            {"llama", *AGENT_SERVICES, *UI_SERVICES, *DASHBOARD_SERVICES},
+            "compose.yaml must define exactly the llama, agent, UI, and dashboard services; helpers run in-process",
         )
 
     def test_agent_services_run_hardened_on_the_internal_network_with_a_tmpfs_home(self) -> None:
@@ -365,14 +376,75 @@ class ProjectContractTests(unittest.TestCase):
         # proves the same from the rendered `run` arguments.
         compose = load_yaml("compose.yaml")
         expected = {
-            "llama": ["default", "agents", "ui"],
+            "llama": ["default", "agents", "ui", "dashboard"],
             "agent-pi": ["agents"],
             "agent-omp": ["agents"],
             "agent-ui": ["ui"],
             "ui-forward": ["ui-publish", "ui"],
+            "llama-exporter": ["dashboard"],
+            "victoriametrics": ["dashboard"],
+            "grafana": ["dashboard-publish", "dashboard"],
+            "gpu-exporter": ["dashboard"],
         }
         for name, networks in expected.items():
             self.assertEqual(self.service(compose, name).get("networks"), networks, f"{name} must sit on {networks}")
+        # The profile's services are hardened like the rest, pull pinned
+        # images, and publish Grafana on loopback alone.
+        for name in DASHBOARD_SERVICES:
+            service = self.service(compose, name)
+            self.assert_hardened(name, service)
+            profile = "dashboard-gpu" if name == "gpu-exporter" else "dashboard"
+            self.assertEqual(service.get("profiles"), [profile], f"{name} must be in the {profile} profile")
+            self.assertRegex(str(service.get("image")), r"@sha256:\$\{[A-Z_]+_DIGEST:\?", f"{name} must pin a digest")
+            self.assertEqual(
+                [str(port) for port in service.get("ports") or []],
+                ["127.0.0.1:${LLM_DASHBOARD_PORT:-4211}:8080"] if name == "grafana" else [],
+                f"{name} publishes exactly what the profile documents",
+            )
+        grafana = self.service(compose, "grafana")
+        self.assertEqual(grafana["environment"].get("GF_AUTH_ANONYMOUS_ORG_ROLE"), "Viewer")
+        for switch in (
+            "GF_ANALYTICS_REPORTING_ENABLED",
+            "GF_ANALYTICS_CHECK_FOR_UPDATES",
+            "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES",
+            "GF_NEWS_NEWS_FEED_ENABLED",
+        ):
+            self.assertEqual(grafana["environment"].get(switch), "false", f"grafana must switch {switch} off")
+        for switch in ("GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED", "GF_PLUGINS_PREINSTALL_DISABLED"):
+            self.assertEqual(grafana["environment"].get(switch), "true", f"grafana must set {switch}")
+        self.assert_mount(
+            "grafana", grafana, "/etc/tokencrate/provisioning", "./config/dashboard/grafana", read_only=True
+        )
+        # The provisioned dashboard: valid JSON, read-only, every panel on
+        # the provisioned datasource, and no soft axis maximum (Grafana
+        # ignores it on a stat panel).
+        dashboard = json.loads(
+            (PROJECT_ROOT / "config/dashboard/grafana/dashboards/model-server.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual((dashboard["uid"], dashboard["editable"]), ("tokencrate-model-server", False))
+        self.assertEqual(dashboard["time"]["from"], "now-15m")
+        titles = [panel["title"] for panel in dashboard["panels"]]
+        self.assertEqual(
+            titles[:6],
+            [
+                "Requests processing",
+                "Requests queued",
+                "Generated tokens/s",
+                "Draft acceptance",
+                "Occupancy",
+                "Throughput",
+            ],
+        )
+        for panel in dashboard["panels"]:
+            self.assertEqual(panel["datasource"]["uid"], "tokencrate-victoriametrics", panel["title"])
+            self.assertNotIn("axisSoftMax", json.dumps(panel), panel["title"])
+        self.assert_mount(
+            "victoriametrics",
+            self.service(compose, "victoriametrics"),
+            "/etc/tokencrate/scrape.yaml",
+            "./config/dashboard/scrape.yaml",
+            read_only=True,
+        )
 
     def test_only_the_egress_overlay_moves_a_session_to_the_default_network(self) -> None:
         # The overlay replaces the network list (`!override`, which the

@@ -126,7 +126,10 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(list(config), ["*", *LOADABLE_PRESETS])
         # Every child inherits the shared section; the router adds host, port,
         # and alias itself, so no section names them.
-        self.assertEqual(config["*"], {"jinja": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"})
+        self.assertEqual(
+            config["*"],
+            {"jinja": "true", "metrics": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"},
+        )
         for forbidden in ("host", "port", "alias"):
             self.assertNotIn(forbidden, text)
         # Only the default preset loads at start; the file is plain `key = value` lines.
@@ -520,6 +523,16 @@ class PresetTests(unittest.TestCase):
             "[*]\njinja = true\n\n[a]\nmodel = /models/a.gguf\n\n[b]\nmodel = /models/b.gguf\n", encoding="utf-8"
         )
         self.assertEqual(presets.rendered_model_ids(output), {"a", "b"})
+        # The slots: ctx-size over parallel per section; the shared section,
+        # a hostile name, and a section without a whole-number ctx-size are
+        # left out.
+        self.assertEqual(presets.rendered_slots(self.workdir() / "elsewhere"), {})
+        path.write_text(
+            "[*]\njinja = true\nctx-size = 99\n\n[a]\nctx-size = 65536\nparallel = 2\n\n[b]\nctx-size = 32768\n\n"
+            "[<b>x]\nctx-size = 1024\n\n[c]\nctx-size = many\n\n[d]\nparallel = 4\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(presets.rendered_slots(output), {"a": 32768, "b": 32768})
 
 
 if __name__ == "__main__":

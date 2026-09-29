@@ -87,6 +87,63 @@ The defaults apply on a browser's first visit. A browser that has
 visited keeps its saved preferences; use **Reset to default** in the UI
 settings to replace them with the current server defaults.
 
+## Dashboard
+
+The settings `LLM_DASHBOARD` and `LLM_DASHBOARD_PORT` in `.env` select
+it: with `LLM_DASHBOARD=true`, [`up`](cli.md#up) starts three more
+containers beside the model, the Compose profile `dashboard`, with
+Grafana on the port `LLM_DASHBOARD_PORT` names:
+
+- `llama-exporter`, a script on the pinned Node image
+  (`services/dashboard/llama-exporter.js`) that asks the router every
+  5 seconds which preset is loaded and reads that preset's counters
+  (`GET /metrics?model=`) only when two consecutive polls reported it
+  loaded, since a request for another preset would load it; it serves
+  the numeric `llamacpp:` lines labelled with the preset, whether the
+  router answered, and the age of the last read, nothing else. The same
+  process is Grafana's only way to the store: a query gate that forwards
+  the Prometheus read paths and refuses everything else, since Grafana's
+  datasource proxy is open to every viewer;
+- `victoriametrics`, which scrapes the exporter every 15 seconds
+  (`config/dashboard/scrape.yaml`), answers queries with the newest
+  scraped sample (its default hides the last 30 seconds), and keeps the
+  samples for 90 days under `data/dashboard/victoria/`; a value the
+  router reports reaches the dashboard within about 20 seconds, so a
+  request shorter than a scrape interval can be missed by the gauges
+  and shows only in the rates;
+- `grafana`, on `http://127.0.0.1:4211/` (`LLM_DASHBOARD_PORT`), with
+  the datasource and the dashboard "TokenCrate model server" provisioned
+  from `config/dashboard/grafana/`, over the last 15 minutes by
+  default: a row of four numbers (requests processing and queued, the
+  generation rate, the draft acceptance of an MTP preset, which reads
+  "no draft model" otherwise), then Occupancy and Throughput as the two
+  charts the [stats page](cli.md#stats) draws, in the same colours,
+  busy slots per decode and the loaded preset as timelines, and the
+  GPU's utilization, memory, power, and temperature;
+- with `LLM_GPU=true`, `gpu-exporter`, NVIDIA's dcgm-exporter on the
+  CDI device, scraped like the llama exporter; without the GPU the two
+  GPU panels show no data.
+
+Grafana has no password: anyone on this host can read the dashboards
+and query the samples as an anonymous viewer, and nobody can change
+the dashboards or the samples through the browser (the login form and
+basic authentication are off, so the built-in admin account is
+unreachable, and the query gate keeps writes and deletions away from
+the store). A dashboard is a file: edit or add a
+JSON file under `config/dashboard/grafana/dashboards/` and restart with
+`down` and `up`. Grafana's own database and logs live on a tmpfs and
+are gone with the container; the samples are the one thing kept. Its
+usage reports, update checks, plugin-key fetches, and news feed are
+switched off in `compose.yaml`.
+
+The containers sit on the internal `dashboard` network with the
+model; Grafana also joins `dashboard-publish` for its port. No agent
+container reaches any of them ([Privacy and
+containment](privacy.md#defaults-and-their-limits)). `down` removes
+them with the rest; `status` lists them. The live panel of
+[`stats --serve`](cli.md#stats) shows the same counters for the last
+ten minutes without any of this.
+
 ## Storage layout
 
 | Default path | Contents |
@@ -101,8 +158,10 @@ settings to replace them with the current server defaults.
 | `build/agents/pi/<digest>/{pi-packages.txt,AGENTS.md,pi-lens.json,checks/}` | Generated set configuration and the sets' check scripts, copied into the image |
 | `build/agents/omp/models.yml` | Generated oh-my-pi model list, stored as JSON text |
 | `build/locks/<engine>-<project-hash>.lock` | Lock for model/UI startup and shutdown; two checkouts with one `COMPOSE_PROJECT_NAME` on one engine share the stack but not the lock |
+| `build/stats-serve.pid`, `build/stats-serve.log` | The process and port of a stats page served with `stats --serve --detach`, and its log |
 | `local/cloud-keys.env` | The cloud keys file (`LLM_CLOUD_KEYS_FILE`), copied from `cloud-keys.env.example`; mounted only by `agent --cloud` and `ui --cloud` |
-| `reports/` | Smoke and benchmark reports |
+| `reports/` | Smoke, bench, and stats reports; `bench` writes its measurements as JSON (what `bench --history` reads) and `stats` its page as HTML next to the Markdown |
+| `data/dashboard/victoria/` | The [dashboard](#dashboard)'s samples, 90 days of the model server's counters |
 
 In the model library, `<source>` is the manifest's path: a filename, or
 a quantization directory and filename for a split set.
@@ -177,6 +236,12 @@ rejects anything else.
 | `NODE_DIGEST` | sha256 of that tag's manifest list |
 | `BUN_TAG` | Tag of the `oven/bun` base image of the oh-my-pi agent |
 | `BUN_DIGEST` | sha256 of that tag's manifest list |
+| `VICTORIAMETRICS_TAG` | Tag of the `victoriametrics/victoria-metrics` image of the [dashboard](#dashboard) |
+| `VICTORIAMETRICS_DIGEST` | sha256 of that tag's manifest list |
+| `GRAFANA_TAG` | Tag of the `grafana/grafana` image of the dashboard |
+| `GRAFANA_DIGEST` | sha256 of that tag's manifest list |
+| `DCGM_EXPORTER_TAG` | Tag of the `nvcr.io/nvidia/k8s/dcgm-exporter` image of the dashboard's GPU exporter (a DCGM version paired with the exporter's) |
+| `DCGM_EXPORTER_DIGEST` | sha256 of that tag's manifest list |
 | `CUDA_MIN_DRIVER_MAJOR` | Minimum NVIDIA driver major that `doctor` enforces |
 
 Base images are pinned by tag and manifest digest. pi includes its
@@ -190,7 +255,10 @@ Compose reads `pins.env` through `--env-file` and refuses to build if a
 required pin is missing. Each base image is pulled as
 `<name>:<tag>@sha256:<digest>`, so moving a tag cannot change the build's
 base image. Builds also check that llama.cpp, Node, and Bun report the
-versions named by their tags.
+versions named by their tags. The dashboard images are run as pulled;
+`pins check` offers newer release tags of VictoriaMetrics and Grafana
+within the pinned major, so a new major of either is a manual choice;
+the GPU exporter's tag on nvcr.io is looked up by hand.
 
 Image names are fixed in `compose.yaml`; two checkouts on one engine share
 the images of equal pins and selections:

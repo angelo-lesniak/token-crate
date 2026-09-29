@@ -1,0 +1,10 @@
+# The dashboards are files in this directory; Grafana loads them at start
+# and keeps them read-only (a change is a change to the file).
+apiVersion: 1
+providers:
+  - name: tokencrate
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/tokencrate/provisioning/dashboards

@@ -4,20 +4,23 @@
 completion, a streamed tool call, and a system message in the middle of a
 conversation (the case the stock Qwen3.8 template rejects). `bench` measures
 prompt-processing and generation speed from llama-server's `timings` object.
-The report functions return Markdown text; the CLI runs the probe on the host
-against the published loopback port, prints the report, and saves it under
-reports/.
+The report functions return Markdown text (`bench_json` the machine-readable
+side of the bench); the CLI runs the probe on the host against the published
+loopback port, prints the report, and saves it under reports/.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 
-from . import TokenCrateError
+from . import TokenCrateError, stats
 from .localhttp import request
+from .names import PRESET_NAME_RE
 
 # A chat completion may be the first request, so it waits for the load, and
 # then for up to ANSWER_TOKENS at the slowest shipped preset (a model with
@@ -264,6 +267,17 @@ def smoke(
             raise TokenCrateError("tokenize returned no tokens")
         return f"{len(tokens)} tokens for 'hello world'"
 
+    def metrics_counters():
+        # The renderer turns the counters on for every child ([*] metrics);
+        # this proves the pinned build serves them for the probed preset.
+        body = request(f"{url}/metrics?model={urllib.parse.quote(model, safe='')}", timeout=120)
+        if not isinstance(body, str):
+            raise TokenCrateError("the /metrics response is not Prometheus text")
+        names = sorted({line.split("{")[0].split(" ")[0] for line in body.splitlines() if line.startswith("llamacpp:")})
+        if not names:
+            raise TokenCrateError("no llamacpp counters in the /metrics response")
+        return f"{len(names)} llamacpp metric(s), including {names[0]}"
+
     def template_render():
         # llama-server renders the chat template without generating, so this
         # proves the (patched) template accepts a system message after the
@@ -302,6 +316,7 @@ def smoke(
         record("template keeps later system messages", template_render)
     record("reasoning effort reaches the template", effort_reaches_template)
     record("tokenize", tokenize)
+    record("metrics counters", metrics_counters)
     return results
 
 
@@ -322,10 +337,7 @@ def bench(url: str, presets: list[str], iterations: int, long: bool) -> list[dic
         if long:
             runs.append(("long", bench_prompt(8000)))
         for label, prompt in runs:
-            prompt_speeds: list[float] = []
-            generation_speeds: list[float] = []
-            prompt_tokens = 0
-            generated_tokens = 0
+            samples: list[dict] = []
             for _ in range(iterations):
                 # cache_prompt=False makes every iteration process the whole
                 # prompt again; otherwise llama-server reuses the cached prefix
@@ -341,19 +353,28 @@ def bench(url: str, presets: list[str], iterations: int, long: bool) -> list[dic
                 timings = response.get("timings") or {}
                 if not timings:
                     raise TokenCrateError("the response has no timings object; is this llama-server?")
-                prompt_speeds.append(float(timings.get("prompt_per_second") or 0))
-                generation_speeds.append(float(timings.get("predicted_per_second") or 0))
-                prompt_tokens = int(timings.get("prompt_n") or 0)
-                generated_tokens = int(timings.get("predicted_n") or 0)
+                # Every iteration's timings, for the JSON report: prompt_ms
+                # is the wait before the first token of this request.
+                samples.append(
+                    {
+                        "prompt_n": int(timings.get("prompt_n") or 0),
+                        "predicted_n": int(timings.get("predicted_n") or 0),
+                        "prompt_ms": float(timings.get("prompt_ms") or 0),
+                        "predicted_ms": float(timings.get("predicted_ms") or 0),
+                        "prompt_per_second": float(timings.get("prompt_per_second") or 0),
+                        "predicted_per_second": float(timings.get("predicted_per_second") or 0),
+                    }
+                )
             rows.append(
                 {
                     "preset": preset,
                     "run": label,
-                    "prompt_tokens": prompt_tokens,
-                    "generated_tokens": generated_tokens,
-                    "prompt_tps": sum(prompt_speeds) / len(prompt_speeds),
-                    "generation_tps": sum(generation_speeds) / len(generation_speeds),
+                    "prompt_tokens": samples[-1]["prompt_n"],
+                    "generated_tokens": samples[-1]["predicted_n"],
+                    "prompt_tps": sum(sample["prompt_per_second"] for sample in samples) / len(samples),
+                    "generation_tps": sum(sample["predicted_per_second"] for sample in samples) / len(samples),
                     "iterations": iterations,
+                    "samples": samples,
                 }
             )
     return rows
@@ -413,5 +434,122 @@ def bench_report(url: str, rows: list[dict], facts: dict) -> str:
     lines += [
         "",
         "Speeds are averages of llama-server's per-request `timings` with prompt caching disabled for the request.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def bench_json(url: str, rows: list[dict], facts: dict) -> str:
+    """The bench measurements as JSON, saved next to the Markdown report:
+    six `timings` values per iteration for every preset and run, with the
+    build, so one llama.cpp build's numbers can be compared against
+    another's."""
+    document = {
+        "schema": 1,
+        "date": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "endpoint": url,
+        "build": facts.get("build"),
+        "n_ctx": facts.get("n_ctx"),
+        "rows": rows,
+    }
+    return json.dumps(document, indent=2) + "\n"
+
+
+# --- bench --history ---------------------------------------------------------
+
+# The files `bench` saves: the stem is the wrapper's own timestamp, which
+# dates and orders the history; the JSON's own `date` is not read.
+BENCH_FILE_RE = re.compile(r"bench-(\d{8})-(\d{6})\.json")
+BENCH_FILE_LIMIT = 1024 * 1024
+BUILD_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+BENCH_RUNS = ("short", "long")
+HISTORY_HEADER = (
+    "| Preset | Run | Date | n_ctx | Build | Prompt tokens | Prompt tokens/s | Generation tokens/s "
+    "| Δ generation | Iterations |",
+    "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+)
+NO_HISTORY = (
+    "No bench history: `bench` writes reports/bench-<timestamp>.json next to its report, and the history is "
+    "this machine's (reports/ is not tracked)."
+)
+
+
+def bench_history_rows(reports_dir: Path) -> list[str]:
+    """One Markdown row per measured run of every `bench` JSON under
+    `reports_dir`, grouped by preset and run, oldest first within a group,
+    with the change in generation speed against the previous row of the
+    group when both ran at the same `n_ctx`. A file that is not a bench
+    document is skipped whole, a row that is not a measurement is skipped,
+    and nothing but the build, `n_ctx`, the preset, the run label, and the
+    numbers reaches the table, in the shapes the writer above produces."""
+    measured = []
+    for path in sorted(reports_dir.glob("bench-*.json")):
+        match = BENCH_FILE_RE.fullmatch(path.name)
+        if match is None:
+            continue
+        try:
+            if not path.is_file() or path.stat().st_size > BENCH_FILE_LIMIT:
+                continue
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # gone, unreadable, malformed, or an integer past the digit limit
+            continue
+        if not isinstance(document, dict) or document.get("schema") != 1 or not isinstance(document.get("rows"), list):
+            continue
+        build = document.get("build")
+        build = build if isinstance(build, str) and BUILD_RE.fullmatch(build) else "?"
+        n_ctx = document.get("n_ctx")
+        n_ctx = n_ctx if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx >= 0 else None
+        day, clock = match.group(1), match.group(2)
+        date = f"{day[:4]}-{day[4:6]}-{day[6:]} {clock[:2]}:{clock[2:4]}"
+        for row in document["rows"]:
+            if not isinstance(row, dict):
+                continue
+            preset, run = row.get("preset"), row.get("run")
+            prompt_tps, generation_tps = (
+                stats.duration(row.get("prompt_tps")),
+                stats.duration(row.get("generation_tps")),
+            )
+            if (
+                not isinstance(preset, str)
+                or not PRESET_NAME_RE.fullmatch(preset)
+                or len(preset) > 64
+                or run not in BENCH_RUNS
+                or prompt_tps is None
+                or generation_tps is None
+                or min(prompt_tps, generation_tps) < 0
+            ):
+                continue
+            measured.append((preset, BENCH_RUNS.index(run), date, n_ctx, build, row, prompt_tps, generation_tps))
+    rows = []
+    previous = None
+    for preset, run_index, date, n_ctx, build, row, prompt_tps, generation_tps in sorted(
+        measured, key=lambda item: item[:3]
+    ):
+        same_group = (
+            previous is not None and previous[:2] == (preset, run_index) and n_ctx is not None and previous[2] == n_ctx
+        )
+        delta = f"{round(generation_tps - previous[3], 1) + 0.0:+.1f}" if same_group else ""
+        previous = (preset, run_index, n_ctx, generation_tps)
+        rows.append(
+            f"| {preset} | {BENCH_RUNS[run_index]} | {date} | {n_ctx if n_ctx is not None else '?'} | {build} | "
+            f"{stats.integer(row.get('prompt_tokens'))} | {prompt_tps:.1f} | {generation_tps:.1f} | {delta} | "
+            f"{stats.integer(row.get('iterations'))} |"
+        )
+    return rows
+
+
+def bench_history(reports_dir: Path) -> str:
+    """The Markdown bench history: the measurements of every saved run, so
+    a llama.cpp pin bump or a preset change shows next to what came before."""
+    lines = ["# TokenCrate bench history", ""]
+    rows = bench_history_rows(reports_dir)
+    if not rows:
+        lines.append(NO_HISTORY)
+    else:
+        lines += [*HISTORY_HEADER, *rows]
+    lines += [
+        "",
+        "One row per measured run of every reports/bench-<timestamp>.json, grouped by preset and run, oldest "
+        "first within a group; the numbers are the report's averages over its iterations. Δ generation is the "
+        "change in generation tokens/s against the row above when both ran at the same n_ctx.",
     ]
     return "\n".join(lines) + "\n"

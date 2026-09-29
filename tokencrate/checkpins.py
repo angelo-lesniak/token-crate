@@ -37,7 +37,7 @@ MANIFEST_ACCEPT = ", ".join(
         "application/vnd.docker.distribution.manifest.v2+json",
     )
 )
-COMPONENTS = ("llama-cpp", "pi", "omp", "node", "bun")
+COMPONENTS = ("llama-cpp", "pi", "omp", "node", "bun", "victoriametrics", "grafana")
 NPM_PACKAGES = {
     "pi": ("PI_VERSION", "@earendil-works/pi-coding-agent"),
     "omp": ("OMP_VERSION", "@oh-my-pi/pi-coding-agent"),
@@ -344,6 +344,31 @@ def resolve_component(component: str, values: dict[str, str]) -> Resolution:
             "bun",
             re.compile(rf"^{STABLE_TAG_RE}-slim$"),
             "slim",
+        )
+    # The dashboard images: plain release tags, listed within the pinned
+    # major (Docker Hub lists thousands of Grafana tags), so a new major is
+    # a manual choice.
+    if component == "victoriametrics":
+        current = required_value(values, "VICTORIAMETRICS_TAG")
+        return resolve_tag(
+            component,
+            "VICTORIAMETRICS_TAG",
+            values,
+            "victoriametrics",
+            "victoria-metrics",
+            re.compile(rf"^v{STABLE_TAG_RE}$"),
+            current.split(".")[0] + ".",
+        )
+    if component == "grafana":
+        current = required_value(values, "GRAFANA_TAG")
+        return resolve_tag(
+            component,
+            "GRAFANA_TAG",
+            values,
+            "grafana",
+            "grafana",
+            re.compile(rf"^{STABLE_TAG_RE}$"),
+            current.split(".")[0] + ".",
         )
     raise TokenCrateError(f"unknown pin component: {component}")
 

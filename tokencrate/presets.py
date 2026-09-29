@@ -31,10 +31,13 @@ MODELS_ROOT_IN_CONTAINER = "/models"
 CHAT_TEMPLATES_IN_CONTAINER = "/etc/tokencrate/chat-templates"
 UI_CONFIG_IN_CONTAINER = "/etc/tokencrate/ui-config.json"
 # The [*] section, which every child server inherits: the Jinja template
-# engine (tool calls and chat_template_kwargs) and the UI defaults (the
-# router loads the same file for the UI at the root; the UI reads whichever
+# engine (tool calls and chat_template_kwargs), the Prometheus counters
+# (GET /metrics?model= on the loopback port; smoke checks them, and a
+# request for an unloaded preset is expected to load it first), and the
+# UI defaults (the router
+# loads the same file for the UI at the root; the UI reads whichever
 # /props it fetched last).
-SHARED_KEYS = (("jinja", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
+SHARED_KEYS = (("jinja", "true"), ("metrics", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
 SECTION_RE = re.compile(r"^\[([^\]]+)\]$", re.MULTILINE)
 # The choices are the values the shipped presets use or a validation
 # record has measured; a value llama-server accepts but no preset has run
@@ -484,3 +487,21 @@ def rendered_model_ids(output_dir: Path) -> set[str]:
     except FileNotFoundError:
         return set()
     return set(SECTION_RE.findall(text)) - {"*"}
+
+
+def rendered_slots(output_dir: Path) -> dict[str, int]:
+    """Each rendered preset's context per slot (`ctx-size` over `parallel`,
+    as the file above spells them) by model id, read back from the rendered
+    preset file; empty when nothing has been rendered yet. A section
+    without a whole-number `ctx-size` is left out."""
+    try:
+        text = (output_dir / CONFIG_FILE_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    slots = {}
+    parts = re.split(r"^\[([^\]]+)\]$", text, flags=re.MULTILINE)
+    for name, body in zip(parts[1::2], parts[2::2], strict=True):
+        keys = dict(re.findall(r"^([a-z-]+) = (\d+)$", body, flags=re.MULTILINE))
+        if name != "*" and PRESET_NAME_RE.fullmatch(name) and "ctx-size" in keys:
+            slots[name] = int(keys["ctx-size"]) // max(1, int(keys.get("parallel", 1)))
+    return slots

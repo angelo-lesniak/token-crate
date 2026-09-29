@@ -24,8 +24,8 @@ General rules:
   `doctor`, `smoke`, `agent`, and `ui` accept it once; `bench` accepts it
   several times, but not the same preset twice.
 - Every other flag that takes a value (`--timeout`, `--iterations`,
-  `--sets`, `--port`, `--dir`, `--agent`) is refused when given twice.
-  `--model-set` can repeat.
+  `--sets`, `--port`, `--dir`, `--agent`, `--since`) is refused when
+  given twice. `--model-set` can repeat.
 
 ## init
 
@@ -120,14 +120,18 @@ In order:
    slot, `up` reports it and leaves the default to load on first request.
    With no default set, the router's response is enough.
 7. Prints the address of the API and the built-in chat UI.
+8. With `LLM_DASHBOARD=true`, starts the
+   [dashboard](configuration.md#dashboard) profile beside the model
+   (pulling its pinned images on the first start) and prints Grafana's
+   loopback address; `LLM_DASHBOARD_PORT` must be free like `LLM_PORT`.
 
 `up` refuses before downloading if `LLM_DEFAULT_PRESET` names an unknown
 preset or one that needs a newer llama.cpp build. Plain `up` downloads
 no model files. After rendering, the default preset's files must be
 present or startup fails.
 
-On Docker, `up` also refuses before downloading if the `agents` or `ui`
-network has a gateway address. `down` removes those networks; see
+On Docker, `up` also refuses before downloading if the `agents`, `ui`,
+or `dashboard` network has a gateway address. `down` removes those networks; see
 [Privacy and containment](privacy.md#defaults-and-their-limits) for the
 reason. During startup, `up` fails if the container exits or disappears,
 the model server exits while loading (reported as `unloaded`), or the
@@ -150,7 +154,9 @@ bin/tokencrate down
 ```
 
 Stops and removes the model, terminal-agent containers, all browser UIs
-([`ui`](#ui)), and the Compose networks. This ends active agent sessions.
+([`ui`](#ui)), the [dashboard](configuration.md#dashboard) when it runs,
+and the Compose networks, and ends a stats page served with
+[`stats --serve --detach`](#stats). This ends active agent sessions.
 Images and host data are kept; see the
 [storage layout](configuration.md#storage-layout). `down` finds the
 containers and networks by the Compose project labels of the selected
@@ -166,7 +172,9 @@ bin/tokencrate status
 Shows all containers labelled for the selected Compose project. Each
 `UI <set>:` line adds the forwarder's state, published loopback address,
 and mounted project, so a UI reassigned to another project is visible,
-and ends with `egress` or `cloud` for a UI started with that flag.
+and ends with `egress` or `cloud` for a UI started with that flag. A
+`Stats page:` line names a server started with
+[`stats --serve --detach`](#stats) and whether it answers.
 When llama runs, it also shows one line per rendered preset with the
 state the router reports on `GET /models`: `unloaded`, `loading`,
 `loaded`, or `sleeping`. `status` works without valid pins or rendered
@@ -212,7 +220,9 @@ minutes. The checks cover:
   rendered with the preset's first two efforts must give two different
   prompts (a preset that declares fewer than two passes with
   `nothing to compare`);
-- tokenization.
+- tokenization;
+- the Prometheus counters (`GET /metrics?model=`), which the rendered
+  `[*]` section turns on for every preset on the same loopback port.
 
 `--basic` skips the reply-termination and streamed-tool-call checks,
 which need a capable model, so that a tiny model can still check the
@@ -279,6 +289,7 @@ bash bin/tokencrate smoke --agent pi --egress
 
 ```text
 bin/tokencrate bench [--preset id]... [--iterations n] [--long]
+bin/tokencrate bench --history
 ```
 
 Measures prompt-processing and generation tokens per second per preset from
@@ -286,11 +297,161 @@ llama-server's `timings`, averaged over `--iterations` requests (default 3).
 `--long` adds a run with a long prompt; the report's prompt-tokens column
 shows the measured length of every run. Without `--preset`, the default
 preset is measured. The report is written to
-`reports/bench-<timestamp>.md`. Presets are loaded in turn, so measuring
-several presets swaps models.
+`reports/bench-<timestamp>.md`, and `reports/bench-<timestamp>.json`
+holds the same measurements with six `timings` values per iteration, the
+server build, and the preset's context size (`n_ctx`). Presets are
+loaded in turn, so measuring several presets swaps models.
+
+`--history` prints those JSON files as one table, one row per measured
+run, grouped by preset and run and oldest first within a group: preset,
+run, date, `n_ctx`, build, prompt tokens, the two speeds, the change in
+generation speed against the row above (only when both ran at the same
+`n_ctx`), and the iterations. It reads the host's `reports/` directory
+and needs no engine or stack, so a llama.cpp
+[upgrade](configuration.md#upgrading) or a preset change shows next to
+the runs before it. The history is this machine's, because `reports/`
+is not tracked. A file that is not a bench document is skipped, and
+only the build, `n_ctx`, the preset name, the run label, and the
+numbers reach the table.
 
 ```bash
 bash bin/tokencrate bench --preset qwen3.8-27b-q4 --preset qwen3.8-27b-q4-mtp
+bash bin/tokencrate bench --history
+```
+
+## stats
+
+```text
+bin/tokencrate stats [--since when] [--agent <pi|omp>]
+bin/tokencrate stats --serve [--port port] [--since when] [--agent <pi|omp>] [--detach]
+bin/tokencrate stats --stop
+```
+
+Summarizes the retained transcripts below `LLM_AGENTS_DIR`
+([storage layout](configuration.md#storage-layout)): every terminal and
+browser-UI session that received at least one answer counts. The command
+reads only the host directories, so it works with the stack down. The
+report is printed and written to `reports/stats-<timestamp>.md`, and
+`reports/stats-<timestamp>.html` holds the same report as a
+self-contained page for a browser (open it from its file path): the
+tables, plus a chart of the context-size distribution with the share of
+requests each context size would have fit, readable in light and dark
+mode and in print. The page loads no external scripts, styles, or
+fonts. A navigation line under the title jumps to each section; a
+click on a column header sorts its table (a second click reverses; on
+the served page the next refresh restores the original order); the
+share columns carry a bar under their percentage; and on a narrow
+screen each table scrolls inside its own region with its first column
+kept in view.
+
+The first table, Preset fit, answers whether a preset fits: one row per
+preset rendered into `build/models.ini` (by [`up`](#up) or
+[`presets render`](#presets)) with its slot (`ctx_size` / `parallel`),
+the requests and the sessions whose context exceeded that slot, and
+`fits` or `too small`. Every request in the report counts, whichever
+preset or provider served it, so the table judges a preset you have
+not run yet; and since the server refuses a request larger than its
+slot and the agents compact before they reach it, an observed context
+never exceeds the slot it ran in. The chart draws the compaction p50
+and one preset's slot as labelled lines: the loaded preset on the
+served page, otherwise the rendered preset that served the most
+requests (a slot beyond twice the largest context is named at the
+chart's right edge instead of stretching the axis).
+
+The other tables show, per agent and per provider and model: requests,
+summed input and output tokens, the cache-read share, and the
+context-size distribution (nearest-rank p50/p90/max and the share of
+requests over 16K/32K/48K tokens). Per agent they also show
+sessions with their peak contexts and the first-request p50 (what a
+fresh agent costs before the task starts), turns (user messages) as
+p50, session length (first to last message) as p50 and p90, tool calls
+with their error counts, every stop reason with its count, compactions
+with the p50 context before them, requests and output tokens per
+thinking level (the last level change before each request), and time
+to first token and request duration per agent: oh-my-pi records them
+itself, pi records them when the
+[`metrics` agent set](agent-sets.md#shipped-sets), part of the default
+selection, is loaded; that set also answers `/usage` inside a pi
+session with the same totals for the open transcript, one line ordered
+context, tokens in and out, cache-read share, timings, and counts. A
+session's
+requests against a cloud provider appear under that provider's name.
+The report ends with a Definitions list, one entry per measure. The
+summary line states the scope (sessions, requests, the agent and time
+filters or their absence) and how much of it is from the last 24
+hours, unless `--since` already cuts inside that day; the page's
+render time is in its footer.
+
+`--since <when>` keeps the sessions whose last message is at or after
+a point in time: a duration back from now (`30m`, `12h`, `7d`, `2w`) or
+an ISO date or date-time (`2026-09-20`, `2026-09-20T10:00`, a naive
+value in local time). A session that spans the cutoff counts whole, so
+its earlier requests are in the numbers too. `--agent pi` or `--agent
+omp` keeps one agent's sessions. Both apply to `--serve` as well, where
+the cutoff is fixed when the server starts; the summary line names the
+filters, and a filter that matches no session is refused with a
+sentence that says so.
+
+The command reads usage numbers and metadata only, never message
+content, and the report carries no conversation text, session names, or
+project paths ([Privacy](privacy.md#what-leaves-the-machine)). The
+numbers describe whatever transcripts are on disk; `smoke --agent` uses
+a temporary home and adds none, and deleting a project's directories
+below `LLM_AGENTS_DIR` removes it from the report.
+
+`--serve` serves the page at `http://127.0.0.1:4210/` (`--port` selects
+another port) until Ctrl-C, re-reading the transcripts and refreshing
+the page every 60 seconds, and saves nothing. The served page leads
+with a verdict on the loaded preset (its slot, and whether every
+request in the report would have fit it or how many would not) and
+adds a live panel above the report: the requests the model server is
+processing and has queued, its prompt and generation rates in tokens
+per second, the share of drafted tokens an MTP preset accepted since
+its load, and the GPU's memory in use and power draw, as tiles, and
+the requests and rates as two charts over the last ten minutes. A
+tile without a number says why (no preset loaded, first sample, no
+draft model, a failed GPU query), a rate of zero says whether the
+server is idle or a request is in progress, and a chart without a
+request in its window says so; once the tiles scroll away, one line
+with the state, the preset, the occupancy, the generation rate, and
+the GPU memory stays at the top of the window, each with a sparkline
+of the ring. The rates follow the server's counters, which llama.cpp
+advances when a request completes, so a long answer shows as one burst
+at its end rather than a steady line. The page polls the server's `/live` path,
+and the server polls the model server's loopback port (`LLM_PORT`), at
+most every 2 seconds and only while a page is open: `GET /models`, and
+for the preset that was loaded on this and the previous poll, `GET
+/metrics?model=`. A request routes to its preset, so a poll that lands
+in a model swap can ask the router for the preset that just unloaded,
+which loads it again; the two-poll rule keeps that to a swap between
+two consecutive requests. Beside each poll, when `LLM_GPU` is true and
+`nvidia-smi` is on the host's `PATH`, the server runs it once for the
+GPU numbers: memory in use and in all, and power draw (a board that
+reports no power draw leaves that tile empty); without the tool the
+page has no GPU tiles. The panel shows
+when the stack is down or nothing is loaded;
+its samples live in the server's memory (ten minutes) and are never
+saved, and a saved page has no panel. For history beyond ten minutes,
+the [dashboard](configuration.md#dashboard) keeps the server's
+counters for 90 days. The server binds loopback only
+and answers only requests whose `Host` header names its own address,
+so a web page cannot reach it through the browser's name resolution;
+anything local that can open the port can read the report's numbers
+and the live samples.
+
+`--detach` starts the same server in the background of its own session,
+logging to `build/stats-serve.log`, and returns once the port answers;
+`build/stats-serve.pid` notes its process and port, [`status`](#status)
+shows it, and `stats --stop` or [`down`](#down) ends it. One detached
+server per checkout: a second `--detach` is refused while it runs. The
+file names the process by its PID and start time, and only a process
+that still runs `stats --serve` is ever signalled; a stale file is
+dropped. The log is written anew at each start.
+
+```bash
+bash bin/tokencrate stats --serve
+bash bin/tokencrate stats --serve --detach --since 7d
+bash bin/tokencrate stats --stop
 ```
 
 ## agent

@@ -3,14 +3,17 @@ HTTP stubbed."""
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import stat
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest import mock
 
-from tests.support import Scratch
+from tests.support import SOURCE_ROOT, Scratch
 from tokencrate import TokenCrateError, env, runtime
 from tokencrate.engine import Engine
 
@@ -246,3 +249,44 @@ class InitAndListingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DashboardStartTests(unittest.TestCase):
+    """The dashboard profile's services are started by name, and the GPU
+    exporter's profile follows the GPU setting (the CLI test covers the
+    CPU path through the fake engine; the doctor refuses a GPU `up` there)."""
+
+    def start(self, gpu: str) -> list[tuple]:
+        import tempfile
+
+        calls: list[tuple] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env.example").write_text((SOURCE_ROOT / ".env.example").read_text())
+            settings = env.load(root, {"LLM_DASHBOARD": "true", "LLM_GPU": gpu})
+            engine = type("Engine", (), {"compose": lambda self, *args, **kwargs: calls.append((args, kwargs))})()
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                runtime.start_dashboard(settings, engine)
+            self.assertTrue((root / "data" / "dashboard" / "victoria").is_dir())
+        self.assertIn("Dashboard at http://127.0.0.1:4211/", out.getvalue())
+        return calls
+
+    def test_the_gpu_exporter_follows_the_gpu_setting(self) -> None:
+        self.assertEqual(
+            self.start("false"),
+            [
+                (
+                    ("up", "--no-build", "--detach", "llama-exporter", "victoriametrics", "grafana"),
+                    {"profiles": ("dashboard",)},
+                )
+            ],
+        )
+        self.assertEqual(
+            self.start("true"),
+            [
+                (
+                    ("up", "--no-build", "--detach", "llama-exporter", "victoriametrics", "grafana", "gpu-exporter"),
+                    {"profiles": ("dashboard", "dashboard-gpu")},
+                )
+            ],
+        )

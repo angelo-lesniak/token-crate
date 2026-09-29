@@ -64,11 +64,24 @@ PIN_KEYS = (
     "NODE_DIGEST",
     "BUN_TAG",
     "BUN_DIGEST",
+    "VICTORIAMETRICS_TAG",
+    "VICTORIAMETRICS_DIGEST",
+    "GRAFANA_TAG",
+    "GRAFANA_DIGEST",
+    "DCGM_EXPORTER_TAG",
+    "DCGM_EXPORTER_DIGEST",
     "CUDA_MIN_DRIVER_MAJOR",
 )
 # The sha256 of a base image's manifest list, as bare hex; the Dockerfiles
 # and compose.yaml add the `@sha256:` prefix.
-DIGEST_KEYS = ("LLAMA_CPP_DIGEST", "NODE_DIGEST", "BUN_DIGEST")
+DIGEST_KEYS = (
+    "LLAMA_CPP_DIGEST",
+    "NODE_DIGEST",
+    "BUN_DIGEST",
+    "VICTORIAMETRICS_DIGEST",
+    "GRAFANA_DIGEST",
+    "DCGM_EXPORTER_DIGEST",
+)
 # Image tags, package versions, digests, and integers: no quotes, no whitespace.
 PIN_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 # The llama.cpp build number at the end of the server image tag
@@ -206,6 +219,14 @@ class Settings:
     @property
     def gpu(self) -> bool:
         return is_true(self.get("LLM_GPU", "false"))
+
+    @property
+    def dashboard(self) -> bool:
+        return is_true(self.get("LLM_DASHBOARD", "false"))
+
+    @property
+    def dashboard_port(self) -> str:
+        return validate_port(self.values["LLM_DASHBOARD_PORT"], "LLM_DASHBOARD_PORT")
 
     @property
     def project_name(self) -> str:

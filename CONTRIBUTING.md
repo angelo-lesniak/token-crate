@@ -34,7 +34,8 @@ as set in `ruff.toml`.
 | `models`, `presets`, `agentmodels` | Model downloads, preset validation and rendering, and agent model lists |
 | `session` | What one agent container start is made of |
 | `agents`, `uis`, `agentsets`, `skills` | Terminal sessions and the containment check, browser UIs, image selections, and skill sets |
-| `doctor`, `probe`, `checkpins` | Host checks, API probes and benchmarks, and upstream pin lookups |
+| `doctor`, `probe`, `checkpins` | Host checks, API probes, benchmarks with their saved history, and upstream pin lookups |
+| `stats`, `statspage` | Transcript reading and aggregation with the Markdown report, and the HTML stats page (from the assets under `tokencrate/pages/`) with its loopback server |
 
 Usage and error text in `cli.py` are part of the documented interface.
 `docs/cli.md` must show every usage line verbatim.
@@ -58,7 +59,7 @@ bash tests/static.sh
 `tests/static.sh` is the engine-free gate. It runs:
 
 - `bash -n` and ShellCheck over the shell files it lists;
-- `node --check` over the two JavaScript files;
+- `node --check` over the JavaScript files it names;
 - an import of each `tokencrate` module on its own, which catches import
   cycles;
 - the unit tests, every `tests/test_*.py`. The entrypoint and forwarder
@@ -267,7 +268,10 @@ only with evidence against its stated reason.
   [request-size record](docs/validation.md#request-size-of-the-coding-set).
   Their value on a local model remains a hypothesis. Reconsider after
   comparing plain pi and the bundle on the same coding tasks with a shipped
-  27B preset: completion, wrong edits, tokens, turns, and wall time.
+  27B preset: completion, wrong edits, tokens, turns, and wall time. The
+  `metrics` set is in the default selection because it changes no request
+  (its extension records timings only) and the stats Timings table is
+  empty for pi without it.
 - **Default skill sets:** `LLM_SKILL_SETS=pocock-core,skill-crate` keeps
   eleven skill descriptions available. An empty default would remove
   `skills fetch` and its startup requirement from initial setup.
@@ -330,6 +334,25 @@ only with evidence against its stated reason.
   are required. Reconsider if a
   setting gains a second reader that can disagree with Compose about its
   default.
+- **The dashboard is an opt-in profile on its own network:**
+  `LLM_DASHBOARD=true` adds an exporter on the pinned Node image,
+  VictoriaMetrics, and Grafana with provisioned files, on the internal
+  `dashboard` network with the model and a publish network for
+  Grafana's loopback port. The exporter exists because the router loads
+  whatever preset a `/metrics?model=` request names, so nothing may
+  scrape presets blindly; it reads the counters of a preset only after
+  two polls reported it loaded, the rule the live panel of `stats
+  --serve` follows. Grafana is an anonymous viewer with the login form
+  off, so no container or page can alter the dashboards, and the
+  dashboards are files in the repository. The GPU's numbers come from
+  NVIDIA's dcgm-exporter as the `gpu-exporter` service (its own
+  profile, added with `LLM_GPU=true`), run as the host user under the
+  same hardening with the CDI device alone, which [the GPU exporter
+  probe](docs/validation.md#the-gpu-exporter-probe) showed works
+  although the image declares root; the live panel's `nvidia-smi` tiles
+  stay for the ten-minute view without the profile. Reconsider
+  the llama exporter when the router serves counters without loading a
+  model.
 - **llama-server router mode:** the router loads presets, routes requests
   by `model`, loads the default at startup, and serves the built-in chat
   UI, which covers TokenCrate's model switching. A separate proxy such

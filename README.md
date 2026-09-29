@@ -138,6 +138,8 @@ If a command fails, start with the
 | Look up any command or flag | [CLI reference](docs/cli.md) |
 | Fix a failing command or check | [Troubleshooting](docs/troubleshooting.md) |
 | Measure tokens per second per preset | [`bench`](docs/cli.md#bench) |
+| See token usage and context sizes across past agent sessions | [`stats`](docs/cli.md#stats) |
+| Watch the model server over weeks in Grafana | [Dashboard](docs/configuration.md#dashboard) |
 | Run the built-in chat UI and an agent on one model, or pick another preset | [Models and presets](docs/models.md#included-presets) |
 | Add a new GGUF model | [Adding a model](docs/models.md#adding-a-model) |
 | Use oh-my-pi, private skills, or give an agent network access | [Coding agents and skills](docs/agents.md) |

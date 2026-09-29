@@ -29,6 +29,8 @@ from . import (
     runtime,
     session,
     skills,
+    stats,
+    statspage,
     uis,
     warn,
 )
@@ -57,6 +59,14 @@ Usage:
       Prove from inside an agent container what is reachable: only the model, or with --egress also the routes out.
   bin/tokencrate bench [--preset id]... [--iterations n] [--long]
       Measure prompt-processing and generation speed per preset and save a report.
+  bin/tokencrate bench --history
+      Print the measurements of every saved bench JSON under reports/, oldest first; no stack needed.
+  bin/tokencrate stats [--since when] [--agent <pi|omp>]
+      Summarize token usage and context sizes from the retained agent transcripts and save a report.
+  bin/tokencrate stats --serve [--port port] [--since when] [--agent <pi|omp>] [--detach]
+      Serve the stats page on loopback and re-read the transcripts on each refresh (--detach: in the background).
+  bin/tokencrate stats --stop
+      Stop the stats page served with --detach (down does the same).
   bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [-- args]
       Open a coding agent in the current (or named) project directory; --cloud (pi only) mounts LLM_CLOUD_KEYS_FILE.
   bin/tokencrate agent-sets list
@@ -98,6 +108,7 @@ DRAFT_SPEC_RE = re.compile(r"^hf:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[^\s]+$")
 # Which commands accept which flag, and how the refusal names them.
 FLAG_COMMANDS = {
     "--long": (("bench",), "bench"),
+    "--history": (("bench",), "bench"),
     "--basic": (("smoke",), "smoke"),
     "--egress": (("agent", "smoke", "ui"), "agent, smoke --agent, or ui"),
     "--cloud": (("agent", "ui"), "agent or ui"),
@@ -106,13 +117,17 @@ FLAG_COMMANDS = {
     "--preset": (("doctor", "smoke", "bench", "agent", "ui"), "doctor, smoke, bench, agent, or ui"),
     "--model-set": (("up",), "up"),
     "--sets": (("agent", "smoke", "ui"), "agent, smoke --agent, or ui"),
-    "--port": (("ui",), "ui"),
+    "--port": (("ui", "stats"), "ui or stats --serve"),
+    "--serve": (("stats",), "stats"),
+    "--detach": (("stats",), "stats --serve"),
+    "--stop": (("stats",), "stats"),
+    "--since": (("stats",), "stats"),
     "--dir": (("agent", "ui"), "agent or ui"),
-    "--agent": (("smoke",), "smoke"),
+    "--agent": (("smoke", "stats"), "smoke or stats"),
 }
 # The flags that carry one value. `--preset` and `--model-set` repeat by
 # design and have their own rules.
-SINGLE_VALUE_FLAGS = ("--timeout", "--iterations", "--sets", "--port", "--dir", "--agent")
+SINGLE_VALUE_FLAGS = ("--timeout", "--iterations", "--sets", "--port", "--dir", "--agent", "--since")
 
 
 @dataclass
@@ -127,7 +142,12 @@ class Options:
     agent_name: str = ""
     iterations: int = 3
     long: bool = False
+    history: bool = False
     basic: bool = False
+    serve: bool = False
+    detach: bool = False
+    stop: bool = False
+    since: str = ""
     sets: str | None = None
     agent_args: list[str] = field(default_factory=list)
 
@@ -158,8 +178,16 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
             seen.add(argument)
         if argument == "--long":
             options.long = True
+        elif argument == "--history":
+            options.history = True
         elif argument == "--basic":
             options.basic = True
+        elif argument == "--serve":
+            options.serve = True
+        elif argument == "--detach":
+            options.detach = True
+        elif argument == "--stop":
+            options.stop = True
         elif argument == "--egress":
             options.egress = True
         elif argument == "--cloud":
@@ -199,6 +227,9 @@ def parse_options(settings: env.Settings, command: str, arguments: list[str]) ->
             index += 1
         elif argument == "--dir":
             options.agent_dir = value(argument, "a directory")
+            index += 1
+        elif argument == "--since":
+            options.since = value(argument, "a duration (30m, 12h, 7d, 2w) or an ISO date or date-time")
             index += 1
         elif argument == "--agent":
             name = value(argument, "pi or omp")
@@ -283,12 +314,19 @@ def run_probe(
         patched = bool(found and configuration.model_sets[found.model_set].chat_template_file)
         results = probe.smoke(url, preset, basic=options.basic, efforts=efforts, patched_template=patched)
         text, status = probe.smoke_report(preset, url, results, probe.server_facts(url, preset))
+        rows = None
     else:
         rows = probe.bench(url, selected, options.iterations, options.long)
-        text, status = probe.bench_report(url, rows, probe.server_facts(url, selected[0])), 0
+        facts = probe.server_facts(url, selected[0])
+        text, status = probe.bench_report(url, rows, facts), 0
     print(text, end="")
     path = runtime.save_report(settings, kind, text)
     print(f"Saved {kind} report to {path}")
+    if rows is not None:
+        # The same stem as the Markdown report, so the pair stays together.
+        samples = path.with_suffix(".json")
+        samples.write_text(probe.bench_json(url, rows, facts), encoding="utf-8")
+        print(f"Saved bench samples to {samples}")
     if status != 0:
         warn(f"the {kind} run failed with status {status}")
     return status
@@ -379,12 +417,18 @@ def dispatch(command: str, arguments: list[str]) -> int:
         runtime.start_stack(settings, engine, loaded, options.timeout)
     elif command == "down":
         parse_options(settings, command, arguments)
+        # The one host process the wrapper leaves running, ended first so
+        # an engine that cannot be reached does not keep it alive.
+        if statspage.stop(settings.root):
+            print("Stopped the stats page.")
         runtime.stop_stack(engines.detect(settings, launching=False))
     elif command == "status":
         parse_options(settings, command, arguments)
         engine = engines.detect(settings, launching=False)
         runtime.print_containers(settings, engine)
         uis.print_status(engine)
+        if line := statspage.status_line(settings.root):
+            print(line)
         runtime.print_models(settings, engine)
     elif command == "logs":
         parse_options(settings, command, arguments)
@@ -411,7 +455,59 @@ def dispatch(command: str, arguments: list[str]) -> int:
         return run_probe(settings, engine, configuration(), "smoke", options)
     elif command == "bench":
         options = parse_options(settings, command, arguments)
+        if options.history:
+            # Reads the saved JSON on the host; no engine or stack is needed.
+            if options.presets or options.long or options.iterations != 3:
+                raise TokenCrateError("--history takes no other bench option")
+            print(probe.bench_history(settings.root / "reports"), end="")
+            return 0
         return run_probe(settings, engines.detect(settings), configuration(), "bench", options)
+    elif command == "stats":
+        options = parse_options(settings, command, arguments)
+        if options.stop:
+            if len(arguments) > 1:
+                raise TokenCrateError("--stop takes no other stats option")
+            if statspage.stop(settings.root):
+                print("Stopped the stats page.")
+            else:
+                print("No stats page is served in the background.")
+            return 0
+        if options.port and not options.serve:
+            raise TokenCrateError("--port applies to stats --serve")
+        if options.detach and not options.serve:
+            raise TokenCrateError("--detach applies to stats --serve")
+        # Reads the retained transcripts on the host; no engine, stack, or
+        # preset is needed, so the report works with everything down. The
+        # cutoff is resolved once, so a served page shows what it says.
+        selection = stats.Filter(
+            since=stats.since_cutoff(options.since) if options.since else None, agent=options.agent_name
+        )
+        if options.detach:
+            # The same arguments without --detach (validated above); the
+            # child serves in the foreground of its own session.
+            return statspage.detach(
+                settings.root,
+                int(options.port or statspage.SERVE_PORT),
+                [argument for argument in arguments if argument not in ("--serve", "--detach")],
+            )
+        if options.serve:
+            return statspage.serve(
+                settings.agents_dir,
+                int(options.port or statspage.SERVE_PORT),
+                settings.service_url,
+                selection,
+                gpu=settings.gpu,
+                root=settings.root,
+            )
+        sessions = stats.read_sessions(settings.agents_dir, selection)
+        slots = presets.rendered_slots(settings.build_dir)
+        text = stats.report(sessions, selection, slots)
+        print(text, end="")
+        path = runtime.save_report(settings, "stats", text)
+        print(f"Saved stats report to {path}")
+        page = path.with_suffix(".html")
+        page.write_text(statspage.html(sessions, selection=selection, slots=slots), encoding="utf-8")
+        print(f"Saved stats page to {page}")
     elif command == "agent":
         if not arguments:
             raise TokenCrateError(

@@ -27,6 +27,13 @@ The table summarizes the [records](#records).
 | `agent pi --cloud` refuses a missing keys file, a directory, a file inside the project, and oh-my-pi, each with one sentence before the pre-flight; the file reaches the named session container through the `run`'s own `-v`, read-only, with no key value in `inspect` or on the command line; the entrypoint exports its lines, refuses a malformed one, and pi offers the keyed provider's bundled catalogue; `--egress` alone offers no cloud model | Validated | Arch Linux VM, rootless Podman 6.1.2, placeholder key; RTX 5090, rootless Podman 6.1.2, an OpenRouter key with a free model answering | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | A `SIGTERM` or `SIGHUP` to the wrapper of a running `agent` session stops the session container and leaves no Compose provider process; `Ctrl-C` ends the session with status 130 | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | The llama API echoes a loopback `Origin` and no other; a cross-site simple request is still acted on | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
+| The pinned router, rendered with `metrics = true` in `[*]`, serves llamacpp counters at `GET /metrics?model=` for the probed presets across a model swap (the `smoke` check), and on the GPU preset with real traffic behind them, spec-decode counters included; `bench` writes its measurements as JSON next to the report; `stats` summarizes real transcripts with no message content, session name, or project path in the report | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU; RTX 5090 on `qwen3.8-27b-q4-mtp` | [Metrics counters and the stats report](#metrics-counters-and-the-stats-report), [The metrics run on the GPU](#the-metrics-run-on-the-gpu) |
+| The `metrics` agent set times pi's requests through a first-party extension that writes `ttft` and `duration` on the assistant message in oh-my-pi's fields, so `stats` fills a pi row of its Timings table; the request pi sends is byte-identical with and without the set | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint inside the container; RTX 5090 on `qwen3.8-27b-q4-mtp` with tool calls | [The metrics set and its timings extension](#the-metrics-set-and-its-timings-extension) |
+| The served stats page shows a live panel of the model server (requests processing and queued, prompt and generation tokens per second, two charts over ten minutes) from `/live`, which the server fills by polling the loopback API at most every 2 seconds while a page is open and only for a preset two consecutive polls reported loaded; `/live` answers only the server's own loopback `Host` names; the saved page carries no panel | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU with the `ci-small` fixture preset, and the RTX 5090 on `qwen3.8-27b-q4-mtp` during an agent session; the page rendered in Chromium 153.0.8010.52 | [The live panel of the served stats page](#the-live-panel-of-the-served-stats-page) |
+| The `metrics` set's `/usage` command prints one status line with the open transcript's totals through pi's extension UI and adds nothing to the transcript, and the request pi sends stays byte-identical with the command registered; `stats --since` and `--agent` keep whole sessions, the Sessions table carries turns and duration, the Thinking levels table keys requests by the last level change before them; `bench --history` lists every saved bench JSON's runs and skips what is not a measurement; the live panel's draft-acceptance tile follows the spec-decode counters and its GPU tiles the host's `nvidia-smi` | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint; the engine-free harness on Python 3.14.7; RTX 5090, rootless Podman 6.1.2, on `qwen3.8-27b-q4-mtp` with `/usage` after a nine-request tool-calling session, the GPU and acceptance tiles read from the running preset | [The usage command, the filters, and the bench history](#the-usage-command-the-filters-and-the-bench-history) |
+| With `LLM_DASHBOARD=true`, `up` starts the exporter, VictoriaMetrics, and Grafana on the internal `dashboard` network beside the model, the exporter reads the router's counters for the loaded preset only (the two-poll rule), VictoriaMetrics keeps them, Grafana serves the provisioned dashboard on loopback to an anonymous viewer who cannot write, with its plugin install, update checks, usage reports, and news feed switched off (the switches pinned by the contract tests); `down` removes all three | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU with the `ci-small` fixture preset; RTX 5090, rootless Podman 6.1.2, on `qwen3.8-27b-q4-mtp` with smoke, bench, and an agent session behind it | [The dashboard profile](#the-dashboard-profile) |
+| NVIDIA's dcgm-exporter serves the GPU's utilization, memory, power, temperature, and clocks as the host user with a read-only root, no capabilities, `no-new-privileges`, and the CDI device as the only device source, which is how the `gpu-exporter` service of the dashboard profile runs it; through `up` with `LLM_GPU=true` the service starts with the profile, VictoriaMetrics scrapes it, and Grafana answers the GPU's utilization, memory, and power | Validated | RTX 5090, driver 615.71.09, rootless Podman 6.1.2, `podman run` outside Compose and the Compose service through `up` | [The GPU exporter probe](#the-gpu-exporter-probe), [The dashboard profile](#the-dashboard-profile) |
+| `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot, with the compaction p50 and one preset's slot marked) and tables (the Preset fit table first, judging every rendered preset's slot against the report's requests) match the Markdown and carry no transcript content, the served page leads with a verdict on the loaded preset, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52; the GPU host on `qwen3.8-27b-q4-mtp` for the verdict, the live tiles, and the Grafana dashboard | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server), [The stats page's verdict, marks, and tables](#the-stats-pages-verdict-marks-and-tables) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
 | An oh-my-pi session sends the Anthropic key to the address a project's `.env` or `.env.local` names (8 requests to a listener inside the container with the file, 0 without), so `agent omp --cloud` is refused | Validated | Arch Linux VM, rootless Podman 6.1.2, pinned oh-my-pi image offline | [oh-my-pi and project env files](#oh-my-pi-and-project-env-files) |
@@ -81,6 +88,12 @@ The engine-free gate and the CPU integration check do not cover these:
   record](#the-128k-mtp-presets));
 - the UI launchers' readiness timeouts for a daemon that never answers:
   no recorded run had a daemon fail to start;
+- the live panel's token rates while the dashboard profile runs beside
+  an agent turn on the GPU host: the host run's ninety-second sample
+  window fell into the image rebuild before the turn, so its samples
+  carry the GPU and acceptance tiles and zero rates; the rates during
+  a session are recorded without the profile
+  ([the live panel record](#the-live-panel-of-the-served-stats-page));
 - the provider in pi's interactive model picker, a cloud answer through
   PI WEB's browser session or Paseo's create-agent form, and the
   reported cost: every recorded cloud answer came from a scripted prompt
@@ -105,8 +118,9 @@ The pins under test, as `bash bin/tokencrate pins` prints them:
 `LLAMA_CPP_TAG=server-cuda13-b11028` (`llama-server --version` prints
 `build 11028, commit 972d2313b`), `PI_VERSION=0.85.1`,
 `OMP_VERSION=18.2.5`, `NODE_TAG=26.9.0-bookworm-slim`,
-`BUN_TAG=1.4.2-slim`, `CUDA_MIN_DRIVER_MAJOR=580`, each image with the
-digest in `pins.env`. The agent sets pin PI WEB 1.202609.0, Paseo 0.8.0,
+`BUN_TAG=1.4.2-slim`, `VICTORIAMETRICS_TAG=v1.152.0`,
+`GRAFANA_TAG=13.2.2`, `DCGM_EXPORTER_TAG=4.6.1-4.8.4`,
+`CUDA_MIN_DRIVER_MAJOR=580`, each image with the digest in `pins.env`. The agent sets pin PI WEB 1.202609.0, Paseo 0.8.0,
 the .NET SDK 10.0.401, and Odin `dev-2026-08-nightly:902106f`; the runs
 used Debian's Chromium 153.0.8010.52, which the `browser` set installs
 unpinned. Unless a record states otherwise, agent
@@ -321,7 +335,10 @@ behavior, or image details below. Repeat these observations after a
   fails when the default preset turns `unloaded` after `loading`.
 - Requests without `model` answer 400 `model name is missing from the
   request`; `GET /props`, `POST /tokenize`, and `GET /metrics` need
-  `?model=` or a `model` field, which the probe sends.
+  `?model=` or a `model` field, which the probe sends. A request routes
+  to its preset, so asking `/metrics` for an unloaded preset is expected
+  to load it first (the swap above; not observed for `/metrics`): scrape
+  only presets `GET /models` reports loaded.
 - Preset file: keys are llama-server option names without dashes
   (`jinja = true` becomes `--jinja`, `ui-config-file`
   `--webui-config-file`, `gpu-layers` `--n-gpu-layers`); a key given twice
@@ -340,6 +357,550 @@ behavior, or image details below. Repeat these observations after a
 - The UI at the root is a build with router-mode model selection.
 
 ## Records
+
+### The stats page's verdict, marks, and tables
+
+Purpose: prove the usability pass over the stats page, the live
+panel, the Grafana dashboard, and the two terminal outputs. Date:
+2026-09-29. Environment: the virtual machine's engine-free harness on
+Python 3.14.7 and the pinned pi image's Chromium 153.0.8010.52 over
+the GPU host's 47 retained transcripts and its rendered
+`build/models.ini` (13 presets); the GPU host (RTX 5090, driver
+615.71.09, rootless Podman 6.1.2, `LLM_AGENT_SETS=coding,metrics,
+browser` with the dashboard profile on `qwen3.8-27b-q4-mtp`, runs
+`ux-20260929T050915Z` and `ux2-20260929T182936Z` in the validate
+directory), where `up`, `smoke`, and `bench` passed, a scripted turn
+made nine requests, and the `browser` set's Chromium screenshotted the
+served page and Grafana over the host's loopback.
+
+- Preset fit: `presets.rendered_slots` reads each rendered preset's
+  slot from `build/models.ini`; the table judged the host's 13 presets
+  the same in the Markdown and the page (the three 32K presets `too
+  small` with 93 of 321 requests and 5 sessions over, the 48K one with
+  29 and 2, every 64K and 128K preset `fits`), and `--since 1d` the
+  day's 17 requests as fitting everywhere.
+- The served page led with `qwen3.8-27b-q4-mtp (slot 65,536 tokens,
+  loaded): every request fit` on the good status from the sampler's
+  last sample; with a 32K preset loaded in the harness, `93 of 321
+  requests (29%) would not fit` on the critical one; the chart marked
+  the compaction p50 (60,378) and the loaded slot, the saved page the
+  most-used preset's slot, legibly over the step lines.
+- The summary line of both renderers ended with `4 sessions and 17
+  requests in the last 24 h` on the host (`none in the last 24 h` over
+  the harness fixture).
+- The live panel on the host, two minutes after the turn: the state
+  dot with the preset and the sample's time, `54.5` prompt and `9.7`
+  generated tokens/s left by the turn's last request, `58%`
+  acceptance, `20,943 / 32,607` MiB with the reason `in use / in all`
+  (`memory.total` joins the `nvidia-smi` query; 150 samples carried
+  the three GPU numbers, power from 335 W after the bench to 43 W
+  idle), the two charts side by side at 1280 pixels and stacked at 420;
+  without a GPU query the page has no GPU tiles, and a tile without a
+  number names its reason (`first sample`, `needs two scrapes`, `no
+  draft model`).
+- The tables scroll inside their own regions on a phone with the first
+  column kept, the headers name what they count, the numbers carry
+  separators, the column headers sort (the Requests total stays a
+  footer), the Definitions list replaced the footnote in both
+  renderers, the navigation line jumps to each section, and the chart
+  carries axis titles and a tooltip with both shares.
+- `/usage` over RPC after the turn answered one `notify` event: `usage:
+  context 9,976 (peak 9,976) · 8,663 in / 1,541 out · cache-read 89% ·
+  ttft p50 120 ms, duration p50 1.1 s · 9 requests, 8 tools, 3 errors`.
+- `bench --history` printed the host's four rows grouped by preset and
+  run, `+12.2` on the new short row against the day before at the same
+  65,536 `n_ctx` (137.2 after 125.0 generation tokens/s) and no change
+  where the context size differs or is unknown.
+- Grafana 13.2.2 rendered the reorganised dashboard as provisioned
+  (its API listed the ten panels in order and a 15-minute range,
+  answered the stat panel's rate query with 200, and refused an
+  anonymous dashboard write with 403): the stat row, Occupancy with
+  the turn's `processing` step and Throughput with its burst (about
+  145 prompt and 25 generated tokens/s over one minute) in the page's
+  blue and orange, the busy-slots and loaded-preset timelines, and the
+  GPU panels.
+- The strict gate pins the rest: the slot reader over a shared
+  section, a hostile name, and a section without a number; the fit
+  verdict and the table's rows; the island's marks and the axis
+  extension to a slot within twice the largest context (an edge mark
+  beyond it); the verdict for a fitting, a too small, a missing, and
+  an unreachable preset, and its absence from the saved page;
+  `data-gpu`; the scroll regions, header buttons, footer row, meters,
+  separators, and the absence of `title` attributes; the last-day
+  clause at three clocks; the usage line; the history's grouping and
+  delta; the dashboard's panel order, datasource, and the absence of
+  `axisSoftMax`.
+
+Not covered: the sticky strip, sorting, the tooltip, and the
+empty-window overlay in a driven browser (headless screenshots do not
+scroll or click; the overlay's rule that a nonzero rate counts as a
+seen request was set after the host screenshot showed the old rule
+beside rising lines); the turn's occupancy in the page's own ring (the
+sampling loop ended before the turn); print and forced-colors output.
+
+### The usage command, the filters, and the bench history
+
+Purpose: prove the last items of the metrics work: the `metrics` set's
+`/usage` command, the `stats` filters and the two new tables, `bench
+--history`, and the live panel's new tiles. Date: 2026-09-27.
+Environment: the virtual machine, rootless Podman 6.1.2; the
+`coding,metrics` image built from the pinned Node base image with the
+extension as shipped, pi started through the entrypoint with the stub
+model endpoint of [The metrics set and its timings
+extension](#the-metrics-set-and-its-timings-extension); the engine-free
+harness on Python 3.14.7; `stats` read over the GPU host's 43 retained
+transcripts through the share.
+
+- `pi -p 'say hi'` and `pi --continue -p 'say hi again'` sent two
+  requests in the image without the command (the transcripts of
+  70c3e7d) and two in the image with it: both request bodies are
+  byte-identical between the images (28,362 and 28,471 bytes, 17
+  tools). A command is neither a tool nor prompt text.
+- `pi --continue --mode rpc` with the prompt `/usage` answered one
+  `extension_ui_request` of method `notify`: `usage: 2 requests, 200 in
+  / 6 out, cache-read 0%, context 103 (peak 103), ttft p50 167 ms,
+  duration p50 0.2 s, 0 tools, 0 errors`, the stub's usage and the
+  extension's own timings; the transcript gained no entry from it.
+- `stats --since 7d --agent pi` over the share's transcripts reported
+  26 of the 34 pi sessions (the summary line names both filters); the
+  Sessions table carries turns p50 and duration p50/p90 (pi 10 s and
+  5 m 06 s, oh-my-pi 8 s and 3 m 46 s), and the Thinking levels table
+  keys the 260 pi requests as `xhigh` 246, `high` 8, `low` 5, `off` 1
+  and every oh-my-pi request as `xhigh`; `--since 2027-01-01` is
+  refused with "no agent transcripts match since ...", distinct from an
+  empty directory, and `--since yesterday` with the syntax sentence.
+- `bench --history` over the share's `reports/` printed the two rows of
+  the one JSON there (`b11028-972d2313b`, `n_ctx` `?` because that file
+  predates the field, 1,854.1 and 3,321.9 prompt and 138.8 and 156.1
+  generation tokens/s); in this checkout, with no JSON, the note.
+- The served page over the share's transcripts shows the seven live
+  tiles (draft acceptance and the two GPU tiles empty on the CPU router
+  without `nvidia-smi`), the Thinking levels table, and the wider
+  Sessions table in light and dark mode, with no label collisions.
+- The strict gate pins the rest: the extension's hook replay now
+  registers exactly the `usage` command and its handler's line over a
+  synthetic transcript (content, a session name, and a hostile level
+  never reach it); the stats fixtures carry timestamps, level entries,
+  a mid-session level change, a malformed level and a malformed
+  timestamp, and the filters keep whole sessions by their last message;
+  `bench_history` skips a file that is not a bench document, a row
+  whose preset, run, or rates are not what `bench` writes, and a file
+  beyond 1 MiB, and orders rows by the file stem; the sampler's
+  acceptance follows the two spec-decode counters, and the GPU reading
+  keeps two numbers of a fake `nvidia-smi`'s first line, leaves a
+  `[N/A]` field empty, and survives a failing or missing command.
+
+- On the GPU host (RTX 5090, driver 615.71.09, rootless Podman 6.1.2,
+  `LLM_AGENT_SETS=coding,metrics` on `qwen3.8-27b-q4-mtp`, the run
+  `metrics-final-20260928T172953Z` in the validate directory, dated
+  2026-09-28): a scripted turn (write a script, run it, show the
+  output) made nine requests with eight tool calls, two of them errors;
+  `pi --continue --mode rpc` with `/usage` then answered one `notify`
+  event: `usage: 9 requests, 7,847 in / 1,186 out, cache-read 89%,
+  context 8,831 (peak 8,831), ttft p50 116 ms, duration p50 1.1 s, 8
+  tools, 2 errors`, every number the transcript's own (the input sum
+  7,847 over the nine usage objects, the nearest-rank p50 of the nine
+  `ttft` values 116 ms). `stats --since 1d` on the host reported that
+  session and two like it (3 sessions, 25 requests, all `xhigh`), and
+  `bench --history` printed three rows, the new one with `n_ctx`
+  65,536 (125.0 generation tokens/s against 138.8 the day before on
+  the same build, thirty seconds after `up` with the dashboard
+  profile running; not isolated). `stats --serve` with `LLM_GPU=true`
+  produced 45 samples in ninety seconds with the GPU tiles filled from
+  the host's `nvidia-smi` (21,219 to 21,362 MiB in use, 42 to 112 W)
+  and the acceptance tile at 60.4 percent of drafted tokens, cumulative
+  since the load, after the smoke and bench traffic; the window ended
+  before the turn, so the rates in it are zero.
+
+Not covered: `/usage` in the TUI (its `notify` maps to the status line
+there; RPC mode was driven on both machines); the live rates while a
+turn runs on the host with the dashboard up (the sample window missed
+the turn); the reasoning-token item of the plan, closed because the
+local router fills `usage.reasoning` with 0 (40 host transcripts
+checked).
+
+### The GPU exporter probe
+
+Purpose: decide whether the dashboard profile can carry a GPU exporter
+under the shared hardening, by running the two candidate images
+directly with `podman run` the way the profile runs its services: the
+host user with keep-id, a read-only root, no capabilities,
+`no-new-privileges`, a tmpfs `/tmp`, the CDI device with
+`NVIDIA_VISIBLE_DEVICES=void`, a loopback port; and once more each
+with the image's own default user. Date: 2026-09-28. Environment: the
+GPU host, RTX 5090, driver 615.71.09, rootless Podman 6.1.2; the runs
+`gpu-exporter-20260928T181508Z` (started without a network, so no
+metrics could be read) and `gpu-exporter-2-20260928T183007Z` in the
+validate directory.
+
+- `nvcr.io/nvidia/k8s/dcgm-exporter:4.6.1-4.8.4` (exporter 4.8.4 on
+  DCGM 4.6.1) under the hardening: the process runs as uid 1000,
+  DCGM and NVML initialize, the RTX 5090 is found, the registry is
+  built from the default counters, and `/metrics` served 15 lines with
+  `DCGM_FI_DEV_GPU_UTIL`, `FB_USED`, `FB_FREE`, `POWER_USAGE`,
+  `GPU_TEMP`, and `SM_CLOCK` for the card. The image declares root and
+  `NVIDIA_VISIBLE_DEVICES=all`; neither was needed, and the run with
+  its default user served the same 15 lines. The labels carry the
+  GPU's UUID, PCI address, model name, driver version, and the
+  container's hostname; no host name or path.
+- `utkuozdemir/nvidia_gpu_exporter:1.15.1` under the hardening: runs
+  as uid 1000 with the CDI-injected `nvidia-smi`, 146 lines including
+  memory, power, temperature, and utilization; the same with its
+  default user (65534).
+- Both start in about a second and hold no writable path but `/tmp`.
+
+Decision: the profile carries dcgm-exporter (NVIDIA's own, the larger
+community) as the `gpu-exporter` service in the `dashboard-gpu`
+profile, which `up` adds when `LLM_GPU` is true. CONTRIBUTING.md's
+settled decision follows this record.
+
+Not covered: Docker Engine; a second GPU.
+
+### The dashboard profile
+
+Purpose: prove the opt-in Compose profile behind `LLM_DASHBOARD=true`:
+the exporter, VictoriaMetrics, and Grafana start with `up`, the
+exporter reads the router's counters for the loaded preset only,
+VictoriaMetrics stores them, Grafana shows the provisioned dashboard
+to an anonymous viewer on loopback, and `down` removes all three.
+Date: 2026-09-27. Environment: the virtual machine, rootless Podman
+6.1.2, the pinned router (llama.cpp b11028) on the CPU with the
+`ci-small` fixture preset, the images `victoriametrics/victoria-metrics:v1.152.0`
+and `grafana/grafana:13.2.2` by their pinned digests and the pinned Node
+image for the exporter; the dashboard rendered by the pinned pi image's
+Chromium 153.0.8010.52 over the host's loopback.
+
+- `up` with `LLM_DASHBOARD=true` loaded the preset, then started the
+  three containers by name under the profile and printed the Grafana
+  address; `status` lists them beside llama, and `down` removed them
+  with the networks.
+- The exporter's `/metrics`, read from inside the `dashboard` network,
+  carried `tokencrate_router_up 1`, `tokencrate_preset_loaded{preset="ci-small"} 1`,
+  and after a `smoke --basic` the router's numeric `llamacpp:` lines
+  (96 prompt tokens, 17 predicted, the spec-decode counters at 0);
+  VictoriaMetrics answered `llamacpp:prompt_tokens_total` with 96 for
+  the job `llama`, and Grafana's query API returned the same series.
+- Grafana: `/api/health` ok, the dashboard `tokencrate-model-server`
+  provisioned read-only (`canSave`, `canEdit`, and `canAdmin` false), a
+  `POST /api/dashboards/db` as the anonymous viewer answered 403, and
+  a login attempt 400 with the form off. Grafana's datasource proxy
+  (`/api/datasources/proxy/uid/<uid>/` and `/api/datasources/uid/<uid>/resources/`)
+  is open to the anonymous viewer and forwards any path to the
+  datasource, so the datasource points at the exporter's query gate:
+  through both proxy paths a `POST api/v1/query` answered 200 and
+  `api/v1/import` and `api/v1/admin/tsdb/delete_series` answered 403,
+  and the gate refused `api/v1/import` from inside the network too.
+  The rendered dashboard shows
+  the request gauges, the token rates of the smoke traffic, busy slots,
+  the loaded preset, and "No data" for draft acceptance on a preset
+  without a draft model.
+- Grafana 13.2.2 tries at start to re-install its Prometheus plugin
+  from grafana.com (`plugin.backgroundinstaller`), which the read-only
+  root filesystem then broke ("Plugin not registered" on every
+  query); `GF_PLUGINS_PREINSTALL_DISABLED=true` in `compose.yaml` stops
+  the attempt, the bundled plugin registers, and the queries answer.
+  The contract tests pin that switch with the analytics, update-check,
+  news, and signing-key switches.
+- The exporter's node-driven test drives it against a fake router and
+  a fake store: a preset is scraped only after two polls reported it
+  loaded, a swap is named a poll before it is scraped, only
+  `/metrics?model=<validated name>` is ever asked, every kept line
+  carries the preset as a label, a text label, a `nan`, a foreign
+  metric, and a shell-shaped line never pass, a router that is down
+  reports so, anything but `GET /metrics` is refused, and the query
+  gate forwards `query`, `query_range`, and label reads with their
+  bodies while `import`, `delete_series`, `snapshot`, a `DELETE`, and
+  a path with `..` answer 403 without reaching the store. The podman-compose render
+  and the Docker Compose render cover the profile; the contract tests
+  pin the services, their networks, the hardening, the pinned digests,
+  and the one published port.
+
+- On the GPU host (RTX 5090, rootless Podman 6.1.2, the run
+  `metrics-final-20260928T172953Z`, dated 2026-09-28): `up` with
+  `LLM_DASHBOARD=true` loaded `qwen3.8-27b-q4-mtp` in the usual time,
+  then started the three containers, and `status` listed them beside
+  llama with Grafana on `127.0.0.1:4211`. After `smoke`, `bench`, and
+  the nine-request agent session, Grafana's query API answered through
+  the gate with `llamacpp:prompt_tokens_total` at 9,186 and the
+  acceptance ratio at 0.627 for the loaded preset; `/api/health` was
+  ok, the anonymous `POST /api/dashboards/db` answered 403, and the
+  exporter's log showed both listeners. `down` removed the three
+  containers and the `dashboard` and `dashboard-publish` networks with
+  the rest.
+- On the GPU host again with the `gpu-exporter` service (run
+  `dashboard-gpu-20260928T193744Z`, dated 2026-09-28): `up` with
+  `LLM_DASHBOARD=true` and `LLM_GPU=true` started the four containers,
+  the exporter's log reached "ready to serve metrics" as the host user,
+  and after `smoke` Grafana answered through the gate for the `gpu`
+  job: `up` 1, `DCGM_FI_DEV_GPU_UTIL` 1, `DCGM_FI_DEV_FB_USED` 21,143
+  MiB, `DCGM_FI_DEV_POWER_USAGE` 103.7 W with the 27B preset loaded,
+  each series labelled with the card's UUID, PCI address, model name,
+  and driver version. The run then left the stack, PI WEB, and the
+  stats page running for a look by hand.
+
+Not covered: the profile on Docker Engine; a `/metrics` read that waits
+on a decode step of a busy slot set (the exporter allows 15 s and
+keeps the last lines; the host session ran one client); a preset swap
+seen by the exporter against the real router (the fake router covers
+it); the 90-day retention over real time; Grafana's own database growth
+on its tmpfs over weeks.
+
+### The live panel of the served stats page
+
+Purpose: prove that `stats --serve` shows the running model server's
+occupancy and throughput from its own counters, that the server polls
+only a loaded preset, that `/live` keeps the page's loopback rules, and
+that the saved page stays static. Date: 2026-09-27. Environment: the
+virtual machine of [The CPU integration check](#the-cpu-integration-check),
+rootless Podman 6.1.2, the pinned router (llama.cpp b11028) on the CPU
+with the `ci-small` fixture preset (Qwen3-0.6B, `parallel = 1`) started
+with `up`; `stats --serve` over a copy of the stub transcripts of [The
+metrics set and its timings extension](#the-metrics-set-and-its-timings-extension);
+pairs of streaming chat completions (300 tokens each) sent every six
+seconds while `/live` was fetched every two; the served page
+screenshotted light and dark by the pinned pi image's Chromium
+153.0.8010.52 over the host's loopback.
+
+- Fourteen fetches of `/live` returned one more sample each. The first
+  named the preset without counters (seen loaded once); from the second
+  on the gauges followed the pairs of requests: `processing 1, queued
+  1` while both waited, `processing 1, queued 0` once the first had
+  finished, `processing 0, queued 0` between pairs. Rates from the
+  third sample on: about 9.3 prompt tokens/s and 147 generated tokens/s
+  while a request streamed (a 104-token prompt and 300 generated tokens
+  per request on the CPU), 0 between pairs.
+- Every sample named `ci-small`, the one preset rendered for the run
+  (the router's log was not kept; which presets the server asks for is
+  pinned by the fake-router audit below).
+- `/live` answered 200 for the server's own loopback names and 403 for
+  a foreign `Host`; the JSON carries the API address, and per sample the
+  time, reachability, the preset's name, whether it was scraped, the
+  two gauges, and the two rates, and nothing else.
+- Both screenshots show the panel above the report: the state line
+  `ci-small loaded`, the four tiles with the last sample, the
+  throughput chart with the generated-tokens line stepping between 0
+  and about 147 per request pair and the prompt line near 9, the
+  occupancy chart with processing and queued as stepped lines between 0
+  and 1, time-of-day labels on both x axes, legends under each chart,
+  the dark palette applied, and no label collisions.
+- The saved page (`stats` without `--serve`) carries no live script and
+  no `/live` reference; the strict gate pins that, the `/live` Host
+  matrix, and the sampler against a fake router: a preset is scraped
+  only after two polls report it loaded (an audit of every `/metrics`
+  path asked), a counter going backwards yields no rate for that tick,
+  a swap names the new preset a tick before scraping it, a hostile
+  preset name and a text label never enter a sample, the ring is
+  bounded, and an unreachable API gives unreachable samples.
+- SIGTERM stopped the server cleanly (exit 143 through the wrapper's
+  signal handler).
+
+- On the GPU host (RTX 5090, `qwen3.8-27b-q4-mtp`, run
+  `metrics-set-20260927T203216Z`), `stats --serve` ran beside the
+  scripted pi session of [The metrics set and its timings
+  extension](#the-metrics-set-and-its-timings-extension) while a loop
+  fetched `/live` every two seconds: 64 samples, the first naming the
+  preset without counters and every later one scraped, `processing 1`
+  in 48 of them and `queued 0` throughout (one client), prompt rates up
+  to 513 tokens/s and generation rates mostly between 27 and 492
+  tokens/s while the agent worked, 0 between turns. One tick reported
+  4,340 generated tokens/s: an increase of about 8,700 in
+  `llamacpp:tokens_predicted_total` in two seconds, at 22:34:05, the
+  second the session's third request ended after 78 s with 8,824
+  output tokens. llama.cpp b11028 adds a request's generated tokens to
+  that counter when the slot is released at the request's end
+  (`tools/server/server-context.cpp`, the slot's `callback_on_reset`
+  flushing `stats.n_gen`), not per token, so a long answer arrives as
+  one burst; the same made the second request's 994 tokens show as 491
+  tokens/s for one tick. The samples integrate to about 10,960
+  generated tokens over the session against 11,070 output tokens in
+  the transcript. On the VM's CPU router the counters advanced exactly
+  by each completed request's completion tokens across cold, cached,
+  and partially cached prompts. The panel's rate is therefore the
+  server's own bookkeeping: exact per request, bursty within one.
+  `down` ended the run; SIGTERM stopped the server.
+
+Not covered: a preset swap and a stack restart seen by a running page
+(covered by the fake-router tests only), `--models-max` above 1, and a
+wall clock that steps backwards while the page is open (samples out
+of order are skipped).
+
+### The metrics set and its timings extension
+
+Purpose: prove that the `metrics` agent set's pi extension writes each
+request's time to first token and duration into the transcript, that
+`stats` reports them, and that the set leaves the request pi sends to
+the model unchanged. Date: 2026-09-27. Environment: the virtual machine
+of [The CPU integration check](#the-cpu-integration-check), rootless
+Podman 6.1.2, the `agent-pi` images for the `coding` and the
+`coding,metrics` selections built from the pinned Node base image; pi
+started through the entrypoint as `agent pi` starts it, with a stub
+model endpoint inside the container (`--network none`, `--add-host
+llama:127.0.0.1`) that records each chat-completion request body and
+streams `hi there.` with a delay before its first token, the method of
+[Request size of the coding set](#request-size-of-the-coding-set); then
+the GPU host (RTX 5090, driver 615.71.09, rootless Podman 6.1.2) with
+`LLM_AGENT_SETS=coding,metrics` on `qwen3.8-27b-q4-mtp`, the scripted
+run `metrics-set-20260927T203216Z` in the validate directory.
+
+- `pi -p 'say hi'` and then `pi --continue -p 'say hi again'` sent two
+  requests in each image. Both request bodies are byte-identical
+  between the images (28,369 and 28,478 bytes, 17 tools), the second
+  one with the timed assistant message of the first turn in its
+  history: the extension registers no tool, command, or prompt text,
+  the set has no note, and pi builds the request's assistant messages
+  from role and content only.
+- With the `coding,metrics` image, the transcript's assistant messages
+  carry `ttft: 168` and `duration: 226`, then `ttft: 172` and
+  `duration: 232` (milliseconds) against a stub that delays the first
+  token by 150 ms; a run against a 400 ms delay carried `ttft: 419` and
+  `duration: 475`. Each message keeps its usage and stop reason; the
+  `coding` image's transcript carries no timing fields.
+- `stats` over the transcripts of the 150 ms and 400 ms runs prints
+  the Timings row `| pi | tokencrate | stub | 2 | 169 | 419 | 228 | 475 |`,
+  and the Timings table names the agent in its first column, so pi's
+  rows and oh-my-pi's rows never merge (both name provider `tokencrate`
+  and the same model, and each measures by its own definition).
+- `smoke --agent pi --sets coding,metrics` on the CPU stack with the
+  `ci-small` fixture preset: `Agent check completed with 0 failure(s).`,
+  every containment line `[ok]`, `agent sets seeded: 6 pi package(s)
+  and the tools note`, and the set's line `metrics: the timings
+  extension parses`.
+- The strict gate passes: `node --check` over the extension, the
+  rendered manifest of every shipped set, a node-driven replay of pi's
+  hook sequence against the extension (a completed answer gains the two
+  fields and keeps its content and usage; an errored answer, one that
+  streamed nothing, a message without a request before it, and user
+  and tool-result messages are returned untouched; the request hook
+  returns nothing), and the stats fixtures with a timed pi message, a
+  non-numeric `ttft`, and another extension's `custom` entry, none of
+  whose strings reach the report.
+
+- On the GPU host, `smoke --agent pi --sets coding,metrics` built the
+  image and passed with 0 failures, `6 pi package(s)` seeded and the
+  set's line `metrics: the timings extension parses`. A scripted
+  two-turn session (write a script, run it, fix it; then list the
+  files, the second turn through `--continue` in a new container) made
+  eight assistant requests, six with tool calls (`write`, `bash`), all
+  eight timed in one transcript: TTFT 126 to 412 ms, durations 536 ms to
+  78.4 s (the turn that ran and fixed the script), contexts 7,524 to
+  19,050 tokens. `stats` over the host's transcripts, which held that
+  session and one like it from an earlier attempt, printed the pi
+  Timings row `| pi | tokencrate | qwen3.8-27b-q4-mtp | 16 | 183 | 412 |
+  1748 | 8634 |` next to the oh-my-pi row of an earlier preset, and
+  carried no message content, session name, or project path.
+
+Not covered: browser-UI sessions (`pi-web`, `paseo`), and an errored or
+aborted request against a real model server (the extension's
+stop-reason filter is exercised by the hook replay only).
+
+### The metrics run on the GPU
+
+Purpose: prove the `/metrics` counters on a shipped GPU preset with
+real traffic behind them, including the spec-decode counters of the
+MTP preset, and the bench JSON and stats outputs on the GPU host.
+Date: 2026-09-27. Environment: the GPU host, rootless Podman 6.1.2,
+driver 615.71.09, `LLM_AGENT_SETS=coding`, preset
+`qwen3.8-27b-q4-mtp`; the scripted run in the validate directory's
+`metrics-20260927T125938Z`.
+
+- `up` rebuilt the runtime image from the pinned digest and loaded the
+  default preset in 42 seconds, holding 20,697 MiB against the
+  declared 24 GiB.
+- `smoke` passed all nine checks on the GPU preset, `metrics counters`
+  included (16 llamacpp metric names); generation ran at 134 tokens/s
+  in the completion check.
+- `bench --long` wrote the Markdown report and the JSON samples
+  (build `b11028-972d2313b`, three `timings` samples per run):
+  1,854/3,322 prompt tokens/s and 138.8/156.1 generation tokens/s for
+  the 262- and 6,052-token prompts; the long run's `prompt_ms` of
+  1,819 is the first-token wait on a cold 6K prompt.
+- A scrape of the loaded preset after that traffic returned 18
+  `llamacpp:` series, among them the spec-decode counters:
+  951 drafted and 613 accepted tokens over 320 drafts (64.5 percent
+  of drafted tokens accepted; by draft position 276/193/144 of 320,
+  so 86/60/45 percent), the number MTP tuning needs.
+- `stats` on the host reported its own 41 transcripts (288 requests),
+  matching the VM run over the share, and saved the HTML page; the
+  page carries no message content, session names, or host paths.
+- `down` removed the stack in one second.
+
+Not covered: a scrape of an unloaded preset (the run scrapes only the
+loaded one by design); counter content beyond smoke and bench traffic,
+such as a long agent session; every preset other than the default.
+
+### The stats page and its loopback server
+
+Purpose: prove that `stats` writes its report as a self-contained HTML
+page whose chart and tables match the Markdown, that the chart's
+vendored library is the pinned artifact, and that `stats --serve`
+answers only its own loopback `Host` names. Date: 2026-09-27.
+Environment: the virtual machine; the engine-free harness
+(`tests/test_statspage.py`) on Python 3.14.7, and the page rendered
+headless and offline (`--network none`) with Debian Chromium
+153.0.8010.52 from the pinned pi image over the GPU host's 41 retained
+transcripts.
+
+- Over the synthetic transcripts, the page carries the two inlined
+  uPlot 1.6.32 files (SHA-256 asserted against the published npm
+  artifact; the gate runs `node --check` over the vendored source),
+  the chart mount, the legend, and every table cell of the Markdown
+  report. The data island holds one aligned series per agent - leading
+  zeros, monotone shares, the flat tail at the axis end - and only
+  agent labels and numbers; a `<script>` in a transcript-supplied
+  model name arrives escaped, and none of the fixture's content
+  markers, session names, or paths appear. The saved page has no
+  refresh; the served one reloads every 60 seconds.
+- The server, bound to an ephemeral loopback port, answered 200 with
+  the page for its own `127.0.0.1:<port>` and `localhost:<port>` Host
+  names, 403 for a foreign name, a portless name, and a wrong port,
+  404 off `/`, and 503 with its one-sentence explanation for an agents
+  directory without transcripts; binding an occupied port is a
+  one-sentence refusal.
+- Rendered over the GPU host's transcripts (288 requests), the canvas
+  chart drew one step line per agent with the distribution its tables
+  state - pi crossing 50 percent near 22K tokens, oh-my-pi's first
+  step at 19K - with no label collisions in light or dark mode.
+
+Not covered: the crosshair, tooltip, and keyboard readout in a driven
+browser (the chart script is syntax-checked and reads only the data
+island); the chart's redraw on a color-scheme change or before
+printing; a served page under concurrent readers.
+
+### Metrics counters and the stats report
+
+Purpose: prove that the router rendered with `metrics = true` in `[*]`
+answers with counters at `GET /metrics?model=` for a loaded and a
+swapped preset (the `smoke` check `metrics counters`), that
+`bench` writes its JSON measurements next to the Markdown report, and
+that `stats` reports over real transcripts without carrying content.
+Date: 2026-09-26. Environment: the virtual machine, rootless Podman
+6.1.2 with podman-compose 1.6.0 and `crun`, kernel 7.2.6,
+`LLM_GPU=false` with the CPU fixture models.
+
+- `python3 tests/integration.py -k probes_swap` passed: the router
+  started with `metrics = true` in the rendered `[*]` section, the full
+  probe on `ci-small` and the basic probe on `ci-tiny` passed every
+  check including `metrics counters`, and the swap between the presets
+  held.
+- `bench --preset ci-small --iterations 2` saved
+  `bench-<timestamp>.json` next to the Markdown report, with build
+  `b11028-972d2313b` and one `timings` sample per iteration
+  (`prompt_ms` 287 for the 223-token prompt).
+- `stats` over the GPU host's 41 retained transcripts, read over the
+  VM's share mount, reported 288 requests: pi's first-request p50 of
+  7,987 tokens against oh-my-pi's 19,032 (the first-request costs of
+  the [pi](#pi-and-the-agent-sets) and [oh-my-pi](#oh-my-pi) records),
+  an 89 percent cache-read share across all requests, 12 percent of pi
+  requests above 48K tokens, and time to first token and duration from
+  the oh-my-pi
+  transcripts alone. The report carried no message content, session
+  names, or project paths.
+
+Not covered: the counters' content on the GPU presets over a real
+workload and the spec-decode counters of the MTP presets; a scrape of
+an unloaded preset, which by the routing rule of
+[Router behavior](#router-behavior-the-wrapper-relies-on) loads it
+first, was not repeated for `/metrics`.
 
 ### The llama API and the presets
 

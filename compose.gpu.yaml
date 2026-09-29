@@ -5,3 +5,6 @@ services:
   llama:
     devices:
       - "${GPU_DEVICE:-nvidia.com/gpu=all}"
+  gpu-exporter:
+    devices:
+      - "${GPU_DEVICE:-nvidia.com/gpu=all}"

@@ -57,6 +57,8 @@ render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml
 render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml \
   --file compose.agent-egress.yaml --profile agent-pi --profile agent-omp
 render --file compose.yaml --file compose.podman.yaml --profile ui
+render --file compose.yaml --file compose.podman.yaml --profile dashboard
+render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml --profile dashboard --profile dashboard-gpu
 
 # Network placement: agents join only the internal network unless the egress
 # overlay is added; llama joins the published default network and the agents
@@ -139,6 +141,47 @@ if grep -Fq -- '--device' "$network_log"; then
 fi
 grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
   || { printf 'podman-compose compatibility: llama does not join the ui network\n' >&2; exit 1; }
+grep -Eq -- '--network=tokencrate_dashboard(:|$| )' "$network_log" \
+  || { printf 'podman-compose compatibility: llama does not join the dashboard network\n' >&2; exit 1; }
+
+# The dashboard profile: the exporter and VictoriaMetrics on the internal
+# dashboard network alone; Grafana also on dashboard-publish for its port.
+for service in llama-exporter victoriametrics; do
+  run_logged "$service" "${podman_files[@]}" --profile dashboard
+  grep -Eq -- '--network=tokencrate_dashboard(:|$| )' "$network_log" \
+    || { printf 'podman-compose compatibility: %s does not join the dashboard network\n' "$service" >&2; exit 1; }
+  if grep -Eq -- '--network=tokencrate_(agents|default|ui|ui-publish|dashboard-publish)' "$network_log"; then
+    printf 'podman-compose compatibility: %s joined a network other than dashboard\n' "$service" >&2
+    exit 1
+  fi
+  grep -Fq -- '--read-only' "$network_log" \
+    || { printf 'podman-compose compatibility: %s is not read-only\n' "$service" >&2; exit 1; }
+done
+# The GPU exporter: the dashboard network alone, the CDI device only
+# through the gpu overlay, and read-only like the rest.
+run_logged gpu-exporter "${podman_files[@]}" --profile dashboard-gpu
+grep -Eq -- '--network=tokencrate_dashboard(:|$| )' "$network_log" \
+  || { printf 'podman-compose compatibility: gpu-exporter does not join the dashboard network\n' >&2; exit 1; }
+grep -Fq -- '--device' "$network_log" \
+  || { printf 'podman-compose compatibility: gpu-exporter has no GPU device with the gpu overlay\n' >&2; exit 1; }
+grep -Fq -- '--read-only' "$network_log" \
+  || { printf 'podman-compose compatibility: gpu-exporter is not read-only\n' >&2; exit 1; }
+run_logged gpu-exporter --file compose.yaml --file compose.podman.yaml --env-file pins.env --profile dashboard-gpu
+if grep -Fq -- '--device' "$network_log"; then
+  printf 'podman-compose compatibility: gpu-exporter has a GPU device without the gpu overlay\n' >&2
+  exit 1
+fi
+run_args=(--service-ports)
+run_logged grafana "${podman_files[@]}" --profile dashboard
+run_args=()
+grep -Fq -- '--network=tokencrate_dashboard-publish' "$network_log" \
+  || { printf 'podman-compose compatibility: grafana does not join the dashboard-publish network\n' >&2; exit 1; }
+grep -Fq -- '-p 127.0.0.1:4211:8080' "$network_log" \
+  || { printf 'podman-compose compatibility: grafana does not publish its port on loopback\n' >&2; exit 1; }
+if grep -Eq -- '--network=tokencrate_(agents|default|ui|ui-publish)' "$network_log"; then
+  printf 'podman-compose compatibility: grafana joined an agent or UI network\n' >&2
+  exit 1
+fi
 
 # The browser UI sits on the ui network only, and with the egress overlay
 # on ui and default; the forwarder publishes from ui-publish, which no
