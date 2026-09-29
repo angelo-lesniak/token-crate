@@ -351,6 +351,9 @@ else:
             }
             (reports / "bench-20260918-101620.json").write_text(json.dumps(older).replace("Infinity", "1e999"))
             (reports / "bench-20260919-000000.json").write_text(json.dumps({**document, "build": "b1 | TOPSECRET"}))
+            # A second run without n_ctx: no change is computed between two
+            # unknown context sizes.
+            (reports / "bench-20260918-110000.json").write_text(json.dumps({**older, "rows": [older["rows"][0]]}))
             (reports / "bench-20260920-000000.json").write_text("{not json")
             (reports / "bench-20260921-000000.json").write_text(json.dumps({"schema": 2, "rows": [row]}))
             (reports / "bench-20260922-000000.json").write_text(json.dumps(["rows"]))
@@ -361,13 +364,18 @@ else:
             )
             text = probe.bench_history(reports)
         self.assertEqual(
-            [line for line in text.splitlines() if line.startswith("| 20")],
+            [line for line in text.splitlines() if line.startswith("| ci-small")],
             [
-                "| 2026-09-18 10:16 | ? | ? | ci-small | short | 223 | 100.0 | 10.0 | 3 |",
-                "| 2026-09-19 00:00 | ? | 65536 | ci-small | short | 223 | 1854.1 | 138.8 | 3 |",
-                "| 2026-09-19 00:00 | ? | 65536 | ci-small | long | 6052 | 1854.1 | 138.8 | 3 |",
-                "| 2026-09-27 15:00 | b11028-972d2313b | 65536 | ci-small | short | 223 | 1854.1 | 138.8 | 3 |",
-                "| 2026-09-27 15:00 | b11028-972d2313b | 65536 | ci-small | long | 6052 | 1854.1 | 138.8 | 3 |",
+                # Grouped by preset and run, oldest first; the change in
+                # generation speed against the row above of the same group
+                # and n_ctx (the first row of a group, and a row after a
+                # different n_ctx, have none).
+                "| ci-small | short | 2026-09-18 10:16 | ? | ? | 223 | 100.0 | 10.0 |  | 3 |",
+                "| ci-small | short | 2026-09-18 11:00 | ? | ? | 223 | 100.0 | 10.0 |  | 3 |",
+                "| ci-small | short | 2026-09-19 00:00 | 65536 | ? | 223 | 1854.1 | 138.8 |  | 3 |",
+                "| ci-small | short | 2026-09-27 15:00 | 65536 | b11028-972d2313b | 223 | 1854.1 | 138.8 | +0.0 | 3 |",
+                "| ci-small | long | 2026-09-19 00:00 | 65536 | ? | 6052 | 1854.1 | 138.8 |  | 3 |",
+                "| ci-small | long | 2026-09-27 15:00 | 65536 | b11028-972d2313b | 6052 | 1854.1 | 138.8 | +0.0 | 3 |",
             ],
         )
         for secret in ("TOPSECRET", "script", "127.0.0.1", "+0200", "xxxxx"):

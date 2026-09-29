@@ -393,6 +393,9 @@ services:
       - "-promscrape.config.strictParse"
       - "-storageDataPath=/victoria-metrics-data"
       - "-retentionPeriod=90d"
+      # Queries see samples as soon as they are scraped; the default hides
+      # the last 30 seconds, which put Grafana a minute behind the card.
+      - "-search.latencyOffset=1s"
       - "-httpListenAddr=:8428"
       - "-loggerLevel=WARN"
 

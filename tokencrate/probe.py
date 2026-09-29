@@ -463,8 +463,9 @@ BENCH_FILE_LIMIT = 1024 * 1024
 BUILD_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 BENCH_RUNS = ("short", "long")
 HISTORY_HEADER = (
-    "| Date | Build | n_ctx | Preset | Run | Prompt tokens | Prompt tokens/s | Generation tokens/s | Iterations |",
-    "| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: |",
+    "| Preset | Run | Date | n_ctx | Build | Prompt tokens | Prompt tokens/s | Generation tokens/s "
+    "| Δ generation | Iterations |",
+    "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
 )
 NO_HISTORY = (
     "No bench history: `bench` writes reports/bench-<timestamp>.json next to its report, and the history is "
@@ -474,11 +475,13 @@ NO_HISTORY = (
 
 def bench_history_rows(reports_dir: Path) -> list[str]:
     """One Markdown row per measured run of every `bench` JSON under
-    `reports_dir`, oldest file first. A file that is not a bench document is
-    skipped whole, a row that is not a measurement is skipped, and nothing
-    but the build, `n_ctx`, the preset, the run label, and the numbers
-    reaches the table, in the shapes the writer above produces."""
-    rows = []
+    `reports_dir`, grouped by preset and run, oldest first within a group,
+    with the change in generation speed against the previous row of the
+    group when both ran at the same `n_ctx`. A file that is not a bench
+    document is skipped whole, a row that is not a measurement is skipped,
+    and nothing but the build, `n_ctx`, the preset, the run label, and the
+    numbers reaches the table, in the shapes the writer above produces."""
+    measured = []
     for path in sorted(reports_dir.glob("bench-*.json")):
         match = BENCH_FILE_RE.fullmatch(path.name)
         if match is None:
@@ -494,7 +497,7 @@ def bench_history_rows(reports_dir: Path) -> list[str]:
         build = document.get("build")
         build = build if isinstance(build, str) and BUILD_RE.fullmatch(build) else "?"
         n_ctx = document.get("n_ctx")
-        n_ctx = str(n_ctx) if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx >= 0 else "?"
+        n_ctx = n_ctx if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx >= 0 else None
         day, clock = match.group(1), match.group(2)
         date = f"{day[:4]}-{day[4:6]}-{day[6:]} {clock[:2]}:{clock[2:4]}"
         for row in document["rows"]:
@@ -515,10 +518,22 @@ def bench_history_rows(reports_dir: Path) -> list[str]:
                 or min(prompt_tps, generation_tps) < 0
             ):
                 continue
-            rows.append(
-                f"| {date} | {build} | {n_ctx} | {preset} | {run} | {stats.integer(row.get('prompt_tokens'))} | "
-                f"{prompt_tps:.1f} | {generation_tps:.1f} | {stats.integer(row.get('iterations'))} |"
-            )
+            measured.append((preset, BENCH_RUNS.index(run), date, n_ctx, build, row, prompt_tps, generation_tps))
+    rows = []
+    previous = None
+    for preset, run_index, date, n_ctx, build, row, prompt_tps, generation_tps in sorted(
+        measured, key=lambda item: item[:3]
+    ):
+        same_group = (
+            previous is not None and previous[:2] == (preset, run_index) and n_ctx is not None and previous[2] == n_ctx
+        )
+        delta = f"{round(generation_tps - previous[3], 1) + 0.0:+.1f}" if same_group else ""
+        previous = (preset, run_index, n_ctx, generation_tps)
+        rows.append(
+            f"| {preset} | {BENCH_RUNS[run_index]} | {date} | {n_ctx if n_ctx is not None else '?'} | {build} | "
+            f"{stats.integer(row.get('prompt_tokens'))} | {prompt_tps:.1f} | {generation_tps:.1f} | {delta} | "
+            f"{stats.integer(row.get('iterations'))} |"
+        )
     return rows
 
 
@@ -533,7 +548,8 @@ def bench_history(reports_dir: Path) -> str:
         lines += [*HISTORY_HEADER, *rows]
     lines += [
         "",
-        "One row per measured run of every reports/bench-<timestamp>.json, oldest first; the numbers are the "
-        "report's averages over its iterations. Compare rows of one preset at one n_ctx.",
+        "One row per measured run of every reports/bench-<timestamp>.json, grouped by preset and run, oldest "
+        "first within a group; the numbers are the report's averages over its iterations. Δ generation is the "
+        "change in generation tokens/s against the row above when both ran at the same n_ctx.",
     ]
     return "\n".join(lines) + "\n"

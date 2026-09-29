@@ -302,15 +302,17 @@ holds the same measurements with six `timings` values per iteration, the
 server build, and the preset's context size (`n_ctx`). Presets are
 loaded in turn, so measuring several presets swaps models.
 
-`--history` prints those JSON files as one table, oldest first, one row
-per measured run: date, build, `n_ctx`, preset, run, prompt tokens, the
-two speeds, and the iterations. It reads the host's `reports/` directory
+`--history` prints those JSON files as one table, one row per measured
+run, grouped by preset and run and oldest first within a group: preset,
+run, date, `n_ctx`, build, prompt tokens, the two speeds, the change in
+generation speed against the row above (only when both ran at the same
+`n_ctx`), and the iterations. It reads the host's `reports/` directory
 and needs no engine or stack, so a llama.cpp
-[upgrade](configuration.md#upgrading) or a preset change can be compared
-with the runs before it; compare rows of one preset at one `n_ctx`. The
-history is this machine's, because `reports/` is not tracked. A file
-that is not a bench document is skipped, and only the build, `n_ctx`,
-the preset name, the run label, and the numbers reach the table.
+[upgrade](configuration.md#upgrading) or a preset change shows next to
+the runs before it. The history is this machine's, because `reports/`
+is not tracked. A file that is not a bench document is skipped, and
+only the build, `n_ctx`, the preset name, the run label, and the
+numbers reach the table.
 
 ```bash
 bash bin/tokencrate bench --preset qwen3.8-27b-q4 --preset qwen3.8-27b-q4-mtp
@@ -334,25 +336,51 @@ report is printed and written to `reports/stats-<timestamp>.md`, and
 self-contained page for a browser (open it from its file path): the
 tables, plus a chart of the context-size distribution with the share of
 requests each context size would have fit, readable in light and dark
-mode. The page loads no external scripts, styles, or fonts.
+mode and in print. The page loads no external scripts, styles, or
+fonts. A navigation line under the title jumps to each section; a
+click on a column header sorts its table (a second click reverses; on
+the served page the next refresh restores the original order); the
+share columns carry a bar under their percentage; and on a narrow
+screen each table scrolls inside its own region with its first column
+kept in view.
 
-The tables show, per agent and per provider and model: requests,
+The first table, Preset fit, answers whether a preset fits: one row per
+preset rendered into `build/models.ini` (by [`up`](#up) or
+[`presets render`](#presets)) with its slot (`ctx_size` / `parallel`),
+the requests and the sessions whose context exceeded that slot, and
+`fits` or `too small`. Every request in the report counts, whichever
+preset or provider served it, so the table judges a preset you have
+not run yet; and since the server refuses a request larger than its
+slot and the agents compact before they reach it, an observed context
+never exceeds the slot it ran in. The chart draws the compaction p50
+and one preset's slot as labelled lines: the loaded preset on the
+served page, otherwise the rendered preset that served the most
+requests (a slot beyond twice the largest context is named at the
+chart's right edge instead of stretching the axis).
+
+The other tables show, per agent and per provider and model: requests,
 summed input and output tokens, the cache-read share, and the
 context-size distribution (nearest-rank p50/p90/max and the share of
-requests above 16K/32K/48K tokens), for judging a preset's `ctx_size`
-and `parallel` against real sessions. Per agent they also show
+requests over 16K/32K/48K tokens). Per agent they also show
 sessions with their peak contexts and the first-request p50 (what a
 fresh agent costs before the task starts), turns (user messages) as
-p50, session duration (first to last message) as p50 and p90, tool calls
-with their error counts, every stop reason with its count, compactions,
-requests and output tokens per thinking level (the last level change
-before each request), and time to first token and request duration per
-agent: oh-my-pi records them itself, pi records them when the
+p50, session length (first to last message) as p50 and p90, tool calls
+with their error counts, every stop reason with its count, compactions
+with the p50 context before them, requests and output tokens per
+thinking level (the last level change before each request), and time
+to first token and request duration per agent: oh-my-pi records them
+itself, pi records them when the
 [`metrics` agent set](agent-sets.md#shipped-sets), part of the default
 selection, is loaded; that set also answers `/usage` inside a pi
-session with the same totals for the open transcript. A session's
+session with the same totals for the open transcript, one line ordered
+context, tokens in and out, cache-read share, timings, and counts. A
+session's
 requests against a cloud provider appear under that provider's name.
-The report's final paragraph defines each measure.
+The report ends with a Definitions list, one entry per measure. The
+summary line states the scope (sessions, requests, the agent and time
+filters or their absence) and how much of it is from the last 24
+hours, unless `--since` already cuts inside that day; the page's
+render time is in its footer.
 
 `--since <when>` keeps the sessions whose last message is at or after
 a point in time: a duration back from now (`30m`, `12h`, `7d`, `2w`) or
@@ -373,15 +401,23 @@ below `LLM_AGENTS_DIR` removes it from the report.
 
 `--serve` serves the page at `http://127.0.0.1:4210/` (`--port` selects
 another port) until Ctrl-C, re-reading the transcripts and refreshing
-the page every 60 seconds, and saves nothing. The served page adds a
-live panel above the report: the requests the model server is
+the page every 60 seconds, and saves nothing. The served page leads
+with a verdict on the loaded preset (its slot, and whether every
+request in the report would have fit it or how many would not) and
+adds a live panel above the report: the requests the model server is
 processing and has queued, its prompt and generation rates in tokens
 per second, the share of drafted tokens an MTP preset accepted since
 its load, and the GPU's memory in use and power draw, as tiles, and
-the requests and rates as two charts over the last ten minutes. The
-rates follow the server's counters, which llama.cpp advances when a
-request completes, so a long answer shows as one burst at its end
-rather than a steady line. The page polls the server's `/live` path,
+the requests and rates as two charts over the last ten minutes. A
+tile without a number says why (no preset loaded, first sample, no
+draft model, a failed GPU query), a rate of zero says whether the
+server is idle or a request is in progress, and a chart without a
+request in its window says so; once the tiles scroll away, one line
+with the state, the preset, the occupancy, the generation rate, and
+the GPU memory stays at the top of the window, each with a sparkline
+of the ring. The rates follow the server's counters, which llama.cpp
+advances when a request completes, so a long answer shows as one burst
+at its end rather than a steady line. The page polls the server's `/live` path,
 and the server polls the model server's loopback port (`LLM_PORT`), at
 most every 2 seconds and only while a page is open: `GET /models`, and
 for the preset that was loaded on this and the previous poll, `GET
@@ -390,8 +426,10 @@ in a model swap can ask the router for the preset that just unloaded,
 which loads it again; the two-poll rule keeps that to a swap between
 two consecutive requests. Beside each poll, when `LLM_GPU` is true and
 `nvidia-smi` is on the host's `PATH`, the server runs it once for the
-two GPU numbers (a board that reports no power draw leaves that tile
-empty). The panel shows when the stack is down or nothing is loaded;
+GPU numbers: memory in use and in all, and power draw (a board that
+reports no power draw leaves that tile empty); without the tool the
+page has no GPU tiles. The panel shows
+when the stack is down or nothing is loaded;
 its samples live in the server's memory (ten minutes) and are never
 saved, and a saved page has no panel. For history beyond ten minutes,
 the [dashboard](configuration.md#dashboard) keeps the server's

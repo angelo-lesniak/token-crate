@@ -9,42 +9,250 @@
   "graphTooltip": 1,
   "refresh": "15s",
   "time": {
-    "from": "now-6h",
+    "from": "now-15m",
     "to": "now"
   },
   "schemaVersion": 39,
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "Requests processing and queued",
-      "description": "The router's request gauges for the loaded preset.",
+      "type": "stat",
+      "title": "Requests processing",
+      "description": "The router's gauge for the loaded preset.",
       "datasource": {
         "type": "prometheus",
         "uid": "tokencrate-victoriametrics"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 0,
-        "y": 0
+        "y": 0,
+        "w": 6,
+        "h": 4
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "decimals": 0,
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llamacpp:requests_processing",
+          "legendFormat": "processing {{preset}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Requests queued",
+      "description": "Requests waiting for a slot.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokencrate-victoriametrics"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llamacpp:requests_deferred",
+          "legendFormat": "queued {{preset}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Generated tokens/s",
+      "description": "One-minute rate of the generated-tokens counter, which llama.cpp advances when a request completes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokencrate-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(llamacpp:tokens_predicted_total[1m])",
+          "legendFormat": "generated {{preset}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Draft acceptance",
+      "description": "Accepted over drafted tokens of an MTP preset, five-minute rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokencrate-victoriametrics"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 0,
+          "noValue": "no draft model"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(llamacpp:spec_decode_num_accepted_tokens_total[5m]) / rate(llamacpp:spec_decode_num_draft_tokens_total[5m])",
+          "legendFormat": "{{preset}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Occupancy",
+      "description": "Requests processing and queued, as the router reports them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokencrate-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
           "color": {
             "mode": "palette-classic"
           },
-          "min": 0,
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
             "showPoints": "never",
             "spanNulls": false,
-            "axisSoftMax": 1
-          }
+            "lineInterpolation": "stepAfter"
+          },
+          "decimals": 0
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^processing/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2a78d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^queued/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#eb6834"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -71,36 +279,67 @@
       ]
     },
     {
-      "id": 2,
+      "id": 6,
       "type": "timeseries",
-      "title": "Tokens per second",
-      "description": "Rates of the server's counters, which llama.cpp advances when a request completes.",
+      "title": "Throughput",
+      "description": "Tokens per second as one-minute rates of the server's counters, which llama.cpp advances when a request completes: a long answer arrives as one burst at its end.",
       "datasource": {
         "type": "prometheus",
         "uid": "tokencrate-victoriametrics"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 12,
-        "y": 0
+        "y": 4,
+        "w": 12,
+        "h": 8
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "min": 0,
           "color": {
             "mode": "palette-classic"
           },
-          "min": 0,
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
             "showPoints": "never",
             "spanNulls": false,
-            "axisSoftMax": 1
+            "lineInterpolation": "linear"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^prompt/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2a78d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^generated/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#eb6834"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -127,60 +366,8 @@
       ]
     },
     {
-      "id": 3,
-      "type": "timeseries",
-      "title": "Draft acceptance (MTP presets)",
-      "description": "Accepted over drafted tokens, five-minute rate.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "tokencrate-victoriametrics"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "min": 0,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "axisSoftMax": 1
-          },
-          "max": 1
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "rate(llamacpp:spec_decode_num_accepted_tokens_total[5m]) / rate(llamacpp:spec_decode_num_draft_tokens_total[5m])",
-          "legendFormat": "{{preset}}"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "type": "timeseries",
+      "id": 7,
+      "type": "state-timeline",
       "title": "Busy slots per decode",
       "description": "How many of the preset's parallel slots one decode step served.",
       "datasource": {
@@ -188,36 +375,50 @@
         "uid": "tokencrate-victoriametrics"
       },
       "gridPos": {
-        "h": 8,
+        "x": 0,
+        "y": 12,
         "w": 12,
-        "x": 12,
-        "y": 8
+        "h": 5
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
           "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#898781",
+                "value": null
+              },
+              {
+                "color": "#2a78d6",
+                "value": 1
+              }
+            ]
+          },
           "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "axisSoftMax": 1
+            "lineWidth": 0,
+            "fillOpacity": 70
           }
         },
         "overrides": []
       },
       "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.8,
         "legend": {
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "multi",
+          "mode": "single",
           "sort": "none"
         }
       },
@@ -230,45 +431,59 @@
       ]
     },
     {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Loaded preset and exporter",
-      "description": "1 while the named preset was loaded on two consecutive polls; the exporter scrapes only then.",
+      "id": 8,
+      "type": "state-timeline",
+      "title": "Loaded preset",
+      "description": "1 while the named preset was loaded on two consecutive polls of the exporter, which scrapes only then; the router row is 1 while the router answered.",
       "datasource": {
         "type": "prometheus",
         "uid": "tokencrate-victoriametrics"
       },
       "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 16
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 5
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
           "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#898781",
+                "value": null
+              },
+              {
+                "color": "#2a78d6",
+                "value": 1
+              }
+            ]
+          },
           "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "axisSoftMax": 1
+            "lineWidth": 0,
+            "fillOpacity": 70
           }
         },
         "overrides": []
       },
       "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.8,
         "legend": {
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "multi",
+          "mode": "single",
           "sort": "none"
         }
       },
@@ -276,17 +491,17 @@
         {
           "refId": "A",
           "expr": "max by (preset) (tokencrate_preset_loaded{preset!=\"\"})",
-          "legendFormat": "{{preset}} loaded"
+          "legendFormat": "{{preset}}"
         },
         {
           "refId": "B",
           "expr": "tokencrate_router_up",
-          "legendFormat": "router up"
+          "legendFormat": "router"
         }
       ]
     },
     {
-      "id": 6,
+      "id": 9,
       "type": "timeseries",
       "title": "GPU utilization and memory (LLM_GPU=true)",
       "description": "From dcgm-exporter, only with the dashboard-gpu profile; a CPU host shows no data.",
@@ -295,27 +510,58 @@
         "uid": "tokencrate-victoriametrics"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 0,
-        "y": 22
+        "y": 17,
+        "w": 12,
+        "h": 8
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "min": 0,
           "color": {
             "mode": "palette-classic"
           },
-          "min": 0,
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
             "showPoints": "never",
             "spanNulls": false,
-            "axisSoftMax": 1
+            "lineInterpolation": "linear"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^utilization/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2a78d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^memory/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#eb6834"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -342,7 +588,7 @@
       ]
     },
     {
-      "id": 7,
+      "id": 10,
       "type": "timeseries",
       "title": "GPU power and temperature",
       "description": "From dcgm-exporter, only with the dashboard-gpu profile.",
@@ -351,27 +597,58 @@
         "uid": "tokencrate-victoriametrics"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 12,
-        "y": 22
+        "y": 17,
+        "w": 12,
+        "h": 8
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "min": 0,
           "color": {
             "mode": "palette-classic"
           },
-          "min": 0,
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 0,
             "showPoints": "never",
             "spanNulls": false,
-            "axisSoftMax": 1
+            "lineInterpolation": "linear"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^power/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2a78d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^temperature/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#eb6834"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {

@@ -139,13 +139,22 @@ class StatsReportTests(unittest.TestCase):
     def test_the_report_aggregates_sessions_requests_models_and_timings(self) -> None:
         text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertTrue(text.startswith("# TokenCrate stats report\n\n- Date: "), text)
-        self.assertIn("- Transcripts: 3 session(s), 6 request(s) below LLM_AGENTS_DIR\n", text)
+        self.assertIn("- Transcripts: 3 session(s), 6 request(s) below LLM_AGENTS_DIR; none in the last 24 h\n", text)
         # Sessions: count, requests, turns p50, duration p50/p90 (first to
         # last message; the cloud session has one message, so the pi p90 is
         # the timed session's four minutes), first-request p50, peak context
         # p50/p90/max, compactions with the p50 context before them.
-        self.assertIn("| pi | 2 | 4 | 0 | 0s | 4m 00s | 1500 | 2050 | 16500 | 16500 | 1 (p50 before: 16500) |", text)
-        self.assertIn("| omp | 1 | 2 | 1 | 1h 12m | 1h 12m | 19000 | 19160 | 19160 | 19160 | 0 |", text)
+        self.assertIn("| pi | 2 | 4 | 0 | 0s | 4m 00s | 1500 | 2050 | 16500 | 16500 | 1 | 16500 |", text)
+        self.assertIn("| omp | 1 | 2 | 1 | 1h 12m | 1h 12m | 19000 | 19160 | 19160 | 19160 | 0 | - |", text)
+        # The headers say what they count, once each; the footnote is a
+        # keyed list of definitions.
+        self.assertIn("| Agent | Sessions | Requests | Turns p50 | Length p50 | Length p90 | First request p50 |", text)
+        self.assertIn("| Context p50 | Context p90 | Context max | over 16K | over 32K | over 48K |", text)
+        self.assertIn("| TTFT p50 ms | TTFT p90 ms | Duration p50 ms | Duration p90 ms |", text)
+        self.assertIn("\n## Definitions\n\n- **Context**: one request as the server saw it", text)
+        self.assertIn("\n- **Slot**: the context one request may use on a rendered preset", text)
+        # Without a rendered preset file the fit table is its note.
+        self.assertIn("## Preset fit\n\nNo rendered presets: `up` or `presets render` writes build/models.ini", text)
         # Requests: input and output are summed once per request; the context
         # columns are nearest-rank percentiles and the >16K/32K/48K shares.
         self.assertIn("| pi | 4 | 5900 | 450 | 74% | 2050 | 16500 | 16500 | 25% | 0% | 0% |", text)
@@ -168,6 +177,37 @@ class StatsReportTests(unittest.TestCase):
         self.assertIn("| pi | tokencrate | qwen-fixture | 1 | 300 | 300 | 900 | 900 |", text)
         self.assertIn("| omp | tokencrate | qwen-fixture | 2 | 800 | 1200 | 1500 | 3400 |", text)
         self.assertNotIn("No timed requests", text)
+
+    def test_the_summary_says_how_much_is_from_the_last_day(self) -> None:
+        # Sessions count by their last message; a --since inside the
+        # window says nothing more, an older one keeps the clause.
+        sessions = stats.read_sessions(self.agents_dir)
+        pi_last = 1790006400.0 + 240  # 2026-09-21T16:04:00Z; the cloud and omp sessions end about two hours later
+        self.assertEqual(
+            stats.recent_clause(sessions, now=pi_last + 86400 + 1), "2 sessions and 3 requests in the last 24 h"
+        )
+        self.assertEqual(stats.recent_clause(sessions, now=pi_last + 3 * 86400), "none in the last 24 h")
+        self.assertEqual(stats.recent_clause(sessions, stats.Filter(since=stats.since_cutoff("2h")), now=None), "")
+        self.assertEqual(stats.recent_clause(sessions, stats.Filter(since=stats.since_cutoff("24h")), now=None), "")
+        self.assertEqual(
+            stats.meta_text(sessions, now=pi_last + 3600),
+            "3 sessions, 6 requests, all agents, all time; 3 sessions and 6 requests in the last 24 h",
+        )
+        self.assertTrue(stats.summary_line(sessions, now=pi_last + 3600).endswith("in the last 24 h"))
+
+    def test_the_preset_fit_table_judges_every_rendered_slot(self) -> None:
+        # The fixture's contexts reach 19,160 tokens: a 16K slot would have
+        # refused three of the six requests (two sessions' peaks), a 32K
+        # slot none. Rows are sorted by preset name.
+        sessions = stats.read_sessions(self.agents_dir)
+        self.assertEqual(stats.fit_verdict(sessions, 16384), (3, 2, False))
+        self.assertEqual(stats.fit_verdict(sessions, 32768), (0, 0, True))
+        text = stats.report(sessions, slots={"ci-small": 32768, "ci-tiny": 16384})
+        self.assertIn(
+            "| Preset | Slot | Requests over slot | Sessions over slot | Fit |\n| --- | ---: | ---: | ---: | --- |\n"
+            "| ci-small | 32768 | 0 | 0 | fits |\n| ci-tiny | 16384 | 3 | 2 | too small |",
+            text,
+        )
 
     def test_the_report_carries_no_content_names_or_paths(self) -> None:
         text = stats.report(stats.read_sessions(self.agents_dir))
@@ -340,7 +380,7 @@ class StatsCommandTests(unittest.TestCase):
         self.assertIn("Serving the stats page", (self.scratch.root / "build" / "stats-serve.log").read_text())
         # The page answers with the child's own filter, and status names it.
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as response:
-            self.assertIn("(since ", response.read().decode())
+            self.assertIn("all agents, since 2026-09-01", response.read().decode())
         status = self.scratch.run("status")
         self.assertIn(f"Stats page: serving at http://127.0.0.1:{port}/ (pid {record['pid']}", status.stdout)
         # A second one is refused while the first runs.

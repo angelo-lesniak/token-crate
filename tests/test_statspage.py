@@ -204,23 +204,24 @@ class LiveSamplerTests(unittest.TestCase):
             fake = Path(tmp) / "nvidia-smi"
             fake.write_text(
                 '#!/bin/sh\ncase "$FAKE_SMI" in\n'
-                "  na) echo '21244, [N/A]' ;;\n"
+                "  na) echo '21244, 32607, [N/A]' ;;\n"
                 "  fail) exit 9 ;;\n"
-                "  *) echo '21244, 312.55'; echo '100, 50' ;;\n"
+                "  *) echo '21244, 32607, 312.55'; echo '100, 200, 50' ;;\n"
                 "esac\n"
             )
             fake.chmod(0o755)
             command = [str(fake), *statspage.NVIDIA_SMI_QUERY]
             with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "ok"}):
-                self.assertEqual(statspage.gpu_reading(command), (21244, 312.6))
+                self.assertEqual(statspage.gpu_reading(command), (21244, 32607, 312.6))
                 sampler = statspage.LiveSampler(self.router.url, interval=0, gpu_command=command)
                 sample = sampler.snapshot()[-1]
-                self.assertEqual((sample.gpu_memory_mib, sample.gpu_power_w), (21244, 312.6))
+                self.assertEqual((sample.gpu_memory_mib, sample.gpu_memory_total_mib), (21244, 32607))
+                self.assertEqual(sample.gpu_power_w, 312.6)
             with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "na"}):
-                self.assertEqual(statspage.gpu_reading(command), (21244, None))
+                self.assertEqual(statspage.gpu_reading(command), (21244, 32607, None))
             with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "fail"}):
-                self.assertEqual(statspage.gpu_reading(command), (None, None))
-            self.assertEqual(statspage.gpu_reading([str(fake) + "-missing"]), (None, None))
+                self.assertEqual(statspage.gpu_reading(command), (None, None, None))
+            self.assertEqual(statspage.gpu_reading([str(fake) + "-missing"]), (None, None, None))
         self.assertIsNone(statspage.nvidia_smi_command(False))
         with unittest.mock.patch("shutil.which", return_value="/usr/bin/nvidia-smi"):
             self.assertEqual(statspage.nvidia_smi_command(True), ["/usr/bin/nvidia-smi", *statspage.NVIDIA_SMI_QUERY])
@@ -251,15 +252,41 @@ class StatsPageTests(unittest.TestCase):
         data = island(page)
         self.assertEqual([series["label"] for series in data["series"]], ["pi", "omp"])
         self.assertEqual([series["slot"] for series in data["series"]], [1, 2])
-        # The tables carry the same cells as the Markdown report.
+        # The tables carry the same cells as the Markdown report, in scroll
+        # regions with column headers, and whole numbers get separators.
         self.assertIn("<tr><td>pi</td>", page)
         self.assertIn('<td class="n">2</td><td class="n">4</td><td class="n">0</td><td class="n">0s</td>', page)
-        # The meta line names the filters the page was made with.
+        self.assertIn('<div class="scroll" role="region" tabindex="0" aria-label="Sessions">', page)
+        self.assertIn('<th class="n" scope="col"><button type="button">Sessions</button></th>', page)
+        self.assertIn('<td class="n">16,500</td>', page)
+        self.assertNotIn("title=", page)
+        self.assertIn('<ul class="definitions">\n<li><b>Context</b>: one request as the server saw it', page)
+        # The saved page has no verdict; the fit table follows the slots.
+        self.assertNotIn('class="verdict"', page)
+        self.assertIn("No rendered presets", page)
+        fitted = statspage.html(stats.read_sessions(self.agents_dir), slots={"ci-small": 16384})
+        self.assertIn('<tr><td>ci-small</td><td class="n">16,384</td><td class="n">3</td>', fitted)
+        # The meta line names the scope and the filters the page was made
+        # with; the render time is in the footer; nothing names the directory.
+        self.assertIn('<p class="meta">3 sessions, 6 requests, all agents, all time; none in the last 24 h</p>', page)
+        self.assertNotIn("LLM_AGENTS_DIR", page)
+        self.assertRegex(page, r"<footer>Rendered 20\d\d-\d\d-\d\d \d\d:\d\d:\d\d [A-Z]+\.</footer>")
         filtered = statspage.html(
             stats.read_sessions(self.agents_dir, stats.Filter(agent="pi")), selection=stats.Filter(agent="pi")
         )
-        self.assertIn("below LLM_AGENTS_DIR (agent pi)</p>", filtered)
-        self.assertIn("<td>openrouter</td><td>acme/model/x</td>", page)
+        self.assertIn("2 sessions, 4 requests, agent pi, all time; none in the last 24 h</p>", filtered)
+        # Section navigation, sortable headers, the total row as a footer,
+        # the share meters, and monospace model cells.
+        self.assertIn('<nav><a href="#context">Context</a><a href="#preset-fit">Preset fit</a>', page)
+        self.assertIn('<a href="#definitions">Definitions</a></nav>', page)
+        self.assertIn('<h2 id="definitions">Definitions</h2>', page)
+        self.assertIn('<h2 id="providers-and-models">', page)
+        self.assertIn('<th scope="col"><button type="button">Agent</button></th>', page)
+        self.assertIn("<tfoot><tr><td>all</td>", page)
+        self.assertIn('<td class="n share" style="--share: 74%">74%</td>', page)
+        self.assertIn('<td class="mono">acme/model/x</td>', page)
+        self.assertNotIn('<td class="mono"><script>', statspage.html([make_session("<script>alert(1)</script>")]))
+        self.assertIn('<td>openrouter</td><td class="mono">acme/model/x</td>', page)
         # Escaping: a transcript string cannot smuggle markup into the page.
         self.assertNotIn("<script>alert", statspage.html([make_session("<script>alert(1)</script>")]))
         for secret in ("TOPSECRET", "PROJECTSECRET", "/srv/"):
@@ -283,10 +310,51 @@ class StatsPageTests(unittest.TestCase):
             self.assertEqual(values, sorted(values))
             self.assertEqual(values[-1], 1.0)
 
+    def test_the_chart_marks_the_compaction_and_one_slot(self) -> None:
+        sessions = stats.read_sessions(self.agents_dir)
+        # No rendered presets: the compaction p50 is the only mark.
+        self.assertEqual(island(statspage.html(sessions))["marks"], [{"label": "compaction p50", "value": 16500}])
+        # The most-used rendered preset's slot (the fixture's local model
+        # is not a rendered preset, so none is marked) ...
+        self.assertEqual(len(island(statspage.html(sessions, slots={"ci-small": 32768}))["marks"]), 1)
+        # ... unless a request names it: the axis extends to a slot within
+        # twice the largest context, and a roomier slot is marked beyond.
+        slots = {"qwen-fixture": 32768, "other": 1024}
+        data = island(statspage.html(sessions, slots=slots))
+        self.assertEqual(data["marks"][1], {"label": "qwen-fixture slot (most used)", "value": 32768, "beyond": False})
+        self.assertEqual(data["xmax"], 32768)
+        data = island(statspage.html(sessions, slots={"qwen-fixture": 131072}))
+        self.assertEqual(data["marks"][1]["beyond"], True)
+        self.assertEqual(data["xmax"], 24576)
+        # The served page marks the loaded preset and leads with its verdict.
+        served = statspage.html(
+            sessions, live="127.0.0.1:1", slots={"ci-small": 16384, "ci-big": 32768}, loaded="ci-small"
+        )
+        self.assertEqual(island(served)["marks"][1]["label"], "ci-small slot (loaded)")
+        self.assertIn(
+            '<section class="verdict" data-status="critical"><span class="dot" aria-hidden="true">\u2715</span>'
+            "<b>ci-small</b> (slot 16,384 tokens, loaded): 3 of 6 requests (50%) would not fit</section>",
+            served,
+        )
+        served = statspage.html(sessions, live="127.0.0.1:1", slots={"ci-big": 32768}, loaded="ci-big")
+        self.assertIn('data-status="good"><span class="dot" aria-hidden="true">\u2713</span><b>ci-big</b>', served)
+        self.assertIn("(slot 32,768 tokens, loaded): every request fit</section>", served)
+        served = statspage.html(sessions, live="127.0.0.1:1", slots={"ci-big": 32768}, loaded=None)
+        self.assertIn('data-status="none"', served)
+        self.assertIn("No preset loaded; the Preset fit table judges every rendered preset.", served)
+        served = statspage.html(sessions, live="127.0.0.1:1", slots={"ci-big": 32768}, loaded=None, down=True)
+        self.assertIn("Model server not reachable; the Preset fit table judges", served)
+        served = statspage.html(sessions, live="127.0.0.1:1", slots={}, loaded="ci-big")
+        self.assertIn("<b>ci-big</b> is loaded but not in build/models.ini; the Preset fit table", served)
+        # The GPU tiles exist only when the server runs a GPU query.
+        self.assertIn('data-gpu="0"', served)
+        self.assertIn('data-gpu="1"', statspage.html(sessions, live="127.0.0.1:1", gpu=True))
+
     def test_a_single_agent_page_names_it_without_a_legend(self) -> None:
         page = statspage.html([make_session("qwen-solo")])
         self.assertNotIn('<div class="legend">', page)
         self.assertIn("(pi)</figcaption>", page)
+        self.assertNotIn("<tfoot>", page)  # one agent: no total row
         # A one-point distribution still spans the axis: zero at the
         # origin, the full share at the observed context and the far edge.
         data = island(page)
@@ -308,7 +376,8 @@ class StatsPageTests(unittest.TestCase):
         # `substitute` would raise on a slot the renderer misses; this pins
         # the other direction, a skeleton edit that drops or renames one.
         identifiers = Template(statspage.asset("stats.html")).get_identifiers()
-        slots = ["chart", "footnote", "live", "meta", "refresh", "script", "style", "tables", "tiles"]
+        slots = ["chart", "definitions", "footer", "hero", "live", "meta", "nav", "refresh", "script", "style"]
+        slots += ["tables", "tiles"]
         self.assertEqual(sorted(identifiers), slots + ["vendorscript", "vendorstyle"])
 
 
@@ -320,7 +389,10 @@ class StatsServeTests(unittest.TestCase):
         write_transcripts(self.agents_dir)
         self.router = FakeRouter()
         self.addCleanup(self.router.close)
-        self.server = statspage.stats_server(self.agents_dir, 0, self.router.url)
+        self.build_dir = self.agents_dir / "build"
+        self.build_dir.mkdir()
+        (self.build_dir / "models.ini").write_text("[ci-small]\nctx-size = 16384\nparallel = 1\n", encoding="utf-8")
+        self.server = statspage.stats_server(self.agents_dir, 0, self.router.url, build_dir=self.build_dir)
         self.addCleanup(self.server.server_close)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
@@ -343,6 +415,11 @@ class StatsServeTests(unittest.TestCase):
         self.assertIn('<meta http-equiv="refresh" content="60">', body)
         self.assertIn('<script id="live-script" data-api="127.0.0.1:', body)
         self.assertIn('fetch("/live"', body)
+        # The served page's verdict is about the preset the sampler saw
+        # loaded, against the rendered slots; the fake router loads
+        # ci-small, whose 16K slot would refuse three fixture requests.
+        self.assertIn("<b>ci-small</b> (slot 16,384 tokens, loaded): 3 of 6 requests (50%) would not fit", body)
+        self.assertIn("<tr><td>ci-small</td>", body)
         saved = statspage.html(stats.read_sessions(self.agents_dir))
         self.assertNotIn("live-script", saved)
         self.assertNotIn("/live", saved)
@@ -371,6 +448,7 @@ class StatsServeTests(unittest.TestCase):
                 "deferred",
                 "generation_rate",
                 "gpu_memory_mib",
+                "gpu_memory_total_mib",
                 "gpu_power_w",
                 "model",
                 "processing",

@@ -415,6 +415,29 @@ class ProjectContractTests(unittest.TestCase):
         self.assert_mount(
             "grafana", grafana, "/etc/tokencrate/provisioning", "./config/dashboard/grafana", read_only=True
         )
+        # The provisioned dashboard: valid JSON, read-only, every panel on
+        # the provisioned datasource, and no soft axis maximum (Grafana
+        # ignores it on a stat panel).
+        dashboard = json.loads(
+            (PROJECT_ROOT / "config/dashboard/grafana/dashboards/model-server.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual((dashboard["uid"], dashboard["editable"]), ("tokencrate-model-server", False))
+        self.assertEqual(dashboard["time"]["from"], "now-15m")
+        titles = [panel["title"] for panel in dashboard["panels"]]
+        self.assertEqual(
+            titles[:6],
+            [
+                "Requests processing",
+                "Requests queued",
+                "Generated tokens/s",
+                "Draft acceptance",
+                "Occupancy",
+                "Throughput",
+            ],
+        )
+        for panel in dashboard["panels"]:
+            self.assertEqual(panel["datasource"]["uid"], "tokencrate-victoriametrics", panel["title"])
+            self.assertNotIn("axisSoftMax", json.dumps(panel), panel["title"])
         self.assert_mount(
             "victoriametrics",
             self.service(compose, "victoriametrics"),

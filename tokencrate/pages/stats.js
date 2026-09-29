@@ -1,5 +1,37 @@
 (function () {
   "use strict";
+  // Click-to-sort on every table: a header's button sorts the body rows by
+  // that column, a second click reverses; a footer (a total) stays put.
+  function sortValue(cell) {
+    var text = cell.textContent.trim();
+    if (cell.classList.contains("n")) {
+      // A session length reads `38s`, `4m 30s`, or `1h 12m`: seconds.
+      var length = /^(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?$/.exec(text);
+      if (length && text) { return 3600 * (length[1] || 0) + 60 * (length[2] || 0) + 1 * (length[3] || 0); }
+      var number = parseFloat(text.replace(/,/g, ""));
+      return isNaN(number) ? -Infinity : number;
+    }
+    return text.toLowerCase();
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("thead th"), function (th) {
+    var button = th.querySelector("button");
+    if (!button) { return; }
+    button.addEventListener("click", function () {
+      var table = th.closest("table");
+      var index = Array.prototype.indexOf.call(th.parentNode.children, th);
+      var ascending = th.getAttribute("aria-sort") !== "ascending";
+      Array.prototype.forEach.call(table.querySelectorAll("thead th"), function (other) { other.removeAttribute("aria-sort"); });
+      th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+      var body = table.tBodies[0];
+      var rows = Array.prototype.slice.call(body.rows);
+      rows.sort(function (a, b) {
+        var left = sortValue(a.cells[index]), right = sortValue(b.cells[index]);
+        return (left < right ? -1 : left > right ? 1 : 0) * (ascending ? 1 : -1);
+      });
+      rows.forEach(function (row) { body.appendChild(row); });
+    });
+  });
+
   var island = document.getElementById("ecdf-data");
   var mount = document.getElementById("ecdf");
   var tooltip = document.getElementById("tooltip");
@@ -10,6 +42,7 @@
   var HEIGHT = 300;
   var chart = null;
   var held = null;
+  var colors = null;
 
   // Colors resolve to literals at build time: a canvas keeps what it was
   // drawn with, so a scheme change or printing rebuilds the chart.
@@ -21,7 +54,8 @@
       series: data.series.map(function (series) { return token("--series-" + series.slot); }),
       grid: token("--grid"),
       axis: token("--axis"),
-      muted: token("--muted")
+      muted: token("--muted"),
+      surface: token("--surface")
     };
   }
 
@@ -47,10 +81,11 @@
       var key = document.createElement("span");
       key.className = "key";
       key.style.borderTopColor = "var(--series-" + series.slot + ")";
+      var fit = Math.round(100 * shareAt(series.values, tokens));
       var value = document.createElement("b");
-      value.textContent = Math.round(100 * shareAt(series.values, tokens)) + "%";
+      value.textContent = fit + "% fit";
       var label = document.createElement("span");
-      label.textContent = series.label;
+      label.textContent = series.label + " \u00b7 " + (100 - fit) + "% would not";
       row.appendChild(key); row.appendChild(value); row.appendChild(label);
       tooltip.appendChild(row);
     });
@@ -82,6 +117,40 @@
     return splits;
   }
 
+  // The reference marks (the compaction p50, one preset's slot) as labelled
+  // hairlines over the plot; a slot beyond the axis is named at its right
+  // edge. Drawn after the series, in canvas pixels.
+  function drawMarks(u) {
+    var ctx = u.ctx;
+    var ratio = window.devicePixelRatio || 1;
+    var box = u.bbox;
+    ctx.save();
+    ctx.font = (11 * ratio) + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.textBaseline = "top";
+    ctx.lineWidth = ratio;
+    ctx.strokeStyle = colors.muted;
+    ctx.fillStyle = colors.muted;
+    (data.marks || []).forEach(function (mark, index) {
+      var x = mark.beyond ? box.left + box.width : Math.round(u.valToPos(mark.value, "x", true));
+      ctx.beginPath();
+      ctx.moveTo(x, box.top);
+      ctx.lineTo(x, box.top + box.height);
+      ctx.stroke();
+      var right = x > box.left + box.width / 2;
+      ctx.textAlign = right ? "right" : "left";
+      var label = mark.label + " " + mark.value.toLocaleString() + (mark.beyond ? " \u2192" : "");
+      var textX = x + (right ? -4 : 4) * ratio;
+      var textY = box.top + (4 + 14 * index) * ratio;
+      var width = ctx.measureText(label).width;
+      // A surface-colored backing keeps the label legible over the lines.
+      ctx.fillStyle = colors.surface;
+      ctx.fillRect(right ? textX - width - 2 * ratio : textX - 2 * ratio, textY - ratio, width + 4 * ratio, 13 * ratio);
+      ctx.fillStyle = colors.muted;
+      ctx.fillText(label, textX, textY);
+    });
+    ctx.restore();
+  }
+
   function options(width, colors) {
     return {
       width: width,
@@ -98,6 +167,10 @@
           font: AXIS_FONT,
           size: 34,
           gap: 6,
+          label: "context size (tokens)",
+          labelFont: AXIS_FONT,
+          labelSize: 14,
+          labelGap: 2,
           ticks: { show: false },
           border: { show: true, stroke: colors.axis, width: 1 },
           grid: { stroke: colors.grid, width: 1 },
@@ -111,6 +184,10 @@
           font: AXIS_FONT,
           size: 48,
           gap: 8,
+          label: "requests that fit",
+          labelFont: AXIS_FONT,
+          labelSize: 14,
+          labelGap: 2,
           ticks: { show: false },
           grid: { stroke: colors.grid, width: 1 },
           splits: function () { return [0, 0.25, 0.5, 0.75, 1]; },
@@ -128,7 +205,7 @@
           points: { show: false }
         };
       })),
-      hooks: { setCursor: [onCursor] }
+      hooks: { setCursor: [onCursor], draw: [drawMarks] }
     };
   }
 
@@ -143,7 +220,8 @@
     held = null;
     if (chart) { chart.destroy(); chart = null; }
     hideTooltip();
-    chart = new uPlot(options(chartWidth(), palette(forPrint)), aligned, mount);
+    colors = palette(forPrint);
+    chart = new uPlot(options(chartWidth(), colors), aligned, mount);
   }
 
   // Arrow keys hold the crosshair at an x the pointer then takes over.

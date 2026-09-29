@@ -36,7 +36,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections import deque
+from collections import Counter, deque
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -45,9 +45,20 @@ from string import Template
 
 from . import TokenCrateError
 from .localhttp import http_get
-from .presets import PRESET_NAME_RE
+from .presets import PRESET_NAME_RE, rendered_slots
 from .session import AGENTS
-from .stats import FOOTNOTE, Filter, Request, Session, build_tables, read_sessions, share, summary_line
+from .stats import (
+    DEFINITIONS,
+    Filter,
+    Request,
+    Session,
+    build_tables,
+    fit_verdict,
+    meta_text,
+    percentile,
+    read_sessions,
+    share,
+)
 
 # `stats --serve` without `--port`, clear of the API (4207) and UI
 # (4224, 4250) defaults.
@@ -68,9 +79,9 @@ LIVE_GAUGES = ("llamacpp:requests_processing", "llamacpp:requests_deferred")
 # load; absent on a preset without a draft model.
 SPEC_COUNTERS = ("llamacpp:spec_decode_num_accepted_tokens_total", "llamacpp:spec_decode_num_draft_tokens_total")
 # The GPU query the sampler runs beside each scrape when the host has the
-# tool and LLM_GPU is true: memory in use (MiB) and power draw (W), as
-# numbers only, one line per GPU (the first is kept).
-NVIDIA_SMI_QUERY = ("--query-gpu=memory.used,power.draw", "--format=csv,noheader,nounits")
+# tool and LLM_GPU is true: memory in use and installed (MiB) and power
+# draw (W), as numbers only, one line per GPU (the first is kept).
+NVIDIA_SMI_QUERY = ("--query-gpu=memory.used,memory.total,power.draw", "--format=csv,noheader,nounits")
 
 
 @functools.cache
@@ -88,14 +99,40 @@ def prose(text: str) -> str:
     return re.sub(r"`([^`]*)`", r"<code>\1</code>", html_text.escape(text))
 
 
-def tags(name: str, values: tuple[str, ...] | list[str], numeric: tuple[bool, ...]) -> list[str]:
-    """One header or data cell per column; numeric columns align right."""
-    return [
-        f'<{name} class="n">{html_text.escape(value)}</{name}>'
-        if is_numeric
-        else f"<{name}>{html_text.escape(value)}</{name}>"
-        for value, is_numeric in zip(values, numeric, strict=True)
-    ]
+# Columns the page styles by their header: a share gets a meter under its
+# percentage, a model name is set in monospace. The Markdown is untouched.
+SHARE_COLUMNS = ("Cache-read share", "over 16K", "over 32K", "over 48K")
+MONO_COLUMNS = ("Model",)
+
+
+def tags(name: str, values: tuple[str, ...] | list[str], numeric: tuple[bool, ...], header=()) -> list[str]:
+    """One header or data cell per column; numeric columns align right, a
+    whole number gets its thousands separators (the Markdown keeps the
+    plain digits), a share carries its meter, and a header is a button
+    that sorts the table."""
+    cells = []
+    for index, (value, is_numeric) in enumerate(zip(values, numeric, strict=True)):
+        classes = ["n"] if is_numeric else []
+        text = html_text.escape(value)
+        style = ""
+        if name == "th":
+            text = f'<button type="button">{text}</button>'
+        elif is_numeric and value.isdigit():
+            text = f"{int(value):,}"
+        elif header and header[index] in SHARE_COLUMNS and value.endswith("%") and value[:-1].isdigit():
+            classes.append("share")
+            style = f' style="--share: {value}"'
+        elif header and header[index] in MONO_COLUMNS:
+            classes.append("mono")
+        scope = ' scope="col"' if name == "th" else ""
+        attributes = f' class="{" ".join(classes)}"' if classes else ""
+        cells.append(f"<{name}{attributes}{scope}{style}>{text}</{name}>")
+    return cells
+
+
+def slug(title: str) -> str:
+    """A section id from its title: `Preset fit` -> `preset-fit`."""
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
 def ecdf_points(requests: list[Request]) -> list[list[float]]:
@@ -115,23 +152,47 @@ def ecdf_points(requests: list[Request]) -> list[list[float]]:
     return points
 
 
-def ecdf_chart(sessions: list[Session]) -> str:
+def slot_mark(sessions: list[Session], slots: dict[str, int], loaded: str | None) -> tuple[str, int] | None:
+    """The one preset whose slot the chart marks: the loaded one on the
+    served page when it is rendered, otherwise the rendered preset that
+    served the most requests (a local request's model is its preset)."""
+    if loaded in slots:
+        return f"{loaded} slot (loaded)", slots[loaded]
+    served = Counter(
+        request.model for session in sessions for request in session.requests if request.model in slots
+    ).most_common(1)
+    if served:
+        return f"{served[0][0]} slot (most used)", slots[served[0][0]]
+    return None
+
+
+def ecdf_chart(sessions: list[Session], slot: tuple[str, int] | None = None) -> str:
     """The context-per-request distribution as one figure: an ECDF step
     line per agent, drawn by the inlined uPlot from the data island. The
     island carries aligned arrays - one shared x axis of every plotted
     context size, and per series the share of requests at or below each
     of them, forward-filled (an ECDF is right-continuous, so the carried
-    value is exact) with leading zeros and the flat tail to `xmax`."""
+    value is exact) with leading zeros and the flat tail to `xmax` - and
+    the reference marks: the compaction p50 and `slot`. The axis extends
+    to a slot up to twice the largest context; a roomier slot is marked at
+    the right edge instead, so the distribution keeps its width."""
     series = []
-    for slot, agent in enumerate(AGENTS, start=1):
+    for slot_index, agent in enumerate(AGENTS, start=1):
         requests = [request for session in sessions if session.agent == agent for request in session.requests]
         if requests:
-            series.append({"label": agent, "slot": slot, "points": ecdf_points(requests)})
+            series.append({"label": agent, "slot": slot_index, "points": ecdf_points(requests)})
     largest = max(point[0] for entry in series for point in entry["points"])
+    marks = []
+    compactions = [tokens for session in sessions for tokens in session.compaction_tokens]
+    if compactions:
+        marks.append({"label": "compaction p50", "value": percentile(compactions, 0.5)})
+    if slot is not None:
+        marks.append({"label": slot[0], "value": slot[1], "beyond": slot[1] > 2 * largest})
+    span = max(largest, slot[1]) if slot is not None and slot[1] <= 2 * largest else largest
     tick = 8192
-    while largest > 8 * tick:
+    while span > 8 * tick:
         tick *= 2
-    xmax = max(tick, math.ceil(largest / tick) * tick)
+    xmax = max(tick, math.ceil(span / tick) * tick)
     columns = sorted({0, xmax, *(value for entry in series for value, _ in entry["points"])})
     for entry in series:
         points, filled, index, value = entry.pop("points"), [], 0, 0.0
@@ -142,38 +203,74 @@ def ecdf_chart(sessions: list[Session]) -> str:
             filled.append(value)
         entry["values"] = filled
 
-    # The island holds only the AGENTS labels and numbers today; the "</"
-    # escape keeps a future transcript-supplied string from closing the tag.
-    data = {"xmax": xmax, "tick": tick, "x": columns, "series": series}
+    # The island holds only the AGENTS labels, preset names from the
+    # maintainer's rendered configuration, and numbers; the "</" escape
+    # keeps a future transcript-supplied string from closing the tag.
+    data = {"xmax": xmax, "tick": tick, "x": columns, "series": series, "marks": marks}
     island = json.dumps(data).replace("</", "<\\/")
     legend = "".join(
         f'<span><span class="key" style="border-top-color: var(--series-{entry["slot"]})"></span>'
         f"{html_text.escape(entry['label'])}</span>"
         for entry in series
     )
-    caption = "Share of requests at or below a context size"
+    caption = "How many requests would fit in a context of a given size"
     if len(series) == 1:
         caption += f" ({html_text.escape(series[0]['label'])})"
         legend = ""
     return (
-        "<figure>\n"
-        f"<figcaption>Context per request &mdash; {caption}</figcaption>\n"
+        '<figure id="context">\n'
+        f"<figcaption>{caption}</figcaption>\n"
         + (f'<div class="legend">{legend}</div>\n' if legend else "")
         + '<div id="ecdf" role="img" tabindex="0" '
-        'aria-label="Share of requests at or below each context size; the table below carries the numbers"></div>\n'
+        'aria-label="Share of requests that fit at each context size; the arrow keys move the readout, '
+        'and the Requests table carries the numbers"></div>\n'
         '<div id="tooltip"></div>\n'
         f'<script type="application/json" id="ecdf-data">{island}</script>\n'
         "</figure>"
     )
 
 
-def live_panel(api: str) -> str:
+def verdict(sessions: list[Session], slots: dict[str, int], loaded: str | None, down: bool = False) -> str:
+    """The served page's lead: whether the loaded preset's slot fits the
+    report's requests, in words, with a status glyph and colour beside them;
+    `down` says the model server did not answer the last poll."""
+    if loaded not in slots:
+        if down:
+            text = "Model server not reachable; "
+        elif loaded:
+            text = f"<b>{html_text.escape(loaded)}</b> is loaded but not in build/models.ini; "
+        else:
+            text = "No preset loaded; "
+        return (
+            '<section class="verdict" data-status="none"><span class="dot" aria-hidden="true"></span>'
+            f"{text}the Preset fit table judges every rendered preset.</section>"
+        )
+    over, _, fits = fit_verdict(sessions, slots[loaded])
+    total = sum(len(session.requests) for session in sessions)
+    if fits:
+        status, glyph, text = "good", "\u2713", "every request fit"
+    else:
+        status, glyph, text = (
+            "critical",
+            "\u2715",
+            f"{over:,} of {total:,} requests ({share(over, total)}) would not fit",
+        )
+    return (
+        f'<section class="verdict" data-status="{status}"><span class="dot" aria-hidden="true">{glyph}</span>'
+        f"<b>{html_text.escape(loaded)}</b> (slot {slots[loaded]:,} tokens, loaded): {text}</section>"
+    )
+
+
+def live_panel(api: str, gpu: bool) -> str:
     """The served page's live panel: one script that builds the panel and
     polls `/live`; `api` (host:port of the model server, as `stats_server`
-    derives it) names what is polled when it cannot be reached."""
+    derives it) names what is polled when it cannot be reached, and `gpu`
+    says whether the server runs a GPU query at all (without one the panel
+    shows no GPU tiles)."""
     return (
         '<script id="live-script" '
-        f'data-api="{html_text.escape(api)}" data-interval="{int(LIVE_INTERVAL * 1000)}">\n'
+        f'data-api="{html_text.escape(api)}" data-interval="{int(LIVE_INTERVAL * 1000)}" '
+        f'data-gpu="{int(gpu)}">\n'
         f"{asset('live.js')}</script>"
     )
 
@@ -183,10 +280,17 @@ def html(
     refresh: int | None = None,
     live: str | None = None,
     selection: Filter | None = None,
+    slots: dict[str, int] | None = None,
+    loaded: str | None = None,
+    gpu: bool = False,
+    down: bool = False,
 ) -> str:
     """The stats report as one self-contained HTML page; `live` (the model
-    server's host:port) adds the served page's live panel, `selection`
-    names the filters the meta line reports."""
+    server's host:port) adds the served page's live panel and its verdict
+    on `loaded`, the preset the server saw loaded; `selection` names the
+    filters the meta line reports; `slots` are the rendered presets'
+    contexts per slot."""
+    slots = slots or {}
     requests = [request for session in sessions for request in session.requests]
     contexts = [request.context for request in requests]
     prompt = sum(request.input + request.cache_read for request in requests)
@@ -194,37 +298,55 @@ def html(
         ("Sessions", f"{len(sessions):,}"),
         ("Requests", f"{len(requests):,}"),
         ("Cache-read share", share(sum(request.cache_read for request in requests), prompt)),
-        ("Requests above 32K", share(sum(context > 32768 for context in contexts), len(contexts))),
+        ("Requests over 32K", share(sum(context > 32768 for context in contexts), len(contexts))),
     )
     sections = []
-    for table in build_tables(sessions):
-        sections.append(f"<h2>{html_text.escape(table.title)}</h2>")
+    links = [("Context", "context"), ("Preset fit", "preset-fit")]
+    for table in build_tables(sessions, slots):
+        anchor = slug(table.title)
+        if table.title != "Preset fit":
+            links.append((table.title.split(" ")[0], anchor))
+        sections.append(f'<h2 id="{anchor}">{html_text.escape(table.title)}</h2>')
         if not table.rows:
             sections.append(f"<p>{prose(table.empty_note)}</p>")
             continue
+        body, foot = (table.rows[:-1], table.rows[-1:]) if table.total else (table.rows, [])
+        sections.append(f'<div class="scroll" role="region" tabindex="0" aria-label="{html_text.escape(table.title)}">')
         sections.append("<table>")
         sections.append("<thead><tr>" + "".join(tags("th", table.header, table.numeric)) + "</tr></thead>")
         sections.append("<tbody>")
-        sections += ["<tr>" + "".join(tags("td", row, table.numeric)) + "</tr>" for row in table.rows]
+        sections += ["<tr>" + "".join(tags("td", row, table.numeric, table.header)) + "</tr>" for row in body]
         sections.append("</tbody>")
+        if foot:
+            sections.append("<tfoot><tr>" + "".join(tags("td", foot[0], table.numeric, table.header)) + "</tr></tfoot>")
         sections.append("</table>")
+        sections.append("</div>")
+    links.append(("Definitions", "definitions"))
+    nav = "<nav>" + "".join(f'<a href="#{anchor}">{label}</a>' for label, anchor in links) + "</nav>"
+    rendered = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+    footer = f"Rendered {rendered}" + (f"; the page refreshes every {refresh} s." if refresh else ".")
     return Template(asset("stats.html")).substitute(
         refresh=f'<meta http-equiv="refresh" content="{refresh}">\n' if refresh else "",
         vendorstyle=asset("vendor/uPlot.min.css"),
         vendorscript=asset("vendor/uPlot.iife.js"),
         style=asset("stats.css"),
-        meta=f"{time.strftime('%Y-%m-%d %H:%M:%S %Z')} &middot; {html_text.escape(summary_line(sessions, selection))}",
+        nav=nav,
+        meta=html_text.escape(meta_text(sessions, selection)),
+        footer=footer,
+        hero=verdict(sessions, slots, loaded, down) if live else "",
         tiles='<div class="tiles">\n'
         + "\n".join(
             f'<div class="tile"><div class="label">{label}</div><div class="value">{value}</div></div>'
             for label, value in tiles
         )
         + "\n</div>",
-        chart=ecdf_chart(sessions),
+        chart=ecdf_chart(sessions, slot_mark(sessions, slots, loaded if live else None)),
         tables="\n".join(sections),
-        footnote=prose(FOOTNOTE),
+        definitions='<h2 id="definitions">Definitions</h2>\n<ul class="definitions">\n'
+        + "\n".join(f"<li><b>{html_text.escape(term)}</b>: {prose(text)}</li>" for term, text in DEFINITIONS)
+        + "\n</ul>",
         script=asset("stats.js"),
-        live=live_panel(live) if live else "",
+        live=live_panel(live, gpu) if live else "",
     )
 
 
@@ -251,6 +373,7 @@ class Sample:
     generation_rate: float | None
     acceptance: float | None = None
     gpu_memory_mib: int | None = None
+    gpu_memory_total_mib: int | None = None
     gpu_power_w: float | None = None
 
 
@@ -277,10 +400,11 @@ def nvidia_smi_command(gpu: bool) -> list[str] | None:
     return [found, *NVIDIA_SMI_QUERY] if found else None
 
 
-def gpu_reading(command: list[str]) -> tuple[int | None, float | None]:
-    """The first GPU's memory in use and power draw from the query's CSV
-    line; a field that is not a number (`[N/A]`) is None, as is everything
-    when the command fails or takes longer than the scrape timeout."""
+def gpu_reading(command: list[str]) -> tuple[int | None, int | None, float | None]:
+    """The first GPU's memory in use, its memory in all, and its power draw
+    from the query's CSV line; a field that is not a number (`[N/A]`) is
+    None, as is everything when the command fails or takes longer than
+    the scrape timeout."""
     try:
         run = subprocess.run(
             command,
@@ -292,12 +416,16 @@ def gpu_reading(command: list[str]) -> tuple[int | None, float | None]:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return None, None
+        return None, None, None
     if run.returncode:
-        return None, None
-    fields = [number(field) for field in (run.stdout.splitlines() or [""])[0].split(",")[:2]] + [None, None]
-    memory, power = fields[0], fields[1]
-    return (int(memory) if memory is not None else None, round(power, 1) if power is not None else None)
+        return None, None, None
+    fields = [number(field) for field in (run.stdout.splitlines() or [""])[0].split(",")[:3]] + [None] * 3
+    memory, total, power = fields[0], fields[1], fields[2]
+    return (
+        int(memory) if memory is not None else None,
+        int(total) if total is not None else None,
+        round(power, 1) if power is not None else None,
+    )
 
 
 def number(text: str) -> float | None:
@@ -352,7 +480,9 @@ class LiveSampler:
             try:
                 sample = self.scrape()
                 if self.gpu_command:
-                    sample.gpu_memory_mib, sample.gpu_power_w = gpu_reading(self.gpu_command)
+                    sample.gpu_memory_mib, sample.gpu_memory_total_mib, sample.gpu_power_w = gpu_reading(
+                        self.gpu_command
+                    )
             finally:
                 with self.lock:
                     self.scraping = False
@@ -429,10 +559,11 @@ def stats_server(
     selection: Filter | None = None,
     *,
     gpu_command: list[str] | None = None,
+    build_dir: Path | None = None,
 ) -> ThreadingHTTPServer:
     """The page on 127.0.0.1:`port`, re-reading the transcripts (through
-    `selection`) on every request, and `/live`, the samples of the model
-    server at `service_url`. Only the server's own loopback `Host` names
+    `selection`) and the rendered presets under `build_dir` on every
+    request, and `/live`, the samples of the model server at `service_url`. Only the server's own loopback `Host` names
     are answered, so a page on another site cannot use the browser's name
     resolution to reach it; without CORS headers the response body stays
     unreadable cross-origin either way."""
@@ -471,8 +602,18 @@ def stats_server(
             if path != "/":
                 return self.refuse(404, "the stats page is at /")
             try:
+                # The page's verdict is about the preset the last sample saw
+                # loaded; the snapshot scrapes only when one is due anyway.
+                samples = sampler.snapshot()
                 page = html(
-                    read_sessions(agents_dir, selection), refresh=REFRESH_SECONDS, live=api, selection=selection
+                    read_sessions(agents_dir, selection),
+                    refresh=REFRESH_SECONDS,
+                    live=api,
+                    selection=selection,
+                    slots=rendered_slots(build_dir) if build_dir else {},
+                    loaded=samples[-1].model if samples else None,
+                    gpu=gpu_command is not None,
+                    down=bool(samples) and not samples[-1].up,
                 )
             except TokenCrateError as error:
                 return self.refuse(503, str(error))
@@ -496,7 +637,14 @@ def serve(
     """Serve until interrupted; Ctrl-C, SIGHUP, or SIGTERM stop it. A
     server that `--detach` started finds its own PID in the file under
     `root` and removes the file when it ends."""
-    with stats_server(agents_dir, port, service_url, selection, gpu_command=nvidia_smi_command(gpu)) as server:
+    with stats_server(
+        agents_dir,
+        port,
+        service_url,
+        selection,
+        gpu_command=nvidia_smi_command(gpu),
+        build_dir=root / "build" if root else None,
+    ) as server:
         print(f"Serving the stats page at http://127.0.0.1:{server.server_address[1]}/ (Ctrl-C stops it)")
         try:
             server.serve_forever()

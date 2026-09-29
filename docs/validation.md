@@ -33,7 +33,7 @@ The table summarizes the [records](#records).
 | The `metrics` set's `/usage` command prints one status line with the open transcript's totals through pi's extension UI and adds nothing to the transcript, and the request pi sends stays byte-identical with the command registered; `stats --since` and `--agent` keep whole sessions, the Sessions table carries turns and duration, the Thinking levels table keys requests by the last level change before them; `bench --history` lists every saved bench JSON's runs and skips what is not a measurement; the live panel's draft-acceptance tile follows the spec-decode counters and its GPU tiles the host's `nvidia-smi` | Validated | Arch Linux VM, rootless Podman 6.1.2, the `coding,metrics` image against a stub model endpoint; the engine-free harness on Python 3.14.7; RTX 5090, rootless Podman 6.1.2, on `qwen3.8-27b-q4-mtp` with `/usage` after a nine-request tool-calling session, the GPU and acceptance tiles read from the running preset | [The usage command, the filters, and the bench history](#the-usage-command-the-filters-and-the-bench-history) |
 | With `LLM_DASHBOARD=true`, `up` starts the exporter, VictoriaMetrics, and Grafana on the internal `dashboard` network beside the model, the exporter reads the router's counters for the loaded preset only (the two-poll rule), VictoriaMetrics keeps them, Grafana serves the provisioned dashboard on loopback to an anonymous viewer who cannot write, with its plugin install, update checks, usage reports, and news feed switched off (the switches pinned by the contract tests); `down` removes all three | Validated | Arch Linux VM, rootless Podman 6.1.2, llama.cpp b11028 on the CPU with the `ci-small` fixture preset; RTX 5090, rootless Podman 6.1.2, on `qwen3.8-27b-q4-mtp` with smoke, bench, and an agent session behind it | [The dashboard profile](#the-dashboard-profile) |
 | NVIDIA's dcgm-exporter serves the GPU's utilization, memory, power, temperature, and clocks as the host user with a read-only root, no capabilities, `no-new-privileges`, and the CDI device as the only device source, which is how the `gpu-exporter` service of the dashboard profile runs it; through `up` with `LLM_GPU=true` the service starts with the profile, VictoriaMetrics scrapes it, and Grafana answers the GPU's utilization, memory, and power | Validated | RTX 5090, driver 615.71.09, rootless Podman 6.1.2, `podman run` outside Compose and the Compose service through `up` | [The GPU exporter probe](#the-gpu-exporter-probe), [The dashboard profile](#the-dashboard-profile) |
-| `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot) and tables match the Markdown and carry no transcript content, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52 | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server) |
+| `stats` writes its report as a self-contained HTML page whose chart (drawn by the inlined, hash-pinned uPlot, with the compaction p50 and one preset's slot marked) and tables (the Preset fit table first, judging every rendered preset's slot against the report's requests) match the Markdown and carry no transcript content, the served page leads with a verdict on the loaded preset, and `stats --serve` answers on 127.0.0.1 only: 200 for its own loopback `Host` names, 403 for others, 404 off `/`, 503 without transcripts | Validated | Arch Linux VM, Python 3.14.7 engine-free harness; the page rendered in Chromium 153.0.8010.52; the GPU host on `qwen3.8-27b-q4-mtp` for the verdict, the live tiles, and the Grafana dashboard | [The stats page and its loopback server](#the-stats-page-and-its-loopback-server), [The stats page's verdict, marks, and tables](#the-stats-pages-verdict-marks-and-tables) |
 | `doctor` warns about an `LLM_AGENT_SETS` name no catalogue has; the agent check reports one interface, no default or gateway route, and no name resolution offline, and a default route with `--egress`, where the set checks are skipped | Validated | Arch Linux VM, rootless Podman 6.1.2 | [The cloud keys file and the session container](#the-cloud-keys-file-and-the-session-container) |
 | An `--egress` session is on the default network alone: it keeps the model, cannot resolve or reach an offline session by name or by its address on the agents network, and its check reports the route out, `[info]` for the gateway probe, and `[warn]` when no browser UI runs; a UI started with `--egress` or `--cloud` is the exception the UI rows below state | Validated | Arch Linux VM, rootless Podman 6.1.2 and Docker Engine 29.7.2 | [The egress network on the virtual machine](#the-egress-network-on-the-virtual-machine) |
 | An oh-my-pi session sends the Anthropic key to the address a project's `.env` or `.env.local` names (8 requests to a listener inside the container with the file, 0 without), so `agent omp --cloud` is refused | Validated | Arch Linux VM, rootless Podman 6.1.2, pinned oh-my-pi image offline | [oh-my-pi and project env files](#oh-my-pi-and-project-env-files) |
@@ -357,6 +357,86 @@ behavior, or image details below. Repeat these observations after a
 - The UI at the root is a build with router-mode model selection.
 
 ## Records
+
+### The stats page's verdict, marks, and tables
+
+Purpose: prove the usability pass over the stats page, the live
+panel, the Grafana dashboard, and the two terminal outputs. Date:
+2026-09-29. Environment: the virtual machine's engine-free harness on
+Python 3.14.7 and the pinned pi image's Chromium 153.0.8010.52 over
+the GPU host's 47 retained transcripts and its rendered
+`build/models.ini` (13 presets); the GPU host (RTX 5090, driver
+615.71.09, rootless Podman 6.1.2, `LLM_AGENT_SETS=coding,metrics,
+browser` with the dashboard profile on `qwen3.8-27b-q4-mtp`, runs
+`ux-20260929T050915Z` and `ux2-20260929T182936Z` in the validate
+directory), where `up`, `smoke`, and `bench` passed, a scripted turn
+made nine requests, and the `browser` set's Chromium screenshotted the
+served page and Grafana over the host's loopback.
+
+- Preset fit: `presets.rendered_slots` reads each rendered preset's
+  slot from `build/models.ini`; the table judged the host's 13 presets
+  the same in the Markdown and the page (the three 32K presets `too
+  small` with 93 of 321 requests and 5 sessions over, the 48K one with
+  29 and 2, every 64K and 128K preset `fits`), and `--since 1d` the
+  day's 17 requests as fitting everywhere.
+- The served page led with `qwen3.8-27b-q4-mtp (slot 65,536 tokens,
+  loaded): every request fit` on the good status from the sampler's
+  last sample; with a 32K preset loaded in the harness, `93 of 321
+  requests (29%) would not fit` on the critical one; the chart marked
+  the compaction p50 (60,378) and the loaded slot, the saved page the
+  most-used preset's slot, legibly over the step lines.
+- The summary line of both renderers ended with `4 sessions and 17
+  requests in the last 24 h` on the host (`none in the last 24 h` over
+  the harness fixture).
+- The live panel on the host, two minutes after the turn: the state
+  dot with the preset and the sample's time, `54.5` prompt and `9.7`
+  generated tokens/s left by the turn's last request, `58%`
+  acceptance, `20,943 / 32,607` MiB with the reason `in use / in all`
+  (`memory.total` joins the `nvidia-smi` query; 150 samples carried
+  the three GPU numbers, power from 335 W after the bench to 43 W
+  idle), the two charts side by side at 1280 pixels and stacked at 420;
+  without a GPU query the page has no GPU tiles, and a tile without a
+  number names its reason (`first sample`, `needs two scrapes`, `no
+  draft model`).
+- The tables scroll inside their own regions on a phone with the first
+  column kept, the headers name what they count, the numbers carry
+  separators, the column headers sort (the Requests total stays a
+  footer), the Definitions list replaced the footnote in both
+  renderers, the navigation line jumps to each section, and the chart
+  carries axis titles and a tooltip with both shares.
+- `/usage` over RPC after the turn answered one `notify` event: `usage:
+  context 9,976 (peak 9,976) · 8,663 in / 1,541 out · cache-read 89% ·
+  ttft p50 120 ms, duration p50 1.1 s · 9 requests, 8 tools, 3 errors`.
+- `bench --history` printed the host's four rows grouped by preset and
+  run, `+12.2` on the new short row against the day before at the same
+  65,536 `n_ctx` (137.2 after 125.0 generation tokens/s) and no change
+  where the context size differs or is unknown.
+- Grafana 13.2.2 rendered the reorganised dashboard as provisioned
+  (its API listed the ten panels in order and a 15-minute range,
+  answered the stat panel's rate query with 200, and refused an
+  anonymous dashboard write with 403): the stat row, Occupancy with
+  the turn's `processing` step and Throughput with its burst (about
+  145 prompt and 25 generated tokens/s over one minute) in the page's
+  blue and orange, the busy-slots and loaded-preset timelines, and the
+  GPU panels.
+- The strict gate pins the rest: the slot reader over a shared
+  section, a hostile name, and a section without a number; the fit
+  verdict and the table's rows; the island's marks and the axis
+  extension to a slot within twice the largest context (an edge mark
+  beyond it); the verdict for a fitting, a too small, a missing, and
+  an unreachable preset, and its absence from the saved page;
+  `data-gpu`; the scroll regions, header buttons, footer row, meters,
+  separators, and the absence of `title` attributes; the last-day
+  clause at three clocks; the usage line; the history's grouping and
+  delta; the dashboard's panel order, datasource, and the absence of
+  `axisSoftMax`.
+
+Not covered: the sticky strip, sorting, the tooltip, and the
+empty-window overlay in a driven browser (headless screenshots do not
+scroll or click; the overlay's rule that a nonzero rate counts as a
+seen request was set after the host screenshot showed the old rule
+beside rising lines); the turn's occupancy in the page's own ring (the
+sampling loop ended before the turn); print and forced-colors output.
 
 ### The usage command, the filters, and the bench history
 

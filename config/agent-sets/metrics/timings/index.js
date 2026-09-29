@@ -63,19 +63,25 @@ export function usageLine(entries) {
 	const cacheShare = prompt ? `${Math.round((100 * sum("cacheRead")) / prompt)}%` : "-";
 	const last = requests[requests.length - 1].context;
 	const peak = Math.max(...requests.map((request) => request.context));
-	const parts = [
-		`${requests.length} request${requests.length === 1 ? "" : "s"}`,
+	// Ordered by the questions: does it fit, what did it cost, how fast, how
+	// much happened; groups joined by middle dots.
+	const groups = [
+		`context ${last.toLocaleString("en-US")} (peak ${peak.toLocaleString("en-US")})`,
 		`${sum("input").toLocaleString("en-US")} in / ${sum("output").toLocaleString("en-US")} out`,
 		`cache-read ${cacheShare}`,
-		`context ${last.toLocaleString("en-US")} (peak ${peak.toLocaleString("en-US")})`,
 	];
 	const timed = requests.filter((request) => request.ttft !== null && request.duration !== null);
 	if (timed.length > 0) {
-		parts.push(`ttft p50 ${Math.round(percentile(timed.map((r) => r.ttft), 0.5))} ms`);
-		parts.push(`duration p50 ${seconds(percentile(timed.map((r) => r.duration), 0.5))}`);
+		groups.push(
+			`ttft p50 ${Math.round(percentile(timed.map((r) => r.ttft), 0.5))} ms, ` +
+				`duration p50 ${seconds(percentile(timed.map((r) => r.duration), 0.5))}`,
+		);
 	}
-	parts.push(`${toolCalls} tool${toolCalls === 1 ? "" : "s"}`, `${toolErrors} error${toolErrors === 1 ? "" : "s"}`);
-	return `usage: ${parts.join(", ")}`;
+	groups.push(
+		`${requests.length} request${requests.length === 1 ? "" : "s"}, ` +
+			`${toolCalls} tool${toolCalls === 1 ? "" : "s"}, ${toolErrors} error${toolErrors === 1 ? "" : "s"}`,
+	);
+	return `usage: ${groups.join(" · ")}`;
 }
 
 export default function (pi) {

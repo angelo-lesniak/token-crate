@@ -105,13 +105,20 @@ Grafana on the port `LLM_DASHBOARD_PORT` names:
   the Prometheus read paths and refuses everything else, since Grafana's
   datasource proxy is open to every viewer;
 - `victoriametrics`, which scrapes the exporter every 15 seconds
-  (`config/dashboard/scrape.yaml`) and keeps the samples for 90 days
-  under `data/dashboard/victoria/`;
+  (`config/dashboard/scrape.yaml`), answers queries with the newest
+  scraped sample (its default hides the last 30 seconds), and keeps the
+  samples for 90 days under `data/dashboard/victoria/`; a value the
+  router reports reaches the dashboard within about 20 seconds, so a
+  request shorter than a scrape interval can be missed by the gauges
+  and shows only in the rates;
 - `grafana`, on `http://127.0.0.1:4211/` (`LLM_DASHBOARD_PORT`), with
   the datasource and the dashboard "TokenCrate model server" provisioned
-  from `config/dashboard/grafana/`: requests processing and queued,
-  prompt and generation tokens per second, draft acceptance of an MTP
-  preset, busy slots per decode, which preset was loaded when, and the
+  from `config/dashboard/grafana/`, over the last 15 minutes by
+  default: a row of four numbers (requests processing and queued, the
+  generation rate, the draft acceptance of an MTP preset, which reads
+  "no draft model" otherwise), then Occupancy and Throughput as the two
+  charts the [stats page](cli.md#stats) draws, in the same colours,
+  busy slots per decode and the loaded preset as timelines, and the
   GPU's utilization, memory, power, and temperature;
 - with `LLM_GPU=true`, `gpu-exporter`, NVIDIA's dcgm-exporter on the
   CDI device, scraped like the llama exporter; without the GPU the two

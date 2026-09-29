@@ -500,12 +500,13 @@ def dispatch(command: str, arguments: list[str]) -> int:
                 root=settings.root,
             )
         sessions = stats.read_sessions(settings.agents_dir, selection)
-        text = stats.report(sessions, selection)
+        slots = presets.rendered_slots(settings.build_dir)
+        text = stats.report(sessions, selection, slots)
         print(text, end="")
         path = runtime.save_report(settings, "stats", text)
         print(f"Saved stats report to {path}")
         page = path.with_suffix(".html")
-        page.write_text(statspage.html(sessions, selection=selection), encoding="utf-8")
+        page.write_text(statspage.html(sessions, selection=selection, slots=slots), encoding="utf-8")
         print(f"Saved stats page to {page}")
     elif command == "agent":
         if not arguments:

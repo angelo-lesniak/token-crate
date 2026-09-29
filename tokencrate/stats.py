@@ -52,19 +52,45 @@ LEVEL_RE = re.compile(r"[a-z]{1,16}")
 # `--since`: a duration back from now, or an ISO date or date-time.
 DURATION_RE = re.compile(r"([1-9][0-9]{0,5})([mhdw])")
 DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
-FOOTNOTE = (
-    "Context is one request as the server saw it: `usage.totalTokens` = input + cacheRead + cacheWrite "
-    "+ output; the `>` columns count the requests one slot of that size would not have fit. First request "
-    "= input + cacheRead + cacheWrite of a session's first assistant message. Cache-read share = cacheRead "
-    "/ (input + cacheRead). Token sums count input and output once per request; summing context would "
-    "re-count the conversation every turn. A request whose provider reported no usage counts with zeros. "
-    "Percentiles are nearest-rank observations. Turns count a session's user messages; a session's duration is "
-    "the time between its first and last message. A request's thinking level is the last level change before it. "
-    "Timings: oh-my-pi records `ttft` and `duration` itself; pi records "
-    "them through the `metrics` agent set, from the moment the request is sent (provider retries included) to the "
-    "first streamed content and to the final message, for completed answers only. The two agents measure "
-    "differently, so their rows stay apart."
+# The measures, defined once: the Markdown report's "Definitions" list and
+# the HTML page's, in this order.
+DEFINITIONS = (
+    (
+        "Context",
+        "one request as the server saw it: `usage.totalTokens` = input + cacheRead + cacheWrite + output. "
+        "Every observed context was already bounded by the slot it ran in and by the agent's compaction.",
+    ),
+    (
+        "over 16K, 32K, 48K",
+        "the share of requests that one slot of that size would not have fit.",
+    ),
+    (
+        "Slot",
+        "the context one request may use on a rendered preset: `ctx-size` / `parallel` in build/models.ini "
+        "(the preset's `ctx_size` and `parallel`). "
+        '"Would not fit" counts every request in the report against that slot, whichever preset or provider served '
+        "it; a preset fits when none of them exceeds its slot.",
+    ),
+    ("First request", "input + cacheRead + cacheWrite of a session's first assistant message."),
+    ("Cache-read share", "cacheRead / (input + cacheRead)."),
+    (
+        "Input total, Output total",
+        "input and output counted once per request; summing context would re-count the conversation every turn. "
+        "A request whose provider reported no usage counts with zeros.",
+    ),
+    ("Percentiles", "nearest-rank observations."),
+    ("Turns", "a session's user messages."),
+    ("Length", "the time between a session's first and last message."),
+    ("Compactions", 'the compaction entries of the sessions; "Before compaction" is the context each one replaced.'),
+    ("Thinking level", "the last level change before a request."),
+    (
+        "TTFT, Duration",
+        "oh-my-pi records `ttft` and `duration` itself; pi records them through the `metrics` agent set, from the "
+        "moment the request is sent (provider retries included) to the first streamed content and to the final "
+        "message, for completed answers only. The two agents measure differently, so their rows stay apart.",
+    ),
 )
+NO_PRESETS = "No rendered presets: `up` or `presets render` writes build/models.ini, which names each preset's slot."
 NO_TIMINGS = (
     "No timed requests: oh-my-pi transcripts carry `ttft` and `duration`; pi transcripts carry them when the "
     "`metrics` agent set is loaded."
@@ -337,6 +363,8 @@ class Table:
     numeric: tuple[bool, ...]
     rows: list[list[str]]
     empty_note: str = ""
+    # The last row sums the others (the page renders it as a footer).
+    total: bool = False
 
 
 def session_cells(label: str, sessions: list[Session]) -> list[str]:
@@ -344,7 +372,6 @@ def session_cells(label: str, sessions: list[Session]) -> list[str]:
     firsts = [session.first_request for session in sessions]
     durations = [seconds for session in sessions if (seconds := session.duration_s) is not None]
     compactions = [tokens for session in sessions for tokens in session.compaction_tokens]
-    compacted = f"{len(compactions)} (p50 before: {percentile(compactions, 0.5)})" if compactions else "0"
     return [
         label,
         str(len(sessions)),
@@ -356,8 +383,27 @@ def session_cells(label: str, sessions: list[Session]) -> list[str]:
         str(percentile(peaks, 0.5)),
         str(percentile(peaks, 0.9)),
         str(max(peaks)),
-        compacted,
+        str(len(compactions)),
+        str(percentile(compactions, 0.5)) if compactions else "-",
     ]
+
+
+def fit_verdict(sessions: list[Session], slot: int) -> tuple[int, int, bool]:
+    """How the report's requests measure against one slot: the requests and
+    the sessions (by peak context) that exceed it, and whether it fits (none
+    does). A request the server refused for its size is not in a transcript,
+    so the counts are what a preset of this slot would have refused."""
+    requests = [request for session in sessions for request in session.requests]
+    over = sum(request.context > slot for request in requests)
+    return over, sum(session.peak_context > slot for session in sessions), over == 0
+
+
+def fit_rows(sessions: list[Session], slots: dict[str, int]) -> list[list[str]]:
+    rows = []
+    for preset, slot in sorted(slots.items()):
+        over, sessions_over, fits = fit_verdict(sessions, slot)
+        rows.append([preset, str(slot), str(over), str(sessions_over), "fits" if fits else "too small"])
+    return rows
 
 
 def request_cells(labels: list[str], requests: list[Request]) -> list[str]:
@@ -383,14 +429,32 @@ def by_provider_and_model(requests: list[Request]) -> list[tuple[tuple[str, str]
     return sorted(grouped.items(), key=lambda item: -len(item[1]))
 
 
-def build_tables(sessions: list[Session]) -> list[Table]:
+def build_tables(sessions: list[Session], slots: dict[str, int] | None = None) -> list[Table]:
+    """Every table of the report; `slots` (preset -> context per slot, from
+    the rendered preset file) fills the Preset fit table."""
     by_agent = {agent: [session for session in sessions if session.agent == agent] for agent in AGENTS}
     present = {agent: grouped for agent, grouped in by_agent.items() if grouped}
     requests = [request for session in sessions for request in session.requests]
-    step_headers = tuple(f">{label}" for _, label in CONTEXT_STEPS)
-    request_headers = ("Requests", "Input", "Output", "Cache-read share", "Context p50", "p90", "max", *step_headers)
+    step_headers = tuple(f"over {label}" for _, label in CONTEXT_STEPS)
+    request_headers = (
+        "Requests",
+        "Input total",
+        "Output total",
+        "Cache-read share",
+        "Context p50",
+        "Context p90",
+        "Context max",
+        *step_headers,
+    )
 
     tables = [
+        Table(
+            "Preset fit",
+            ("Preset", "Slot", "Requests over slot", "Sessions over slot", "Fit"),
+            (False, True, True, True, False),
+            fit_rows(sessions, slots or {}),
+            empty_note=NO_PRESETS,
+        ),
         Table(
             "Sessions",
             (
@@ -398,27 +462,35 @@ def build_tables(sessions: list[Session]) -> list[Table]:
                 "Sessions",
                 "Requests",
                 "Turns p50",
-                "Duration p50",
-                "p90",
+                "Length p50",
+                "Length p90",
                 "First request p50",
                 "Peak context p50",
-                "p90",
-                "max",
+                "Peak context p90",
+                "Peak context max",
                 "Compactions",
+                "Before compaction p50",
             ),
-            (False, True, True, True, True, True, True, True, True, True, False),
+            (False, *(True,) * 11),
             [session_cells(agent, grouped) for agent, grouped in present.items()],
-        )
+        ),
     ]
 
     request_rows = [
         request_cells([agent], [request for session in grouped for request in session.requests])
         for agent, grouped in present.items()
     ]
-    if len(present) > 1:
+    total = len(present) > 1
+    if total:
         request_rows.append(request_cells(["all"], requests))
     tables.append(
-        Table("Requests", ("Agent", *request_headers), (False, *(True,) * len(request_headers)), request_rows)
+        Table(
+            "Requests",
+            ("Agent", *request_headers),
+            (False, *(True,) * len(request_headers)),
+            request_rows,
+            total=total,
+        )
     )
 
     tables.append(
@@ -467,7 +539,7 @@ def build_tables(sessions: list[Session]) -> list[Table]:
     tables.append(
         Table(
             "Thinking levels",
-            ("Agent", "Level", "Requests", "Output p50", "p90"),
+            ("Agent", "Level", "Requests", "Output p50", "Output p90"),
             (False, False, True, True, True),
             level_rows if any(row[1] != "?" for row in level_rows) else [],
             empty_note=NO_LEVELS,
@@ -500,7 +572,16 @@ def build_tables(sessions: list[Session]) -> list[Table]:
     tables.append(
         Table(
             "Timings",
-            ("Agent", "Provider", "Model", "Requests", "TTFT p50 ms", "p90", "Duration p50 ms", "p90"),
+            (
+                "Agent",
+                "Provider",
+                "Model",
+                "Requests",
+                "TTFT p50 ms",
+                "TTFT p90 ms",
+                "Duration p50 ms",
+                "Duration p90 ms",
+            ),
             (False, False, False, True, True, True, True, True),
             timing_rows,
             empty_note=NO_TIMINGS,
@@ -509,19 +590,56 @@ def build_tables(sessions: list[Session]) -> list[Table]:
     return tables
 
 
-def summary_line(sessions: list[Session], selection: Filter | None = None) -> str:
+RECENT_HOURS = 24
+
+
+def plural(count: int, noun: str) -> str:
+    return f"{count:,} {noun}{'' if count == 1 else 's'}"
+
+
+def recent_clause(sessions: list[Session], selection: Filter | None = None, now: float | None = None) -> str:
+    """How much of the report is from the last 24 hours (sessions by their
+    last message, as `--since` counts them); empty when `--since` already
+    cuts inside that window, so the clause never repeats the filter."""
+    now = time.time() if now is None else now
+    cutoff = now - RECENT_HOURS * 3600
+    # A `--since 24h` resolved moments before the render is inside the day.
+    if selection and selection.since is not None and selection.since.timestamp() > cutoff - 60:
+        return ""
+    recent = [session for session in sessions if session.last_at is not None and session.last_at >= cutoff]
+    if not recent:
+        return f"none in the last {RECENT_HOURS} h"
+    requests = sum(len(session.requests) for session in recent)
+    return f"{plural(len(recent), 'session')} and {plural(requests, 'request')} in the last {RECENT_HOURS} h"
+
+
+def meta_text(sessions: list[Session], selection: Filter | None = None, now: float | None = None) -> str:
+    """The page's one-line scope: counts, the filters or their absence,
+    and the last day's share."""
+    requests = sum(len(session.requests) for session in sessions)
+    agent = f"agent {selection.agent}" if selection and selection.agent else "all agents"
+    since = f"since {selection.since.isoformat(timespec='seconds')}" if selection and selection.since else "all time"
+    recent = recent_clause(sessions, selection, now)
+    return f"{plural(len(sessions), 'session')}, {plural(requests, 'request')}, {agent}, {since}" + (
+        f"; {recent}" if recent else ""
+    )
+
+
+def summary_line(sessions: list[Session], selection: Filter | None = None, now: float | None = None) -> str:
     requests = sum(len(session.requests) for session in sessions)
     line = f"Transcripts: {len(sessions)} session(s), {requests} request(s) below LLM_AGENTS_DIR"
     described = selection.describe() if selection else ""
-    return f"{line} ({described})" if described else line
+    line = f"{line} ({described})" if described else line
+    recent = recent_clause(sessions, selection, now)
+    return f"{line}; {recent}" if recent else line
 
 
-def report(sessions: list[Session], selection: Filter | None = None) -> str:
+def report(sessions: list[Session], selection: Filter | None = None, slots: dict[str, int] | None = None) -> str:
     """The Markdown stats report."""
     lines = ["# TokenCrate stats report", ""]
     lines.append(f"- Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     lines.append(f"- {summary_line(sessions, selection)}")
-    for table in build_tables(sessions):
+    for table in build_tables(sessions, slots):
         lines += ["", f"## {table.title}", ""]
         if not table.rows:
             lines.append(table.empty_note)
@@ -529,5 +647,6 @@ def report(sessions: list[Session], selection: Filter | None = None) -> str:
         lines.append("| " + " | ".join(table.header) + " |")
         lines.append("| " + " | ".join("---:" if numeric else "---" for numeric in table.numeric) + " |")
         lines += ["| " + " | ".join(row) + " |" for row in table.rows]
-    lines += ["", FOOTNOTE]
+    lines += ["", "## Definitions", ""]
+    lines += [f"- **{term}**: {text}" for term, text in DEFINITIONS]
     return "\n".join(lines) + "\n"

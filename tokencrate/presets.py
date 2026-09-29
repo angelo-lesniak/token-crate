@@ -487,3 +487,21 @@ def rendered_model_ids(output_dir: Path) -> set[str]:
     except FileNotFoundError:
         return set()
     return set(SECTION_RE.findall(text)) - {"*"}
+
+
+def rendered_slots(output_dir: Path) -> dict[str, int]:
+    """Each rendered preset's context per slot (`ctx-size` over `parallel`,
+    as the file above spells them) by model id, read back from the rendered
+    preset file; empty when nothing has been rendered yet. A section
+    without a whole-number `ctx-size` is left out."""
+    try:
+        text = (output_dir / CONFIG_FILE_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    slots = {}
+    parts = re.split(r"^\[([^\]]+)\]$", text, flags=re.MULTILINE)
+    for name, body in zip(parts[1::2], parts[2::2], strict=True):
+        keys = dict(re.findall(r"^([a-z-]+) = (\d+)$", body, flags=re.MULTILINE))
+        if name != "*" and PRESET_NAME_RE.fullmatch(name) and "ctx-size" in keys:
+            slots[name] = int(keys["ctx-size"]) // max(1, int(keys.get("parallel", 1)))
+    return slots

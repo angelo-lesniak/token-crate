@@ -124,8 +124,8 @@ class MetricsExtensionTests(unittest.TestCase):
             results["usage"],
             [
                 [
-                    "usage: 3 requests, 900 in / 300 out, cache-read 95%, context 0 (peak 16,600), "
-                    "ttft p50 300 ms, duration p50 0.9 s, 2 tools, 1 error",
+                    "usage: context 0 (peak 16,600) · 900 in / 300 out · cache-read 95% · "
+                    "ttft p50 300 ms, duration p50 0.9 s · 3 requests, 2 tools, 1 error",
                     "info",
                 ],
                 ["usage: no requests in this transcript yet", "info"],
