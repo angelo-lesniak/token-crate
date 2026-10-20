@@ -42,8 +42,8 @@ them where an adapter or a browser exists.
 Each example starts where [Start here](../README.md#start-here) ends,
 with the stack up and the skill sets fetched. `--sets` applies to one
 launch; put a selection in `LLM_AGENT_SETS` to make it the default for
-`agent pi` and `ui`. [Validation](validation.md#status) states which
-selections are validated.
+`agent pi` and `ui`. [Validation](validation.md#status) says for which
+selections the agent check last passed.
 
 A .NET backend with a Vue frontend in PI WEB, at <http://127.0.0.1:4224/>:
 
@@ -152,4 +152,4 @@ Update the source pin and its verification data together:
 Run `bash bin/tokencrate smoke --agent pi --sets <selection>` to build
 the image and check containment; each set's `check` lines run without
 internet access and report one line per set. Record the result as
-[Validation](validation.md#recording-a-result) describes.
+[Validation](validation.md#recording-a-run) describes.

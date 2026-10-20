@@ -163,7 +163,9 @@ host directory are bound read-write at the same relative paths below
 
 The home and the two directories above the transcript directory
 (`.pi` and `.pi/agent`, or `.omp` and `.omp/agent`) are separate tmpfs
-mounts of 256 MiB each, allocated as used and allowing execution. The
+mounts of 256 MiB each, allocated as used and allowing execution;
+recorded sessions, a twelve-turn pi session included, used less than
+1 MiB. The
 agent's `/tmp` is limited by `LLM_AGENT_TMPFS_SIZE`. Everything else in
 the home disappears when the container stops; save work in the project.
 
@@ -261,8 +263,8 @@ printed by `agent pi`. Images of different pins and selections coexist.
    | `LLAMA_CPP_TAG` | The [NVIDIA host baseline](validation.md#nvidia-host-baseline); the [router observations](validation.md#router-behavior-the-wrapper-relies-on); for a model set whose gate the new build opens, its presets' fallback ladder with `smoke` and `bench` |
    | `PI_VERSION`, `OMP_VERSION`, `NODE_TAG`, `BUN_TAG` | An agent session with a small task, then `bash bin/tokencrate smoke --agent pi` (with each `--sets` selection you use) and `bash bin/tokencrate smoke --agent omp` |
 
-4. Record the result in the [validation records](validation.md#records)
-   and refresh the measured columns of the
+4. Record the run as [Validation](validation.md#recording-a-run)
+   describes, with the measured columns of the
    [preset table](models.md#included-presets) for every preset the run
    re-measured.
 

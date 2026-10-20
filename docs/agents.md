@@ -21,10 +21,11 @@ how they map onto each preset.
 
 The first request costs about 8,000 tokens for pi with the `coding` set,
 8,900 to 9,700 with the toolchain selections, and 19,028 for oh-my-pi,
-measured with the 27B on an RTX 5090 ([Validation](validation.md#status)
-names the runs). The default preset has one 64K slot. Use
-`qwen3.8-27b-q4-mtp-long` (one 128K slot) when a session runs out of
-context.
+measured with the 27B on an RTX 5090. The default preset has one 64K
+slot; pi compacts the conversation when the slot fills, and a session
+whose turns read 20 KB files filled it in about ten turns and refilled
+it within two. Use `qwen3.8-27b-q4-mtp-long` (one 128K slot) when a
+session runs out of context.
 
 ## What the container can and cannot do
 

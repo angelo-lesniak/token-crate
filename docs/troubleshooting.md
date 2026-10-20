@@ -98,6 +98,32 @@ the daemon identity of each address; the identity lives in
 `LLM_AGENTS_DIR` makes the browser pair again
 ([Browser UIs](agents.md#browser-uis)).
 
+## pi reports `Summarization failed` and refuses the next prompt
+
+A turn that fills the preset's slot ends with `length`, and pi's
+compaction of the overflowing conversation can fail with `Summarization
+failed: generation hit the token cap and the summary is incomplete`; the
+agent then stays busy and refuses the next prompt. Reopen the
+conversation: the recorded session, reopened in PI WEB, compacted and
+continued at a quarter of the slot. A `-long` preset gives the next
+session a 128K slot ([Included presets](models.md#included-presets)).
+
+## A reply ends with `length` and no answer
+
+At `xhigh` the model can spend the whole reply budget on reasoning: a
+600-word story prompt with a 4,096-token budget returned no answer on
+the default preset and on the abliterated one alike. Lower the effort
+for the prompt ([reasoning effort](models.md#reasoning-effort)) or raise
+the client's token limit. In `smoke` the same ending fails the `reply
+terminates` check, where it can also mean a reasoning loop
+([`smoke`](cli.md#smoke)).
+
+## `ui stop` on Docker prints that the `ui` network is still in use
+
+Docker reports `tokencrate_ui` as in use when `ui stop` removes the last
+UI pair while the model runs, because the model container stays on that
+network. Nothing failed; `down` removes the network with the model.
+
 ## Asking for help
 
 Open a

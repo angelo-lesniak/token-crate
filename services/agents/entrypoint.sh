@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 
 # TOKENCRATE_PREFIX puts the fixed container paths below a temporary root
-# for the engine-free entrypoint test; it is empty in the container.
+# for the entrypoint test of the static gate; it is empty in the container.
 readonly PREFIX=${TOKENCRATE_PREFIX:-}
 readonly RUN_DIR="$PREFIX/run/tokencrate"
 readonly SKILLS_ROOT="$RUN_DIR/skills"

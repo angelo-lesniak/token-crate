@@ -11,52 +11,42 @@ recover.
 
 ## Know this repository
 
-- The implementation is the Python package `tokencrate/` behind the shim
-  `bin/tokencrate`, with the shell and JavaScript of the images under
-  `services/` (entrypoint, containment check, forwarder, dashboard
-  exporter) and `config/agent-sets/` (UI launchers, the metrics
-  extension). `CONTRIBUTING.md` lists the modules, the rules for changing
-  them, the pin locations, and the metadata for model-set, agent-set, and
-  skill-set entries.
-- `README.md` carries the product scope, the host requirements, and the
-  shortest user path. Its "Choose what to do next" table is the only
-  documentation index and must link every page under `docs/`,
-  `CONTRIBUTING.md`, and `SECURITY.md`.
-- Pages are flat kebab-case Markdown files under `docs/`, hard-wrapped near
-  80 columns, with one main purpose each. Page ownership:
-  - `docs/cli.md`: every `bin/tokencrate` command and flag, one section per
-    command in `bin/tokencrate help`, with every usage line verbatim; other
-    pages link to it instead of restating flags.
-  - `docs/models.md`: model sets, presets, reasoning effort, and the chat
-    template.
-  - `docs/agent-sets.md`: the shipped agent sets, the manifest keys, and
-    upgrading a set.
-  - `docs/agents.md`: agents, skills, the container's filesystem and mount
-    limits, the first-request token costs, the cloud providers
-    (`#cloud-providers`), and the browser UIs (`#browser-uis`).
-  - `docs/privacy.md`: what leaves the machine, the telemetry switches, and
-    the network layout with its limits (the forwarder rules and the Docker
-    gateway mode).
-  - `docs/configuration.md`: the storage layout and the retained
-    agent-home directories, the pins in `pins.env` and the image names,
-    the built-in chat UI defaults, when a setting takes effect, the
-    upgrade procedure, and the dashboard (`#dashboard`). `.env.example` is
-    the settings reference. `cloud-keys.env.example` is the keys-file
-    template; its rules live on `docs/agents.md#cloud-providers`.
-  - `docs/validation.md`: the validation procedures, the status (the
-    claims table and the "Still unverified" list), the router behavior the
-    wrapper relies on, and the dated records. Other pages link to
-    `docs/validation.md#status` instead of restating status.
-  - `docs/troubleshooting.md`: observed failures.
-  - `SECURITY.md`: the scope statement, the reporting channel, and the
-    credentials rule.
+- [Layout](CONTRIBUTING.md#layout) lists the modules and the rules for
+  changing them; [Tests](CONTRIBUTING.md#tests) says what the static gate
+  and the integration check cover; [Documentation
+  changes](CONTRIBUTING.md#documentation-changes) says what the gate
+  checks in the prose. Check every other fact by hand against the
+  implementation.
+- Page ownership, where an agent would otherwise put a fact twice:
+  - `docs/cli.md` holds every command and flag; other pages link to it
+    instead of restating flags.
+  - `docs/privacy.md` holds the network layout and its limits, the
+    forwarder rules and the Docker gateway mode included.
+  - `docs/configuration.md` holds storage, pins, and the dashboard;
+    `.env.example` is the settings reference.
+  - `docs/agents.md#cloud-providers` holds the keys-file rules;
+    `cloud-keys.env.example` is only the template.
+  - `docs/validation.md#status` is the only statement of what is
+    validated; a validated claim needs a date there. Findings go to the
+    page that owns the fact.
+  - `docs/troubleshooting.md` holds observed failures, one section each.
 - The project has no glossary, no terminology register, and no changelog
   before the first tagged release; Git history records changes.
-- Verification: `bash tests/static.sh` is the engine-free gate and
-  `python3 tests/integration.py` runs the package against real containers;
-  [Tests](CONTRIBUTING.md#tests) says what each covers. The gate checks
-  links, anchors, the README index, and the usage lines; check the facts
-  in the prose by hand against the implementation.
+
+## Code
+
+- Read the module you change before writing, and follow its names,
+  error style, and structure, even where you would have chosen
+  otherwise. New terms come from the page that owns the topic.
+- A refusal is one sentence that names the cause and the remedy, like
+  the existing ones.
+- No abstraction for one caller, no option nobody asked for, no
+  compatibility shim: the package has one consumer, this repository.
+- A comment says why, or names the evidence behind a choice that is
+  not obvious; it never restates the code.
+- Delete what a change makes unused, tests and documentation included.
+- A behavior change arrives with its test in the gate and its line on
+  the owner page, in the same change.
 
 ## Documentation review gate
 
@@ -65,5 +55,4 @@ user-visible, load the `documentation-guidelines` skill from
 [SkillCrate](https://github.com/angelo-lesniak/skill-crate);
 `CONTRIBUTING.md` says how to obtain it. Its `SKILL.md` is the workflow,
 its `references/documentation-guidelines.md` the policy, and the section
-above gives the repository facts the workflow asks for. A validation claim
-needs a dated record in `docs/validation.md`.
+above gives the repository facts the workflow asks for.

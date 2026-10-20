@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The engine-free gate: syntax and lint for the shell files, Ruff for
+# The static gate (no container engine, no model): syntax and lint for the shell files, Ruff for
 # the package and the tests, the unit tests (the repository contracts among
 # them), the podman-compose parser, and a Compose render with every
 # installed engine.

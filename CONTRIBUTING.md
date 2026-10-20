@@ -64,7 +64,10 @@ naming directories.
 bash tests/static.sh
 ```
 
-`tests/static.sh` is the engine-free gate for every change. It runs:
+`tests/static.sh` is the static gate: it needs no container engine and
+no model, so it runs on any machine with the language tools. CI runs it
+in strict mode on every pull request; running it locally first gives
+the result in about a minute instead of a push and a wait. It runs:
 
 - shell syntax and ShellCheck;
 - `node --check`;
@@ -78,8 +81,9 @@ bash tests/static.sh
 - a scan for machine-specific host paths;
 - a Compose render with every installed engine.
 
-A missing optional tool prints a `SKIPPED:` line;
-`TOKENCRATE_STATIC_STRICT=1`, as in CI, makes any skip a failure. The
+A missing optional tool, Node.js included, prints a `SKIPPED:` line
+and the gate still passes; `TOKENCRATE_STATIC_STRICT=1`, as in CI, makes
+any skip a failure. The
 gate runs on the tracked files alone, so a check must not depend on local
 build artifacts. CI also lints both Dockerfiles with hadolint.
 
@@ -228,7 +232,8 @@ against its stated reason.
   lockfile-pinned.
 - **`coding` and `metrics` are the default agent sets.** `coding` adds
   four times the tools and more than three times the request body before
-  a task starts ([record](docs/validation.md#request-size-of-the-coding-set));
+  a task starts (17 tools and a 28,685-character body against 4 and
+  8,487 for pi without extensions, measured against a stub endpoint);
   its value on a local model is a hypothesis. `metrics` changes no request
   and fills the stats Timings table. Reconsider after comparing plain pi
   and the bundle on the same coding tasks with a shipped 27B preset:

@@ -152,7 +152,10 @@ engine check below. `down`, then `up` recreates it.
 user's network namespace, which exposes no host service. Whether an
 `--egress` or `--cloud` session can reach a UI peer depends on each
 internal bridge's IPv4 `forwarding` flag, which the order of network
-creation decides. `up` and every agent or UI start read the flag of each
+creation decides: netavark creates an internal bridge with the flag off,
+and the first non-internal network switches IPv4 forwarding on in the
+namespace, which turns the flag on for every bridge that already exists.
+`up` and every agent or UI start read the flag of each
 internal bridge (`podman unshare --rootless-netns`) and refuse a bridge
 that forwards. No bridge exists before a container uses the network.
 [`smoke --agent pi --egress`](cli.md#smoke), run while a browser UI runs
