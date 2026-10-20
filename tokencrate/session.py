@@ -3,14 +3,14 @@
 `agents` opens a terminal session, `uis` starts a browser UI, and
 `smoke --agent` runs the containment check; all three mount the same
 project, use the same per-project home, pass the same pre-flight, and run
-the image the selected agent sets render. That shared part is `prepare`:
-the one pre-flight, mount, and render step, whose result is the variables
-every Compose call of the start carries. A caller names its profiles and
-its egress on each call; a fourth start path cannot quietly skip a mount,
-the pre-flight, or the image. The cloud keys file is delivered the same
-way by every start that offers it: checked by `cloud_keys_file`, mounted
-by the arguments of the `run` alone (`run_arguments`), announced by
-`warn_about`.
+the image the selected agent sets render. `plan` is the one pre-flight:
+it checks the keys file, resolves the preset and the home, prepares the
+mounts, renders the image, and warns once, and returns a `Launch` whose
+`build` and `run` are the only way a start reaches Compose. Every `run`
+names its container, stops it on any unwind, and carries the profiles,
+the egress, and the keys mount (`run_arguments`) of the plan; a caller
+chooses only the command, whether to detach, and the terminal. The cloud
+keys file is checked by `cloud_keys_file` and never read by the wrapper.
 """
 
 from __future__ import annotations
@@ -18,14 +18,21 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import TokenCrateError, agentsets, presets, runtime, skills, warn
+from .agenthome import AGENTS as AGENTS
+from .agenthome import HOME_IN_CONTAINER as HOME_IN_CONTAINER
+from .agenthome import PERSISTENT_DIRECTORIES as PERSISTENT_DIRECTORIES
+from .agenthome import persistent_directories
 from .engine import Engine
-from .env import Settings
+from .env import Settings, require_private
 from .names import parse_list
 
-AGENTS = ("pi", "omp")
 # Refused in cli.dispatch before the pre-flight.
 SETS_ARE_PI_ONLY = "--sets applies to pi only; oh-my-pi has no agent sets"
 # oh-my-pi fills unset variables from the project's `.env` files, base URLs
@@ -34,15 +41,6 @@ CLOUD_IS_PI_ONLY = (
     "--cloud applies to pi only; oh-my-pi reads provider settings from the project's .env files, "
     "which could redirect a key"
 )
-HOME_IN_CONTAINER = "/home/agent"
-# The home is a per-container tmpfs; these are the only home paths bound
-# from the host, read-write. OMP externalizes transcript images to blobs;
-# its other two directories retain --continue selection and references to
-# custom transcript files for storage GC. Paths are relative to the home.
-PERSISTENT_DIRECTORIES = {
-    "pi": (".pi/agent/sessions",),
-    "omp": tuple(f".omp/agent/{name}" for name in ("sessions", "blobs", "terminal-sessions", "custom-session-files")),
-}
 UNSAFE_PATH_CHARACTERS = set(" \t\n,:$\"'")
 # Where `--cloud` mounts the keys file, read-only; the entrypoint exports
 # its lines and refuses to start without it when the start asked for it
@@ -51,32 +49,27 @@ KEYS_MOUNT_TARGET = "/etc/tokencrate/cloud-keys"
 
 
 def cloud_keys_file(settings: Settings, project: Path) -> Path:
-    """The file `--cloud` mounts: a regular file whose path a `-v`
-    argument can carry, outside every directory an agent container or an
-    image build reads, since those would carry it into every session. The
-    wrapper never opens it; the entrypoint reads it."""
+    """The file `--cloud` mounts: a regular file of the calling user,
+    readable by that user alone, whose path a `-v` argument can carry,
+    outside every directory an agent container or an image build reads,
+    since those would carry it into every session. The wrapper never
+    opens it; the entrypoint reads it."""
     path = settings.cloud_keys_file
     try:
-        regular = stat.S_ISREG(os.stat(path).st_mode)
+        info = os.stat(path)
     except FileNotFoundError:
         raise TokenCrateError(
             f"no cloud keys file at {path}; write one NAME=value line per provider key there "
             "(.env.example describes it), or set LLM_CLOUD_KEYS_FILE"
         ) from None
-    if not regular:
+    if not stat.S_ISREG(info.st_mode):
         raise TokenCrateError(f"the cloud keys file is not a regular file: {path}")
+    require_private(path, info)
     if ":" in str(path) or "," in str(path):
         raise TokenCrateError(f"the cloud keys file path contains ':' or ',', which a mount cannot carry: {path}")
-    for label, directory in (
-        ("the project", project),
-        ("the models directory", settings.models_dir),
-        ("the agents directory", settings.agents_dir),
-        ("the skills directory", settings.skills_dir),
-        ("the private skills directory", settings.local_skills_dir),
-        ("the shipped configuration", settings.root / "config"),
-        ("the private agent sets", settings.root / "local" / "agent-sets"),
-    ):
-        if path.is_relative_to(os.path.realpath(directory)):
+    places = [("the project", project)] + [(p.label, p.path) for p in settings.storage if p.refuses_keys]
+    for label, directory in places:
+        if path.is_relative_to(directory):
             raise TokenCrateError(
                 f"the cloud keys file lies inside {label} ({directory}), which agent containers read; move it"
             )
@@ -124,19 +117,13 @@ def resolve_project_directory(settings: Settings, requested: str) -> Path:
     except UnicodeEncodeError:
         shown = str(resolved).encode("utf-8", "backslashreplace").decode()
         raise TokenCrateError(f"project path is not valid UTF-8: {shown}") from None
-    # The checkout (with .env) and the storage directories are what the next
-    # start trusts; a project must not contain them or lie inside them.
-    for label, path in (
-        ("the TokenCrate checkout", settings.root),
-        ("the models directory", settings.models_dir),
-        ("the agents directory", settings.agents_dir),
-        ("the skills directory", settings.skills_dir),
-        ("the private skills directory", settings.local_skills_dir),
-    ):
-        protected = Path(os.path.realpath(path))
-        if resolved.is_relative_to(protected) or protected.is_relative_to(resolved):
+    # The checkout (with .env), the storage directories, and the keys file
+    # are what the next start trusts; a project must not contain them or
+    # lie inside them.
+    for place in settings.storage:
+        if place.refuses_projects and (resolved.is_relative_to(place.path) or place.path.is_relative_to(resolved)):
             raise TokenCrateError(
-                f"refusing a project that contains or lies inside {label}: {protected} "
+                f"refusing a project that contains or lies inside {place.label}: {place.path} "
                 "(the project is the working directory unless --dir names one)"
             )
     roots: list[Path] = [home] if home is not None else []
@@ -158,12 +145,17 @@ def resolve_project_directory(settings: Settings, requested: str) -> Path:
     # Git metadata outside the mount: a `.git` file (a linked worktree or a
     # submodule), a `commondir` (a worktree's main repository), or a
     # repository above the project. The file's contents are not parsed;
-    # what it points at lies outside the mount by construction.
+    # what it points at lies outside the mount by construction. The walk
+    # ends at the home directory or a project root, whichever comes
+    # first: a repository that manages the home (dotfiles) owns no
+    # project below it.
     for directory in (resolved, *resolved.parents):
+        if directory in roots:
+            break
         git_dir = directory / ".git"
         if git_dir.is_file() or (git_dir / "commondir").is_file() or (directory != resolved and git_dir.is_dir()):
             raise TokenCrateError(
-                "Git metadata lies outside the project mount; choose the repository root "
+                f"Git metadata lies outside the project mount ({git_dir}); choose the repository root "
                 "or a standalone clone instead of a linked worktree or submodule"
             )
         if git_dir.is_dir():
@@ -245,12 +237,6 @@ def symlink_in_path(path: Path) -> Path | None:
     return next((part for part in (*reversed(path.parents), path) if part.is_symlink()), None)
 
 
-def persistent_directories(agent: str, state: str | None = None) -> tuple[str, ...]:
-    """The home paths bound from the host: the transcript directories and,
-    for a browser UI, the state directory its set declares."""
-    return PERSISTENT_DIRECTORIES[agent] + ((state,) if state else ())
-
-
 def prepare_mountpoints(home: Path, agent: str, state: str | None = None) -> None:
     """Create the retained bind sources as the caller, without following
     links; nothing else in the host home is mounted or touched. The home
@@ -305,13 +291,128 @@ def prepare(
     need, the image its agent sets render, and the variables those add up
     to. `selected` is the pi selection (oh-my-pi has none); with `ui`, the
     start is a browser UI of that set, whose state directory is mounted
-    too. The caller adds the UI launcher's own variables and names the
-    profiles and the egress on each Compose call."""
+    too."""
     skill_sets = require_session_ready(settings, engine, configuration, preset)
-    prepare_mountpoints(home, agent, ui.ui["state"] if ui is not None else None)
+    prepare_mountpoints(home, agent, ui.ui.state if ui is not None else None)
     settings.local_skills_dir.mkdir(parents=True, exist_ok=True)
     variables = session_variables(project, home, preset)
     variables["LLM_SKILL_SETS"] = ",".join(skill_sets)
     if agent == "pi":
         variables.update(render_image(settings, selected or []))
     return variables
+
+
+def stop_container(engine: Engine, name: str) -> None:
+    """Stop the named container; a `--rm` run is then removed. The Compose
+    client is gone with the wrapper's exception, but the provider it
+    started may still be creating the container, so the name is tried
+    again for a few seconds."""
+    deadline = time.monotonic() + 5
+    while engine.command("stop", "--time", "5", name, capture=True, check=False).returncode:
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.5)
+
+
+@dataclass(frozen=True)
+class Launch:
+    """One planned agent container start: the service and profiles, the
+    mounted project and home, the egress and the keys file it was granted,
+    and the variables every Compose call of the start carries."""
+
+    agent: str
+    service: str
+    profiles: tuple[str, ...]
+    project: Path
+    home: Path
+    preset: str
+    egress: bool
+    keys: Path | None
+    variables: dict[str, str]
+
+    def build(self, engine: Engine) -> None:
+        """The image, from the rendered Dockerfile. The egress overlay only
+        changes networks, so a build never needs it."""
+        engine.compose("build", self.service, profiles=self.profiles, **self.variables)
+
+    def run(
+        self,
+        engine: Engine,
+        name: str,
+        *options: str,
+        command: tuple[str, ...] = (),
+        detach: bool = False,
+        tty: bool = False,
+        no_deps: bool = False,
+    ) -> subprocess.CompletedProcess:
+        """The container, started under `name` with the plan's profiles,
+        egress, and keys mount, so no start can leave one out. `command`
+        replaces the image command. Compose gets `-T` and attaches no
+        terminal unless the caller has one to give (`tty`); a terminal on
+        stdin that is not the caller's to give (a job under `timeout`, a
+        background job) is replaced by /dev/null, because the engine would
+        otherwise read it and stop the job with SIGTTIN. A pipe on stdin
+        still reaches the agent. A detached start must succeed, so it
+        raises; a foreground run returns what ran, with its status. The
+        container is stopped on any unwind of the start: the Compose
+        client is gone with the wrapper's exception, the container is
+        not."""
+        try:
+            return engine.compose(
+                "run",
+                "--detach" if detach else "--rm",
+                *(("--no-deps",) if no_deps else ()),
+                *(() if tty else ("-T",)),
+                *options,
+                "--name",
+                name,
+                *run_arguments(self.keys),
+                self.service,
+                *command,
+                profiles=self.profiles,
+                egress=self.egress,
+                check=detach,
+                stdin=subprocess.DEVNULL if not tty and sys.stdin.isatty() else None,
+                **self.variables,
+            )
+        except BaseException:
+            stop_container(engine, name)
+            raise
+
+
+def plan(
+    settings: Settings,
+    engine: Engine,
+    configuration: presets.Configuration,
+    agent: str,
+    preset: str,
+    project: Path,
+    *,
+    sets: str | None = None,
+    ui: agentsets.AgentSet | None = None,
+    egress: bool = False,
+    cloud: bool = False,
+    home: Path | None = None,
+) -> Launch:
+    """The one pre-flight of every agent container start. `project` is the
+    resolved project directory (`resolve_project_directory`, or a scratch
+    directory the wrapper made). With `cloud` the start gets the keys
+    file, which needs the route out, so it implies `egress`; `egress`
+    alone mounts no keys. `sets` is the pi selection (`--sets`, else
+    LLM_AGENT_SETS; oh-my-pi has none), to which a browser UI's set `ui`
+    is added. The home is the per-project one unless the caller has one
+    of its own (the containment check uses a scratch home). The keys file
+    is checked first, before the preset and the pre-flight, which all
+    cost something."""
+    keys = cloud_keys_file(settings, project) if cloud else None
+    egress = egress or cloud
+    preset = chosen_preset(settings, preset)
+    home = home or agent_home_directory(settings, agent, project)
+    selected = selected_sets(settings, sets) if agent == "pi" else None
+    if ui is not None and all(entry.name != ui.name for entry in selected):
+        selected.append(ui)
+    variables = prepare(settings, engine, configuration, agent, preset, project, home, selected=selected, ui=ui)
+    warn_about(egress, keys)
+    service = "agent-ui" if ui is not None else f"agent-{agent}"
+    profiles = ("ui",) if ui is not None else (service,)
+    return Launch(agent, service, profiles, project, home, preset, egress, keys, variables)

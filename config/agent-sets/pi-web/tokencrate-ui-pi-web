@@ -11,8 +11,7 @@ readonly PORT=${TOKENCRATE_UI_PORT:?the wrapper sets this from the set manifest}
 readonly DATA_DIR="$HOME/.pi-web"
 readonly SOCKET=/run/tokencrate/pi-web-sessiond.sock
 
-export PI_WEB_HOST=0.0.0.0 PI_WEB_PORT=$PORT
-export PI_WEB_DATA_DIR=$DATA_DIR PI_WEB_SESSIOND_SOCKET=$SOCKET
+export PI_WEB_PORT=$PORT PI_WEB_DATA_DIR=$DATA_DIR PI_WEB_SESSIOND_SOCKET=$SOCKET
 # No release check and no model-catalog refresh: the container has no
 # route out unless the UI was started with --egress or --cloud, and the
 # failures would only fill the log.
@@ -21,6 +20,35 @@ export PI_WEB_OFFLINE=1 PI_WEB_SKIP_VERSION_CHECK=1
 # PI WEB session-spawning tools (the coding set has a subagent tool) and
 # no PI WEB environment facts in the system prompt.
 export PI_WEB_SPAWN_SESSIONS=false PI_WEB_SUBSESSIONS=false PI_WEB_ENVIRONMENT_FACTS=false
+# The address the daemon listens on: the container's address on the UI
+# network, where the forwarder reaches it by name. A UI started with
+# --egress or --cloud has a second interface, on the default network,
+# which carries the default route; a daemon on every interface would
+# answer there too, past the forwarder's Host check (the host on Docker,
+# egress sessions on both engines). The image has no `ip`, so node reads
+# the route table and the interfaces.
+ui_address() {
+  node -e '
+    const routes = require("fs").readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1);
+    const egress = new Set(routes.map((line) => line.trim().split(/\s+/)).filter((fields) => fields[1] === "00000000").map((fields) => fields[0]));
+    const interfaces = Object.entries(require("os").networkInterfaces())
+      .map(([name, entries]) => [name, entries.filter((entry) => entry.family === "IPv4" && !entry.internal).map((entry) => entry.address)])
+      .filter(([, addresses]) => addresses.length > 0);
+    // No network at all (network_mode none): loopback is the only place
+    // to listen. One interface: the UI network, whatever its routes. More:
+    // the UI network is the one without the default route.
+    const candidates = interfaces.length <= 1 ? interfaces : interfaces.filter(([name]) => !egress.has(name));
+    const addresses = candidates.flatMap(([, entries]) => entries);
+    if (interfaces.length === 0) {
+      console.log("127.0.0.1");
+    } else if (addresses.length === 1) {
+      console.log(addresses[0]);
+    } else {
+      console.error("TokenCrate UI: expected one interface without a default route, found " + addresses.length);
+      process.exit(1);
+    }
+  '
+}
 
 mkdir -p "$DATA_DIR"
 # The project directory is the only project; PI WEB lists it at once. The
@@ -64,6 +92,8 @@ if (!dismissals.dismissals.some((entry) => entry && entry.packageId === "@jmfede
 JS
 
 rm -f "$SOCKET"
+address=$(ui_address)
+export PI_WEB_HOST=$address
 pi-web-sessiond &
 sessiond=$!
 ready=false
@@ -85,6 +115,6 @@ trap 'kill "$sessiond" "$server" 2>/dev/null || true' EXIT
 # Bash runs no EXIT trap for an untrapped fatal signal, so a container stop
 # would leave both processes to the engine's kill; Paseo traps TERM too.
 trap 'exit 143' TERM INT
-echo "TokenCrate UI: PI WEB listens on port $PORT inside the container"
+echo "TokenCrate UI: PI WEB listens on $address:$PORT inside the container"
 # The first process to exit ends the session; the trap stops the other.
 wait -n "$sessiond" "$server"

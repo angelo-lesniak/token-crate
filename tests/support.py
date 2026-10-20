@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import http.server
+import json
 import shutil
 import socket
 import subprocess
@@ -135,9 +136,15 @@ class Scratch:
         )
 
     def render_fixture(self, *preset_ids: str) -> None:
-        """Pretend a render happened: build/models.ini has a section per preset."""
+        """Pretend a render happened: an INI section and a pi model entry per preset."""
         path = self.root / "build" / "models.ini"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "[*]\njinja = true\n" + "".join(f"\n[{name}]\nmodel = /models/{name}.gguf\n" for name in preset_ids)
         )
+        # The wrapper reads the loadable presets and their slots back from
+        # the pi model list, not from the INI.
+        pi_list = self.root / "build" / "agents" / "pi" / "models.json"
+        pi_list.parent.mkdir(parents=True, exist_ok=True)
+        models = [{"id": name, "contextWindow": 32768} for name in preset_ids]
+        pi_list.write_text(json.dumps({"providers": {"tokencrate": {"models": models}}}))

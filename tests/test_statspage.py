@@ -15,8 +15,12 @@ from pathlib import Path
 from string import Template
 from tempfile import TemporaryDirectory
 
+from tests.support import SOURCE_ROOT
 from tests.test_stats import write_transcripts
-from tokencrate import TokenCrateError, stats, statspage
+from tokencrate import TokenCrateError, env, stats
+from tokencrate.stats import live
+from tokencrate.stats import page as statspage
+from tokencrate.stats import server as statsserver
 
 # The vendored chart library, byte-for-byte the files of the published
 # npm artifact https://registry.npmjs.org/uplot/-/uplot-1.6.32.tgz (MIT).
@@ -33,6 +37,13 @@ def island(page: str) -> dict:
     matched = re.search(r'<script type="application/json" id="ecdf-data">(.*?)</script>', page, re.DOTALL)
     assert matched
     return json.loads(matched.group(1).replace("<\\/", "</"))
+
+
+def settings_for(root: Path, router_url: str) -> env.Settings:
+    """Settings whose model server is the fake router and whose agents and
+    build directories are below `root`."""
+    values = {"LLM_PORT": router_url.rpartition(":")[2], "LLM_AGENTS_DIR": str(root / "agents")}
+    return env.Settings(root, values, {}, {}, {}, None)
 
 
 def make_session(model: str) -> stats.Session:
@@ -74,7 +85,7 @@ class FakeRouter:
                         {
                             "data": [
                                 {"id": router.loaded, "status": {"value": "loaded"}},
-                                {"id": "ci-tiny", "status": {"value": "unloaded"}},
+                                {"id": "ci-idle", "status": {"value": "unloaded"}},
                                 {"id": "<script>alert(1)</script>", "status": {"value": "loaded"}},
                                 {"id": "SLEEPY", "status": {"value": "sleeping"}},
                             ]
@@ -122,10 +133,11 @@ class LiveSamplerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.router = FakeRouter()
         self.addCleanup(self.router.close)
+        self.settings = settings_for(Path("/nonexistent"), self.router.url)
 
     def test_samples_carry_gauges_and_rates_of_the_settled_preset_only(self) -> None:
         clock = [1000.0]
-        sampler = statspage.LiveSampler(self.router.url, interval=2, clock=lambda: clock[0])
+        sampler = live.LiveSampler(self.settings, interval=2, clock=lambda: clock[0])
         first = sampler.snapshot()[-1]
         # Seen loaded once: named, not yet scraped (a swap in between would
         # otherwise ask the router to load a preset that just unloaded).
@@ -153,9 +165,9 @@ class LiveSamplerTests(unittest.TestCase):
         self.assertEqual((swapped.model, swapped.scraped, swapped.processing), ("ci-tiny", False, None))
         clock[0] += 2
         self.assertEqual(sampler.snapshot()[-1].processing, 1)
-        # Only settled presets were ever asked for their counters.
-        self.assertEqual(sorted(set(sampler.asked)), ["ci-small", "ci-tiny"])
-        self.assertEqual(self.router.asked, [f"/metrics?model={name}" for name in sampler.asked])
+        # Only settled presets were ever asked for their counters: the four
+        # scraped ticks of ci-small, then ci-tiny once it had settled.
+        self.assertEqual(self.router.asked, ["/metrics?model=ci-small"] * 4 + ["/metrics?model=ci-tiny"])
         for sample in sampler.samples:
             for value in vars(sample).values():
                 self.assertIsInstance(value, (bool, int, float, str, type(None)))
@@ -167,7 +179,7 @@ class LiveSamplerTests(unittest.TestCase):
         # the ring as it is instead of starting a second, overlapping scrape.
         import threading
 
-        sampler = statspage.LiveSampler(self.router.url, interval=0)
+        sampler = live.LiveSampler(self.settings, interval=0)
         started = threading.Event()
         release = threading.Event()
         original = sampler.scrape
@@ -187,12 +199,12 @@ class LiveSamplerTests(unittest.TestCase):
         self.assertEqual(len(sampler.snapshot()), 2)
 
     def test_a_snapshot_within_the_interval_scrapes_nothing_and_the_ring_is_bounded(self) -> None:
-        sampler = statspage.LiveSampler(self.router.url, interval=60)
+        sampler = live.LiveSampler(self.settings, interval=60)
         for _ in range(3):
             sampler.snapshot()
         self.assertEqual(len(sampler.samples), 1)
-        with unittest.mock.patch.object(statspage, "LIVE_SAMPLES", 3):
-            sampler = statspage.LiveSampler(self.router.url, interval=0)
+        with unittest.mock.patch.object(live, "LIVE_SAMPLES", 3):
+            sampler = live.LiveSampler(self.settings, interval=0)
             for _ in range(8):
                 sampler.snapshot()
         self.assertEqual(len(sampler.samples), 3)
@@ -210,27 +222,38 @@ class LiveSamplerTests(unittest.TestCase):
                 "esac\n"
             )
             fake.chmod(0o755)
-            command = [str(fake), *statspage.NVIDIA_SMI_QUERY]
+            command = [str(fake), *live.NVIDIA_SMI_QUERY]
             with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "ok"}):
-                self.assertEqual(statspage.gpu_reading(command), (21244, 32607, 312.6))
-                sampler = statspage.LiveSampler(self.router.url, interval=0, gpu_command=command)
+                self.assertEqual(live.gpu_reading(command), (21244, 32607, 312.6))
+                sampler = live.LiveSampler(self.settings, interval=0, gpu_command=command)
                 sample = sampler.snapshot()[-1]
                 self.assertEqual((sample.gpu_memory_mib, sample.gpu_memory_total_mib), (21244, 32607))
                 self.assertEqual(sample.gpu_power_w, 312.6)
             with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "na"}):
-                self.assertEqual(statspage.gpu_reading(command), (21244, 32607, None))
+                self.assertEqual(live.gpu_reading(command), (21244, 32607, None))
             with unittest.mock.patch.dict("os.environ", {"FAKE_SMI": "fail"}):
-                self.assertEqual(statspage.gpu_reading(command), (None, None, None))
-            self.assertEqual(statspage.gpu_reading([str(fake) + "-missing"]), (None, None, None))
-        self.assertIsNone(statspage.nvidia_smi_command(False))
+                self.assertEqual(live.gpu_reading(command), (None, None, None))
+            self.assertEqual(live.gpu_reading([str(fake) + "-missing"]), (None, None, None))
+        self.assertIsNone(live.nvidia_smi_command(False))
         with unittest.mock.patch("shutil.which", return_value="/usr/bin/nvidia-smi"):
-            self.assertEqual(statspage.nvidia_smi_command(True), ["/usr/bin/nvidia-smi", *statspage.NVIDIA_SMI_QUERY])
+            self.assertEqual(live.nvidia_smi_command(True), ["/usr/bin/nvidia-smi", *live.NVIDIA_SMI_QUERY])
 
     def test_a_stack_that_is_down_gives_unreachable_samples(self) -> None:
         self.router.close()
-        sampler = statspage.LiveSampler(self.router.url, interval=0)
+        sampler = live.LiveSampler(self.settings, interval=0)
         sample = sampler.snapshot()[-1]
         self.assertEqual((sample.up, sample.model, sample.scraped, sample.prompt_rate), (False, None, False, None))
+
+    def test_both_scrapers_carry_the_settled_rule(self) -> None:
+        # The sampler and the dashboard exporter each scrape the router, and
+        # this one rule is all that stops a scrape from loading the preset
+        # it asks about: `/metrics?model=` routes to the preset, so a preset
+        # that just unloaded would be loaded again. Python and Node cannot
+        # share the line, so a change to one copy must be made to the other.
+        sampler_source = Path(live.__file__).read_text(encoding="utf-8")
+        exporter_source = (SOURCE_ROOT / "services" / "dashboard" / "llama-exporter.js").read_text(encoding="utf-8")
+        self.assertIn("settled = up and model is not None and model == self.loaded", sampler_source)
+        self.assertIn("const settled = preset !== null && preset === loaded;", exporter_source)
 
 
 class StatsPageTests(unittest.TestCase):
@@ -345,7 +368,7 @@ class StatsPageTests(unittest.TestCase):
         served = statspage.html(sessions, live="127.0.0.1:1", slots={"ci-big": 32768}, loaded=None, down=True)
         self.assertIn("Model server not reachable; the Preset fit table judges", served)
         served = statspage.html(sessions, live="127.0.0.1:1", slots={}, loaded="ci-big")
-        self.assertIn("<b>ci-big</b> is loaded but not in build/models.ini; the Preset fit table", served)
+        self.assertIn("<b>ci-big</b> is loaded but not in the rendered model list; the Preset fit table", served)
         # The GPU tiles exist only when the server runs a GPU query.
         self.assertIn('data-gpu="0"', served)
         self.assertIn('data-gpu="1"', statspage.html(sessions, live="127.0.0.1:1", gpu=True))
@@ -385,14 +408,19 @@ class StatsServeTests(unittest.TestCase):
     def setUp(self) -> None:
         tmp = TemporaryDirectory(prefix="tokencrate-stats-")
         self.addCleanup(tmp.cleanup)
-        self.agents_dir = Path(tmp.name)
-        write_transcripts(self.agents_dir)
         self.router = FakeRouter()
         self.addCleanup(self.router.close)
-        self.build_dir = self.agents_dir / "build"
-        self.build_dir.mkdir()
-        (self.build_dir / "models.ini").write_text("[ci-small]\nctx-size = 16384\nparallel = 1\n", encoding="utf-8")
-        self.server = statspage.stats_server(self.agents_dir, 0, self.router.url, build_dir=self.build_dir)
+        self.settings = settings_for(Path(tmp.name), self.router.url)
+        self.agents_dir = self.settings.agents_dir
+        write_transcripts(self.agents_dir)
+        self.settings.build_dir.mkdir()
+        pi_list = self.settings.build_dir / "agents" / "pi" / "models.json"
+        pi_list.parent.mkdir(parents=True)
+        pi_list.write_text(
+            json.dumps({"providers": {"tokencrate": {"models": [{"id": "ci-small", "contextWindow": 16384}]}}}),
+            encoding="utf-8",
+        )
+        self.server = statsserver.stats_server(self.settings, 0)
         self.addCleanup(self.server.server_close)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
@@ -469,7 +497,7 @@ class StatsServeTests(unittest.TestCase):
 
     def test_without_transcripts_the_server_answers_503(self) -> None:
         with TemporaryDirectory(prefix="tokencrate-stats-") as empty:
-            server = statspage.stats_server(Path(empty), 0, self.router.url)
+            server = statsserver.stats_server(settings_for(Path(empty), self.router.url), 0)
             self.addCleanup(server.server_close)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             self.addCleanup(server.shutdown)
@@ -483,7 +511,7 @@ class StatsServeTests(unittest.TestCase):
 
     def test_an_occupied_port_is_a_one_sentence_refusal(self) -> None:
         with self.assertRaises(TokenCrateError) as caught:
-            statspage.stats_server(self.agents_dir, self.port, self.router.url)
+            statsserver.stats_server(self.settings, self.port)
         self.assertIn(f"cannot serve the stats page on 127.0.0.1:{self.port}", str(caught.exception))
 
 

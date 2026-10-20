@@ -1,4 +1,4 @@
-"""pins.env (read by tokencrate.env): exactly the pinned keys, as plain values."""
+"""pins.env (read by tokencrate.env): pins by naming convention, as plain values."""
 
 from __future__ import annotations
 
@@ -38,11 +38,22 @@ class PinsTests(unittest.TestCase):
         self.path.write_text("# comment\n\n" + "".join(f"{key}={value}\n" for key, value in values.items()))
         return self.path
 
-    def test_the_shipped_file_defines_exactly_the_pinned_keys(self) -> None:
+    def test_the_shipped_file_follows_the_naming_convention(self) -> None:
         values = env.load_pins(PROJECT_ROOT / "pins.env")
-        self.assertEqual(set(values), set(env.PIN_KEYS))
+        # The module-level key lists are the shipped file's, in file order.
+        self.assertEqual(tuple(values), env.PIN_KEYS)
+        self.assertEqual(env.DIGEST_KEYS, tuple(key for key in values if key.endswith("_DIGEST")))
+        self.assertIn("LLAMA_CPP_DIGEST", env.DIGEST_KEYS)
         self.assertTrue(values["LLAMA_CPP_TAG"].startswith("server-"))
         self.assertRegex(values["LLAMA_CPP_TAG"], r"-b\d+$")
+
+    def test_a_new_pin_needs_no_code_when_it_follows_the_convention(self) -> None:
+        self.write(TOOL_VERSION="1.2.3", OTHER_TAG="v2", OTHER_DIGEST="0" * 64)
+        values = env.load_pins(self.path)
+        self.assertEqual(values["TOOL_VERSION"], "1.2.3")
+        self.assertEqual(values["OTHER_TAG"], "v2")
+        # File order is kept: `pins check` reports the pins in it.
+        self.assertEqual(list(values)[:2], ["LLAMA_CPP_TAG", "LLAMA_CPP_DIGEST"])
 
     def test_quotes_and_whitespace_are_refused(self) -> None:
         for value in ('"server-cuda13-b10920"', "server-cuda13-b10920 ", "server cuda13", "ghcr.io/x:b10920"):
@@ -51,17 +62,19 @@ class PinsTests(unittest.TestCase):
                 env.load_pins(self.path)
 
     def test_a_missing_duplicate_or_unknown_key_is_refused(self) -> None:
+        # The wrapper itself reads two pins; Compose requires the rest.
         self.path.write_text("PI_VERSION=0.85.1\n")
-        with self.assertRaisesRegex(TokenCrateError, "must define LLAMA_CPP_TAG"):
+        with self.assertRaisesRegex(TokenCrateError, "must define LLAMA_CPP_TAG, CUDA_MIN_DRIVER_MAJOR"):
             env.load_pins(self.path)
         self.write()
         self.path.write_text(self.path.read_text() + "PI_VERSION=0.85.2\n")
         with self.assertRaisesRegex(TokenCrateError, "PI_VERSION is set twice"):
             env.load_pins(self.path)
-        self.write()
-        self.path.write_text(self.path.read_text() + "TOOL_PYTHON_IMAGE=python\n")
-        with self.assertRaisesRegex(TokenCrateError, "unknown key"):
-            env.load_pins(self.path)
+        for key in ("TOOL_PYTHON_IMAGE", "TAG", "NODE_TAG_SHA"):
+            self.write()
+            self.path.write_text(self.path.read_text() + f"{key}=python\n")
+            with self.assertRaisesRegex(TokenCrateError, f"unknown key\\(s\\) {key} \\(a pin is <NAME>_TAG"):
+                env.load_pins(self.path)
 
     def test_the_driver_minimum_must_be_a_number(self) -> None:
         self.write(CUDA_MIN_DRIVER_MAJOR="latest")
@@ -75,6 +88,14 @@ class PinsTests(unittest.TestCase):
             with self.assertRaisesRegex(TokenCrateError, "NODE_DIGEST must be the 64 hex characters"):
                 env.load_pins(self.path)
 
+    def test_a_tag_and_its_digest_come_as_a_pair(self) -> None:
+        self.write(TOOL_DIGEST="0" * 64)
+        with self.assertRaisesRegex(TokenCrateError, "TOOL_DIGEST has no TOOL_TAG beside it"):
+            env.load_pins(self.path)
+        self.write(TOOL_TAG="1.0")
+        with self.assertRaisesRegex(TokenCrateError, "TOOL_TAG has no TOOL_DIGEST beside it"):
+            env.load_pins(self.path)
+
     def test_a_malformed_line_names_its_number(self) -> None:
         self.write()
         self.path.write_text(self.path.read_text() + "not a pin\n")
@@ -85,11 +106,20 @@ class PinsTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenCrateError, r"pins\.env:5: expected KEY=VALUE"):
             env.load_pins(self.path)
 
+    def test_the_key_scan_refuses_nothing_so_recovery_commands_run(self) -> None:
+        # `subprocess_env` removes these keys whatever else the file holds;
+        # a broken pins.env is reported by the launch commands, not at import.
+        self.assertEqual(env.pin_keys(self.write())[:3], ("LLAMA_CPP_TAG", "LLAMA_CPP_DIGEST", "PI_VERSION"))
+        self.path.write_text('invalid pin edit\nNODE_TAG="quoted"\n')
+        self.assertEqual(env.pin_keys(self.path), ("NODE_TAG",))
+        with self.assertRaisesRegex(TokenCrateError, "expected KEY=VALUE"):
+            env.load_pins(self.path)
+
     def test_pinned_lines_prints_the_values_without_comments(self) -> None:
         printed = env.pinned_lines(self.write())
         self.assertNotIn("# comment", printed)
         self.assertIn("PI_VERSION=0.85.1\n", printed)
-        self.assertEqual(len(printed.strip().splitlines()), len(env.PIN_KEYS))
+        self.assertEqual(len(printed.strip().splitlines()), 15)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support import SOURCE_ROOT
 from tokencrate import TokenCrateError, agentsets, env, skills
@@ -23,6 +24,7 @@ class SettingsTests(unittest.TestCase):
 
     def write_env(self, text: str) -> None:
         (self.tmp / ".env").write_text(text)
+        (self.tmp / ".env").chmod(0o600)
 
     def test_shell_environment_wins_over_env_file_which_wins_over_defaults(self) -> None:
         self.write_env("LLM_PORT=4210\nLLM_DEFAULT_PRESET=from-file\n")
@@ -178,6 +180,76 @@ class SettingsTests(unittest.TestCase):
         self.write_env("LLM_PORT=1\nnot a setting\n")
         with self.assertRaisesRegex(TokenCrateError, r"\.env:2: expected KEY=VALUE"):
             env.load(self.tmp, {})
+
+    def test_the_env_file_must_be_the_users_and_readable_by_the_user_alone(self) -> None:
+        # It may hold the token; `init` creates it with mode 0600, a copy by
+        # hand may not. The remedy is the same as for the cloud keys file.
+        self.write_env("LLM_PORT=4210\n")
+        path = self.tmp / ".env"
+        for mode in (0o644, 0o640, 0o604):
+            path.chmod(mode)
+            with self.assertRaisesRegex(
+                TokenCrateError, f"^{path} must be readable by your user only; run: chmod 600 {path}$"
+            ):
+                env.load(self.tmp, {})
+        path.chmod(0o400)
+        self.assertEqual(env.load(self.tmp, {}).port, "4210")
+        other = os.getuid() + 1
+        with mock.patch("tokencrate.env.os.getuid", return_value=other):
+            with self.assertRaisesRegex(TokenCrateError, f"^{path} must be owned by your user \\(uid {other}\\)"):
+                env.load(self.tmp, {})
+
+    def test_the_wrappers_switches_accept_eight_words_and_refuse_the_rest(self) -> None:
+        for word, expected in (("1", True), ("YES", True), (" on ", True), ("0", False), ("No", False), ("off", False)):
+            self.assertEqual(env.load(self.tmp, {"LLM_GPU": word}).gpu, expected, word)
+            self.assertEqual(env.load(self.tmp, {"LLM_DASHBOARD": word}).dashboard, expected, word)
+        for key in env.BOOLEAN_KEYS:
+            with self.assertRaisesRegex(
+                TokenCrateError, f"^{key} must be one of 1/true/yes/on or 0/false/no/off, not 'ture'$"
+            ):
+                env.load(self.tmp, {key: "ture"})
+        # Compose-only switches stay text: nothing parses them here.
+        self.assertEqual(env.load(self.tmp, {"RESTART_POLICY": "ture"}).get("RESTART_POLICY"), "ture")
+
+    def test_the_storage_map_names_every_path_the_rules_apply_to(self) -> None:
+        settings = env.load(self.tmp, {"LLM_CLOUD_KEYS_FILE": "/keys/cloud.env"})
+        by_label = {place.label: place for place in settings.storage}
+        self.assertEqual(
+            {place.key for place in settings.storage if place.key},
+            {"LLM_MODELS_DIR", "LLM_AGENTS_DIR", "LLM_SKILLS_DIR", "LLM_LOCAL_SKILLS_DIR", "LLM_CLOUD_KEYS_FILE"},
+        )
+        # What agent containers mount must not contain the checkout, is
+        # protected from projects and from the keys file, and is what
+        # `doctor` and `init` look after; private skills are read-only.
+        mounted = [place for place in settings.storage if place.mounted]
+        self.assertEqual(
+            [place.label for place in mounted if place.writable],
+            [
+                "the models directory",
+                "the agents directory",
+                "the skills directory",
+            ],
+        )
+        self.assertFalse(by_label["the private skills directory"].writable)
+        for place in mounted:
+            self.assertTrue(place.created_by_init and place.refuses_projects and place.refuses_keys, place.label)
+        # The checkout and the keys file are refused as projects; the build
+        # contexts refuse the keys file; nothing mounts any of them.
+        self.assertEqual(by_label["the TokenCrate checkout"].path, self.tmp.resolve())
+        self.assertTrue(by_label["the TokenCrate checkout"].refuses_projects)
+        self.assertFalse(by_label["the TokenCrate checkout"].refuses_keys, "the default keys file lies below local/")
+        self.assertEqual(by_label["the cloud keys file"].path, Path("/keys/cloud.env"))
+        self.assertTrue(by_label["the cloud keys file"].refuses_projects)
+        for label in ("the shipped configuration", "the private agent sets"):
+            self.assertTrue(by_label[label].refuses_keys and not by_label[label].mounted, label)
+        self.assertEqual(
+            {
+                place.path.relative_to(self.tmp.resolve())
+                for place in settings.storage
+                if not place.mounted and not place.key
+            },
+            {Path(), Path("config"), Path("local/agent-sets"), Path("reports"), Path("data/dashboard/victoria")},
+        )
 
     def test_symlinked_env_file_is_refused(self) -> None:
         (self.tmp / "real.env").write_text("LLM_PORT=1\n")

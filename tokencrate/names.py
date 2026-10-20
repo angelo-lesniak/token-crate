@@ -103,8 +103,6 @@ def select_sets(catalog: dict, names: list[str], kind: str) -> list:
     selected: list = []
     seen: set[str] = set()
     for name in names:
-        if not SET_NAME_RE.fullmatch(name):
-            raise TokenCrateError(f"unsafe {kind} name: {name}")
         if name not in catalog:
             raise TokenCrateError(f"unknown {kind}: {name} (available: {', '.join(catalog)})")
         if name not in seen:

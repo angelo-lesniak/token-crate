@@ -164,7 +164,7 @@ class IntegrationTests(unittest.TestCase):
         # must not silently select a different effective model.
         project = self.scratch / "concurrent-project"
         project.mkdir()
-        identity = uis.ui_identity_store(self.settings, "paseo")
+        identity = self.settings.agents_dir / "pi" / "paseo-state"
         had_identity = identity.exists()
         try:
             run(ROOT, project)
@@ -272,8 +272,9 @@ class IntegrationTests(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp(prefix=f"home-lifecycle-{ui or agent}-", dir=self.scratch))
         home, project = scratch / "home", scratch / "project"
         project.mkdir()
-        sets, entry = uis.ui_selection(settings, None, ui) if ui else (None, None)
-        state = entry.ui["state"] if entry else None
+        entry = uis.ui_entry(settings, ui) if ui else None
+        sets = [*(s for s in session.selected_sets(settings, None) if s.name != entry.name), entry] if ui else None
+        state = entry.ui.state if entry else None
         session.prepare_mountpoints(home, agent, state)
         # Host files outside the retained directories stay on disk and never enter the home.
         (home / "host-unlisted").write_text("host data")
@@ -283,11 +284,11 @@ class IntegrationTests(unittest.TestCase):
         if ui:
             extra.update(
                 session.render_image(settings, sets),
-                TOKENCRATE_UI_COMMAND=entry.ui["command"],
-                TOKENCRATE_UI_PORT=str(entry.ui["port"]),
+                TOKENCRATE_UI_COMMAND=entry.ui.command,
+                TOKENCRATE_UI_PORT=str(entry.ui.port),
                 TOKENCRATE_UI_STATE=state,
             )
-            service_name, profiles, port = "agent-ui", ("ui",), entry.ui["port"]
+            service_name, profiles, port = "agent-ui", ("ui",), entry.ui.port
         else:
             if agent == "pi":
                 extra.update(session.render_image(settings, session.selected_sets(settings, None)))
@@ -347,11 +348,21 @@ class IntegrationTests(unittest.TestCase):
             )
 
         def ready(cid: str) -> None:
-            """The entrypoint has written the model list and the UI answers."""
+            """The entrypoint has written the model list and the UI answers.
+            A UI daemon listens on the container's address on its network,
+            not on loopback, so the probe tries each address of the
+            container's own name."""
             script = f"test -f {HOME}/.{agent}/agent/models.{'json' if agent == 'pi' else 'yml'}"
             if ui:
-                script += f" && curl -sf -o /dev/null http://127.0.0.1:{port}/" + (
-                    "api/health" if ui == "paseo" else ""
+                path = "api/health" if ui == "paseo" else ""
+                # Loopback first: a container without a network (this
+                # fixture) resolves nothing, and an unbounded lookup would
+                # spend the deadline on resolver timeouts.
+                script += (
+                    f' && (curl -sf -o /dev/null "http://127.0.0.1:{port}/{path}" && exit 0;'
+                    ' for address in $(timeout 3 getent ahostsv4 "$(cat /etc/hostname)" 2>/dev/null'
+                    " | awk '{print $1}' | sort -u); do"
+                    f' curl -sf -o /dev/null "http://$address:{port}/{path}" && exit 0; done; exit 1)'
                 )
             deadline = time.monotonic() + 65
             quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}

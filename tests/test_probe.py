@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ class FakeRouter(BaseHTTPRequestHandler):
     several test cases."""
 
     MODELS = ("fixture-preset", "other")
+    N_CTX = {"fixture-preset": 4096, "other": 8192}
     reject_mid_system = False
     tool_call = True
     ignore_effort = False
@@ -56,12 +58,14 @@ class FakeRouter(BaseHTTPRequestHandler):
         elif path in ("/models", "/v1/models"):
             self.send_json({"data": [{"id": name, "status": {"value": "loaded"}} for name in self.MODELS]})
         elif path == "/props":
-            if self.route(urllib.parse.parse_qs(query).get("model", [None])[0]):
+            model = urllib.parse.parse_qs(query).get("model", [None])[0]
+            type(self).requests.append({"path": path, "payload": {"model": model}})
+            if self.route(model):
                 self.send_json(
                     {
                         "build_info": "b10920",
-                        "model_path": "/models/x.gguf",
-                        "default_generation_settings": {"n_ctx": 4096},
+                        "model_path": f"/models/{model}.gguf",
+                        "default_generation_settings": {"n_ctx": self.N_CTX[model]},
                     }
                 )
         elif path == "/metrics":
@@ -261,35 +265,63 @@ else:
         self.assertTrue(text.startswith("# TokenCrate smoke report\n\n- Date: "), text)
         self.assertIn("- Preset: `fixture-preset`\n", text)
         self.assertIn(f"- Endpoint: {self.url}\n", text)
-        self.assertIn("- build: b10920\n- model_path: /models/x.gguf\n- n_ctx: 4096\n", text)
+        self.assertIn("- build: b10920\n- model_path: /models/fixture-preset.gguf\n- n_ctx: 4096\n", text)
         self.assertIn("\n| Check | Result | Detail |\n| --- | --- | --- |\n| model listing | pass |", text)
         self.assertIn("| streamed tool call | pass |", text)
         self.assertTrue(text.endswith("|\n\nAll checks passed.\n"), text)
 
         FakeRouter.requests = []
-        rows = probe.bench(self.url, ["fixture-preset"], iterations=2, long=True)
-        self.assertEqual([row["run"] for row in rows], ["short", "long"])
-        self.assertEqual(rows[0]["generation_tps"], 42.0)
-        self.assertEqual(rows[0]["iterations"], 2)
+        rows = probe.bench(self.url, ["fixture-preset", "other"], iterations=2, long=True)
+        self.assertEqual(
+            [(row.preset, row.run) for row in rows],
+            [("fixture-preset", "short"), ("fixture-preset", "long"), ("other", "short"), ("other", "long")],
+        )
+        # Every row carries its own preset's facts: the second preset's
+        # context size, not the first's.
+        self.assertEqual([row.n_ctx for row in rows], [4096, 4096, 8192, 8192])
+        self.assertEqual([row.model_path for row in rows[1:3]], ["/models/fixture-preset.gguf", "/models/other.gguf"])
+        self.assertEqual({row.build for row in rows}, {"b10920"})
+        self.assertEqual(rows[0].generation_tps, 42.0)
+        self.assertEqual(rows[0].iterations, 2)
         # One timings sample per iteration feeds the JSON report.
-        self.assertEqual(len(rows[0]["samples"]), 2)
-        self.assertEqual(rows[0]["samples"][0]["predicted_per_second"], 42.0)
+        self.assertEqual(len(rows[0].samples), 2)
+        self.assertEqual(rows[0].samples[0]["predicted_per_second"], 42.0)
+        # The facts are read once per preset, right after its warm-up, so the
+        # loaded preset answers and nothing is reloaded after the measurement.
+        sequence = [(request["path"], request["payload"]["model"]) for request in FakeRouter.requests]
+        per_preset = 1 + 1 + 2 * 2
+        self.assertEqual(len(sequence), 2 * per_preset)
+        for index, preset in ((0, "fixture-preset"), (per_preset, "other")):
+            self.assertEqual(sequence[index], ("/v1/chat/completions", preset))
+            self.assertEqual(sequence[index + 1], ("/props", preset))
+            self.assertEqual(set(sequence[index + 2 : index + per_preset]), {("/v1/chat/completions", preset)})
         bench_requests = [request for request in FakeRouter.requests if request["path"] == "/v1/chat/completions"]
-        self.assertEqual(len(bench_requests), 1 + 2 * 2)
         # Every iteration must process the whole prompt again, or the prompt
         # speed measures one cached token.
         self.assertEqual(bench_requests[1]["payload"]["temperature"], 0)
         self.assertIs(bench_requests[1]["payload"]["cache_prompt"], False)
-        text = probe.bench_report(self.url, rows, {"build": "b10920"})
+        text = probe.bench_report(self.url, rows)
         self.assertTrue(text.startswith("# TokenCrate bench report\n\n- Date: "), text)
-        self.assertIn(f"- Endpoint: {self.url}\n- build: b10920\n\n| Preset | Run |", text)
+        self.assertIn(
+            f"- Endpoint: {self.url}\n"
+            "- fixture-preset: n_ctx 4096, build b10920, /models/fixture-preset.gguf\n"
+            "- other: n_ctx 8192, build b10920, /models/other.gguf\n\n| Preset | Run |",
+            text,
+        )
         self.assertIn("| fixture-preset | short | 12 | 8 | 500.0 | 42.0 | 2 |", text)
+        self.assertIn("| other | long | 12 | 8 | 500.0 | 42.0 | 2 |", text)
         self.assertTrue(text.endswith("prompt caching disabled for the request.\n"), text)
-        document = json.loads(probe.bench_json(self.url, rows, {"build": "b10920", "n_ctx": 4096}))
-        self.assertEqual((document["schema"], document["endpoint"], document["build"]), (1, self.url, "b10920"))
-        self.assertEqual(document["n_ctx"], 4096)
-        self.assertEqual([row["run"] for row in document["rows"]], ["short", "long"])
+        document = json.loads(probe.bench_json(self.url, rows))
+        self.assertEqual((document["schema"], document["endpoint"], document["build"]), (2, self.url, "b10920"))
+        self.assertNotIn("n_ctx", document)
+        self.assertEqual(
+            [(row["preset"], row["n_ctx"]) for row in document["rows"][1:3]],
+            [("fixture-preset", 4096), ("other", 8192)],
+        )
         self.assertEqual(document["rows"][0]["samples"][1]["prompt_ms"], 24.0)
+        # Rows of different builds leave the document without one.
+        mixed = [rows[0], dataclasses.replace(rows[2], build="b1")]
+        self.assertIsNone(json.loads(probe.bench_json(self.url, mixed))["build"])
 
     def test_completion_checks_ask_for_the_lowest_effort_and_room_for_an_answer(self):
         FakeRouter.requests.clear()
@@ -355,7 +387,36 @@ else:
             # unknown context sizes.
             (reports / "bench-20260918-110000.json").write_text(json.dumps({**older, "rows": [older["rows"][0]]}))
             (reports / "bench-20260920-000000.json").write_text("{not json")
-            (reports / "bench-20260921-000000.json").write_text(json.dumps({"schema": 2, "rows": [row]}))
+            (reports / "bench-20260921-000000.json").write_text(json.dumps({"schema": 3, "rows": [row]}))
+            # Schema 2 carries the facts per row: two presets of different
+            # context sizes in one file, each compared within its own
+            # n_ctx, and a row without facts prints `?`.
+            facts = {"n_ctx": 65536, "build": "b11100-abcdef012", "model_path": "/models/ci-small.gguf"}
+            (reports / "bench-20260928-120000.json").write_text(
+                json.dumps(
+                    {
+                        "schema": 2,
+                        "build": None,
+                        "n_ctx": 1,
+                        "rows": [
+                            {**row, **facts, "generation_tps": 140.0},
+                            {**row, **facts, "preset": "ci-tiny", "n_ctx": 8192, "generation_tps": 300.0},
+                            {**row, "run": "long", "prompt_tokens": 6052},
+                        ],
+                    }
+                )
+            )
+            (reports / "bench-20260929-120000.json").write_text(
+                json.dumps(
+                    {
+                        "schema": 2,
+                        "rows": [
+                            {**row, **facts, "n_ctx": 32768, "generation_tps": 150.0},
+                            {**row, **facts, "preset": "ci-tiny", "n_ctx": 8192, "generation_tps": 310.5},
+                        ],
+                    }
+                )
+            )
             (reports / "bench-20260922-000000.json").write_text(json.dumps(["rows"]))
             (reports / "bench-TOPSECRET.json").write_text(json.dumps(document))
             (reports / "bench-20260923-000000.json").write_text(json.dumps(document) + " " * (1024 * 1024))
@@ -364,7 +425,7 @@ else:
             )
             text = probe.bench_history(reports)
         self.assertEqual(
-            [line for line in text.splitlines() if line.startswith("| ci-small")],
+            [line for line in text.splitlines() if line.startswith("| ci-")],
             [
                 # Grouped by preset and run, oldest first; the change in
                 # generation speed against the row above of the same group
@@ -374,8 +435,13 @@ else:
                 "| ci-small | short | 2026-09-18 11:00 | ? | ? | 223 | 100.0 | 10.0 |  | 3 |",
                 "| ci-small | short | 2026-09-19 00:00 | 65536 | ? | 223 | 1854.1 | 138.8 |  | 3 |",
                 "| ci-small | short | 2026-09-27 15:00 | 65536 | b11028-972d2313b | 223 | 1854.1 | 138.8 | +0.0 | 3 |",
+                "| ci-small | short | 2026-09-28 12:00 | 65536 | b11100-abcdef012 | 223 | 1854.1 | 140.0 | +1.2 | 3 |",
+                "| ci-small | short | 2026-09-29 12:00 | 32768 | b11100-abcdef012 | 223 | 1854.1 | 150.0 |  | 3 |",
                 "| ci-small | long | 2026-09-19 00:00 | 65536 | ? | 6052 | 1854.1 | 138.8 |  | 3 |",
                 "| ci-small | long | 2026-09-27 15:00 | 65536 | b11028-972d2313b | 6052 | 1854.1 | 138.8 | +0.0 | 3 |",
+                "| ci-small | long | 2026-09-28 12:00 | ? | ? | 6052 | 1854.1 | 138.8 |  | 3 |",
+                "| ci-tiny | short | 2026-09-28 12:00 | 8192 | b11100-abcdef012 | 223 | 1854.1 | 300.0 |  | 3 |",
+                "| ci-tiny | short | 2026-09-29 12:00 | 8192 | b11100-abcdef012 | 223 | 1854.1 | 310.5 | +10.5 | 3 |",
             ],
         )
         for secret in ("TOPSECRET", "script", "127.0.0.1", "+0200", "xxxxx"):

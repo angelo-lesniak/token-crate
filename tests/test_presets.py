@@ -5,13 +5,16 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support import shipped
-from tokencrate import PROJECT_ROOT, TokenCrateError, agentmodels, models, presets
+from tokencrate import PROJECT_ROOT, TokenCrateError, agentmodels, files, models, presets
 
 CONFIG = PROJECT_ROOT / "config"
 GPT_OSS_20B_WEIGHTS = "ggml-org/gpt-oss-20b-GGUF/gpt-oss-20b-MXFP4.gguf"
@@ -128,7 +131,12 @@ class PresetTests(unittest.TestCase):
         # and alias itself, so no section names them.
         self.assertEqual(
             config["*"],
-            {"jinja": "true", "metrics": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"},
+            {
+                "jinja": "true",
+                "metrics": "true",
+                "no-slots": "true",
+                "ui-config-file": "/etc/tokencrate/ui-config.json",
+            },
         )
         for forbidden in ("host", "port", "alias"):
             self.assertNotIn(forbidden, text)
@@ -286,6 +294,22 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(rendered), len(SHIPPED_PRESETS))
         self.assertIn(f"{VALIDATED}\n", stdout)
         self.assertEqual(presets.rendered_model_ids(output), set())
+
+    def test_write_atomic_replaces_the_file_whole_or_not_at_all(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents" / "pi" / "models.json"
+            files.write_atomic(path, "first\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), "first\n")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+            with (
+                mock.patch("os.replace", side_effect=PermissionError("read-only")),
+                self.assertRaises(PermissionError),
+            ):
+                files.write_atomic(path, "second\n")
+            # The previous file stands and the temporary file is gone.
+            self.assertEqual(path.read_text(encoding="utf-8"), "first\n")
+            self.assertEqual(os.listdir(path.parent), [path.name])
 
     def test_render_check_validates_the_shipped_configuration(self):
         output = self.workdir() / "build"
@@ -514,25 +538,23 @@ class PresetTests(unittest.TestCase):
             self.render(config_dir, check=True)
         self.assertIn("source must be a relative path", str(caught.exception))
 
-    def test_rendered_model_ids_reads_the_rendered_preset_file(self):
+    def test_the_pi_model_list_is_read_back_for_ids_and_slots(self):
+        # Nothing rendered yet: both readers answer empty.
         output = self.workdir() / "build"
         self.assertEqual(presets.rendered_model_ids(output), set())
-        path = output / "models.ini"
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            "[*]\njinja = true\n\n[a]\nmodel = /models/a.gguf\n\n[b]\nmodel = /models/b.gguf\n", encoding="utf-8"
-        )
-        self.assertEqual(presets.rendered_model_ids(output), {"a", "b"})
-        # The slots: ctx-size over parallel per section; the shared section,
-        # a hostile name, and a section without a whole-number ctx-size are
-        # left out.
-        self.assertEqual(presets.rendered_slots(self.workdir() / "elsewhere"), {})
-        path.write_text(
-            "[*]\njinja = true\nctx-size = 99\n\n[a]\nctx-size = 65536\nparallel = 2\n\n[b]\nctx-size = 32768\n\n"
-            "[<b>x]\nctx-size = 1024\n\n[c]\nctx-size = many\n\n[d]\nparallel = 4\n",
-            encoding="utf-8",
-        )
-        self.assertEqual(presets.rendered_slots(output), {"a": 32768, "b": 32768})
+        self.assertEqual(presets.rendered_slots(output), {})
+        # After a render, the ids and the slots (ctx-size over parallel) agree
+        # with the router file, which llama-server alone reads: removing it
+        # changes neither answer.
+        _, _, output = self.render()
+        config = read_ini(output / "models.ini")
+        sections = {name: section for name, section in config.items() if name != "*"}
+        expected = {name: int(s["ctx-size"]) // int(s["parallel"]) for name, s in sections.items()}
+        self.assertEqual(set(expected), set(LOADABLE_PRESETS))
+        self.assertEqual(presets.rendered_model_ids(output), set(expected))
+        self.assertEqual(presets.rendered_slots(output), expected)
+        (output / "models.ini").unlink()
+        self.assertEqual(presets.rendered_slots(output), expected)
 
 
 if __name__ == "__main__":

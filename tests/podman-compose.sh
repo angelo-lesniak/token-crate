@@ -12,16 +12,27 @@ cd "$PROJECT_ROOT"
 command -v podman-compose >/dev/null 2>&1 \
   || { printf 'podman-compose compatibility: podman-compose is required\n' >&2; exit 1; }
 
-unset COMPOSE_PROJECT_NAME FAKE_PODMAN_LOG LLM_AGENT_PROJECT_DIR TOKENCRATE_PRESET
+unset FAKE_PODMAN_LOG LLM_AGENT_PROJECT_DIR TOKENCRATE_PRESET
+# The Compose files require every setting and the four values the wrapper
+# derives on each call (compose.yaml, the interpolation note). The
+# settings come from the reference at their documented defaults, which
+# bin/tokencrate keeps shell-literal; the storage paths are then pointed
+# at a scratch directory.
+set -a
+# shellcheck source=/dev/null
+. ./.env.example
+set +a
 export COMPOSE_PROJECT_NAME=tokencrate
+export TOKENCRATE_HOME_OWNER=U
+export TOKENCRATE_ROOT="$PROJECT_ROOT"
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+export HOST_UID HOST_GID
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf -- "$TEST_ROOT"' EXIT
 export LLM_MODELS_DIR="$TEST_ROOT/models"
 export LLM_AGENTS_DIR="$TEST_ROOT/agents"
 export TOKENCRATE_AGENT_HOME="$TEST_ROOT/agent-home"
-# The wrapper sets these on every call; a render needs them too.
-export TOKENCRATE_HOME_OWNER=U
-export TOKENCRATE_ROOT="$PROJECT_ROOT"
 export LLM_SKILLS_DIR="$TEST_ROOT/skills"
 export LLM_LOCAL_SKILLS_DIR="$TEST_ROOT/local-skills"
 export LLM_AGENT_PROJECT_DIR="$TEST_ROOT/project"
@@ -176,7 +187,7 @@ run_logged grafana "${podman_files[@]}" --profile dashboard
 run_args=()
 grep -Fq -- '--network=tokencrate_dashboard-publish' "$network_log" \
   || { printf 'podman-compose compatibility: grafana does not join the dashboard-publish network\n' >&2; exit 1; }
-grep -Fq -- '-p 127.0.0.1:4211:8080' "$network_log" \
+grep -Fq -- "-p 127.0.0.1:$LLM_DASHBOARD_PORT:8080" "$network_log" \
   || { printf 'podman-compose compatibility: grafana does not publish its port on loopback\n' >&2; exit 1; }
 if grep -Eq -- '--network=tokencrate_(agents|default|ui|ui-publish)' "$network_log"; then
   printf 'podman-compose compatibility: grafana joined an agent or UI network\n' >&2
@@ -185,10 +196,12 @@ fi
 
 # The browser UI sits on the ui network only, and with the egress overlay
 # on ui and default; the forwarder publishes from ui-publish, which no
-# agent joins. The wrapper starts both with `run`, so what the log shows
-# is what a UI gets: the set label from the Compose file (podman-compose
-# ignores `run -l`) and, for the forwarder, the service port through
-# --service-ports.
+# agent joins. The wrapper starts both with `run` and sets the UI
+# variables per start (here: a set name and a host port with no meaning),
+# so what the log shows is what a UI gets: the set label from the Compose
+# file (podman-compose ignores `run -l`) and, for the forwarder, the
+# service port through --service-ports.
+export TOKENCRATE_UI_SET=x TOKENCRATE_UI_HOST_PORT=4299
 run_args=(--name tokencrate-ui-x)
 run_logged agent-ui "${podman_files[@]}" --profile ui
 run_args=()
@@ -200,7 +213,7 @@ if grep -Eq -- '--network=tokencrate_(agents|default|ui-publish)' "$network_log"
   printf 'podman-compose compatibility: agent-ui joined a network other than ui\n' >&2
   exit 1
 fi
-grep -Fq -- '--label io.tokencrate.ui-set=' "$network_log" \
+grep -Fq -- '--label io.tokencrate.ui-set=x' "$network_log" \
   || { printf 'podman-compose compatibility: agent-ui carries no UI set label\n' >&2; exit 1; }
 run_logged agent-ui "${podman_files[@]}" --file compose.agent-egress.yaml --profile ui
 grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
@@ -214,7 +227,7 @@ run_logged ui-forward "${podman_files[@]}" --profile ui
 run_args=()
 grep -Fq -- '--network=tokencrate_ui-publish' "$network_log" \
   || { printf 'podman-compose compatibility: ui-forward does not join the ui-publish network\n' >&2; exit 1; }
-grep -Fq -- '-p 127.0.0.1:4224:8080' "$network_log" \
+grep -Fq -- "-p 127.0.0.1:$TOKENCRATE_UI_HOST_PORT:8080" "$network_log" \
   || { printf 'podman-compose compatibility: run --service-ports did not publish the forwarder port on loopback\n' >&2; exit 1; }
 grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
   || { printf 'podman-compose compatibility: ui-forward does not join the ui network\n' >&2; exit 1; }

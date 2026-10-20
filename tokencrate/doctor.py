@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,12 +24,15 @@ from .engine import (
     SERVICE_LABEL,
     Engine,
     EngineFacts,
+    Selection,
+    loopback_bind_error,
     publishes,
+    requested_engine,
     select,
     tool_output,
     unsupported_engine,
 )
-from .env import Settings
+from .env import HostPath, Settings
 from .names import parse_list
 
 DEFAULT_GPU_DEVICE = "nvidia.com/gpu=all"
@@ -68,6 +70,25 @@ class GpuFacts:
     name: str
 
 
+@dataclass(frozen=True)
+class StorageFact:
+    """A storage entry mounted into agent containers: whether it exists,
+    and whether it is writable or, for a read-only mount, readable."""
+
+    place: HostPath
+    exists: bool
+    accessible: bool
+
+
+@dataclass(frozen=True)
+class SetProblem:
+    """A list setting that names a set no catalogue has, or that cannot be
+    read, and what is wrong with it."""
+
+    setting: str
+    message: str
+
+
 @dataclass
 class HostFacts:
     """Everything `evaluate` judges; `gather` fills it from the host."""
@@ -85,14 +106,19 @@ class HostFacts:
     cdi_spec_driver: str | None = None
     # MemTotal of /proc/meminfo; None when it could not be read.
     ram_kb: int | None = None
-    # (label, path, exists, writable or, for local-skills, readable)
-    storage: list[tuple[str, str, bool, bool]] = field(default_factory=list)
-    # (setting, what is wrong with it): a list setting that names a set no
-    # catalogue has, or a list that cannot be read.
-    set_problems: list[tuple[str, str]] = field(default_factory=list)
+    storage: list[StorageFact] = field(default_factory=list)
+    set_problems: list[SetProblem] = field(default_factory=list)
     port: str = "4207"
     port_in_use: bool = False
     own_container_holds_port: bool = False
+
+    @property
+    def selection(self) -> Selection:
+        """The engine selection as `engine.detect` takes it, so `up` can
+        reuse what `doctor` probed instead of probing the engine again."""
+        return Selection(
+            chosen=self.engine, candidates=tuple(self.candidates), unsupported=self.unsupported_engine or ""
+        )
 
 
 @dataclass
@@ -151,22 +177,18 @@ def _memory_total_kb() -> int | None:
     return None
 
 
-def _storage_facts(settings: Settings) -> list[tuple[str, str, bool, bool]]:
+def _storage_facts(settings: Settings) -> list[StorageFact]:
+    """The storage entries mounted into agent containers: a read-only mount
+    needs to be readable, the others writable."""
     facts = []
-    items = (
-        ("models", settings.models_dir),
-        ("agents", settings.agents_dir),
-        ("skills", settings.skills_dir),
-        ("local-skills", settings.local_skills_dir),
-    )
-    for label, path in items:
-        # Private skills are mounted read-only, so readable is enough there.
-        mode = os.R_OK | os.X_OK if label == "local-skills" else os.W_OK
-        facts.append((label, str(path), path.is_dir(), os.access(path, mode)))
+    for place in settings.storage:
+        if place.mounted:
+            mode = os.W_OK if place.writable else os.R_OK | os.X_OK
+            facts.append(StorageFact(place, place.path.is_dir(), os.access(place.path, mode)))
     return facts
 
 
-def _set_problems(settings: Settings) -> list[tuple[str, str]]:
+def _set_problems(settings: Settings) -> list[SetProblem]:
     """The names in LLM_AGENT_SETS and LLM_SKILL_SETS that no catalogue
     has. Fetched or not is the start's business, not the host's."""
     lookups = (
@@ -178,24 +200,13 @@ def _set_problems(settings: Settings) -> list[tuple[str, str]]:
         try:
             unknown = [name for name in parse_list(settings.get(key), key) if not known(name)]
         except TokenCrateError as error:
-            problems.append((key, str(error)))
+            problems.append(SetProblem(key, str(error)))
             continue
         if unknown:
-            problems.append((key, f"names no known set: {', '.join(unknown)} (run: bash bin/tokencrate {listing})"))
+            problems.append(
+                SetProblem(key, f"names no known set: {', '.join(unknown)} (run: bash bin/tokencrate {listing})")
+            )
     return problems
-
-
-def _port_in_use(port: str) -> bool:
-    """The same loopback bind `up` and `ui` make before publishing a port,
-    so `doctor` and the start cannot disagree; a listener on another
-    address only does not block a loopback publish."""
-    with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            listener.bind(("127.0.0.1", int(port)))
-        except OSError:
-            return True
-    return False
 
 
 def _own_container_holds_port(engine: EngineFacts | None, settings: Settings) -> bool:
@@ -213,12 +224,12 @@ def _own_container_holds_port(engine: EngineFacts | None, settings: Settings) ->
 
 def gather(settings: Settings) -> HostFacts:
     """Run every probe. The engine comes from `engine.select`, the rule `up`
-    applies through `engine.detect`: the requested engine, or the first
-    usable one. What `detect` refuses on, this records, so the two cannot
-    disagree. The GPU probes run only when the GPU is wanted."""
+    applies through `engine.detect`: the requested or recorded engine, or
+    the first usable one. What `detect` refuses on, this records, so the
+    two cannot disagree. The GPU probes run only when the GPU is wanted."""
     env = settings.subprocess_env()
     path = env.get("PATH")
-    selection = select(env, settings.get("CONTAINER_ENGINE"))
+    selection = select(env, requested_engine(settings))
     facts = HostFacts(
         git_present=shutil.which("git", path=path) is not None,
         uname=(tool_output(["uname", "-sm"], env) or "").strip(),
@@ -229,7 +240,7 @@ def gather(settings: Settings) -> HostFacts:
         storage=_storage_facts(settings),
         set_problems=_set_problems(settings),
         port=settings.port,
-        port_in_use=_port_in_use(settings.port),
+        port_in_use=bool(loopback_bind_error(settings.port)),
         own_container_holds_port=_own_container_holds_port(selection.chosen, settings),
     )
     if settings.gpu:
@@ -294,9 +305,9 @@ def _engine_findings(engine: EngineFacts, gpu_wanted: bool) -> list[Finding]:
     findings.append(
         _check(
             major is not None and major >= PODMAN_MIN_MAJOR,
-            f"Podman {major} meets the tested minimum ({PODMAN_MIN_MAJOR})",
+            f"Podman {major} meets the validated minimum ({PODMAN_MIN_MAJOR})",
             f"Podman {engine.version_line} is older than {PODMAN_MIN_MAJOR}, "
-            "which is the oldest version TokenCrate is tested on; "
+            "which is the oldest version TokenCrate is validated on; "
             "run bash bin/tokencrate smoke --agent pi --egress while a browser UI runs to check the network boundary",
             level="warn",
         )
@@ -446,23 +457,20 @@ def _cdi_findings(facts: HostFacts, device: str) -> list[Finding]:
 
 def _storage_findings(facts: HostFacts) -> list[Finding]:
     findings = []
-    for label, path, exists, accessible in facts.storage:
-        if not exists:
-            findings.append(
-                Finding("warn", f"{label} directory does not exist yet: {path} (bin/tokencrate init creates it)")
-            )
+    for fact in facts.storage:
+        label, path = fact.place.label, fact.place.path
+        if not fact.exists:
+            findings.append(Finding("warn", f"{label} does not exist yet: {path} (bin/tokencrate init creates it)"))
             continue
-        access = "readable" if label == "local-skills" else "writable"
-        findings.append(
-            _check(accessible, f"{label} directory exists: {path}", f"{label} directory is not {access}: {path}")
-        )
+        access = "writable" if fact.place.writable else "readable"
+        findings.append(_check(fact.accessible, f"{label} exists: {path}", f"{label} is not {access}: {path}"))
     return findings
 
 
 def _setting_findings(facts: HostFacts) -> list[Finding]:
     """Warnings: the stack starts without agent or skill sets; the first
     agent start refuses a name it cannot find."""
-    return [Finding("warn", f"{key} {problem}") for key, problem in facts.set_problems]
+    return [Finding("warn", f"{problem.setting} {problem.message}") for problem in facts.set_problems]
 
 
 def _network_findings(facts: HostFacts) -> list[Finding]:
@@ -516,10 +524,13 @@ def run(
     required_vram_gib: int | None,
     required_ram_gib: int | None,
     build_wait: str | None = None,
+    facts: HostFacts | None = None,
 ) -> int:
-    """Print the doctor report; 0 when no check failed, else 1."""
+    """Print the doctor report; 0 when no check failed, else 1. `up` passes
+    the facts it gathered, so it probes the engine once."""
     print("== TokenCrate host doctor ==", flush=True)
-    facts = gather(settings)
+    if facts is None:
+        facts = gather(settings)
     findings = evaluate(
         facts,
         gpu_wanted=settings.gpu,

@@ -231,8 +231,15 @@ def run(root: Path, project: Path) -> None:
         # The pinned UI assigns a name only when it finishes (or falls back).
         until(lambda: any(s["id"] == sid and s.get("name") for s in request(base + "/api/sessions" + query)))
         until(lambda: not request(base + route + "/status" + query)["isStreaming"])
+        # Paseo's daemon listens on the container's `ui` address, which the
+        # launcher logs; its CLI needs the same address to reach it.
+        daemon_log = selected.command("logs", second[0], capture=True, check=False)
+        listen = re.search(r"listens on (\S+:\d+)", daemon_log.stdout + daemon_log.stderr)
+        assert listen, "the Paseo launcher did not log its listen address"
         paseo = selected.command(
             "exec",
+            "-e",
+            f"PASEO_LISTEN={listen.group(1)}",
             second[0],
             "paseo",
             "run",

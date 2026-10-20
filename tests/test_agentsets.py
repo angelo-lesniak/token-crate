@@ -71,20 +71,8 @@ class AgentSetTests(unittest.TestCase):
         self.assertEqual(
             set(catalog), {path.parent.name for path in (PROJECT_ROOT / "config" / "agent-sets").glob("*/set.toml")}
         )
-        self.assertEqual(
-            catalog["pi-web"].ui,
-            {"command": "tokencrate-ui-pi-web", "port": 8504, "state": ".pi-web", "identity": [], "host_port": 4224},
-        )
-        self.assertEqual(
-            catalog["paseo"].ui,
-            {
-                "command": "tokencrate-ui-paseo",
-                "port": 6767,
-                "state": ".paseo",
-                "identity": [".paseo/daemon-keypair.json", ".paseo/server-id"],
-                "host_port": 4250,
-            },
-        )
+        self.assertEqual(catalog["pi-web"].ui, agentsets.UiSpec("tokencrate-ui-pi-web", 8504, ".pi-web", 4224))
+        self.assertEqual(catalog["paseo"].ui, agentsets.UiSpec("tokencrate-ui-paseo", 6767, ".paseo", 4250))
         self.assertIsNone(catalog["coding"].ui)
         base = (PROJECT_ROOT / "services" / "agents" / "Dockerfile").read_text()
         rendered = agentsets.render_selection(base, list(catalog.values()))
@@ -287,15 +275,11 @@ class AgentSetTests(unittest.TestCase):
             head + 'build = ["a\\nb"]\n': "single non-empty shell lines",
             head + 'build = ["# a comment"]\n': "not comments",
             'schema = 1\ndescription = "x"\ncheck = ["# only a comment"]\n': "check lines must be single non-empty",
-            head + '[ui]\ncommand = "x"\n': "command, port, and state, and at most identity and host_port",
+            head + '[ui]\ncommand = "x"\n': "command, port, and state, and at most host_port",
             head + '[ui]\ncommand = "x"\nport = 8080\n': "command, port, and state",
-            head + ui + 'identity = "a"\n': "list of file paths",
-            head + ui + 'identity = ["../a"]\n': "directly below the state directory .paseo",
-            head + ui + 'identity = ["/a"]\n': "directly below",
-            head + ui + 'identity = ["id"]\n': "directly below",
-            head + ui + 'identity = [".paseo/keys/id"]\n': "directly below",
-            head + ui + 'identity = [".paseo/.."]\n': "directly below",
-            head + ui + 'identity = [".other/id"]\n': "directly below",
+            # Paseo's launcher keeps the daemon identity through the per-set
+            # state mount; no manifest key names identity files.
+            head + ui + 'identity = [".paseo/server-id"]\n': "at most host_port",
             head + '[ui]\ncommand = "/usr/bin/x"\nport = 8080\nstate = ".x"\n': "program name without a path",
             head
             + '[ui]\ncommand = "x"\nport = 80\nstate = ".x"\n': "ui port must be an integer between 1024 and 65535",

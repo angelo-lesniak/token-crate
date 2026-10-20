@@ -16,7 +16,3 @@ command = "tokencrate-ui-paseo"
 port = 6767
 state = ".paseo"
 host_port = 4250
-# The daemon's keypair and server id: Paseo's web client treats a daemon
-# with another identity at the address it knows as unreachable, so the
-# wrapper hands every project the same one (docs/agents.md, Browser UIs).
-identity = [".paseo/daemon-keypair.json", ".paseo/server-id"]

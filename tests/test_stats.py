@@ -4,13 +4,16 @@ never prints, and the command around it."""
 from __future__ import annotations
 
 import json
+import os
 import unittest
 import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tests.support import Scratch, free_port
+from tests.support import Scratch
 from tokencrate import TokenCrateError, stats
+from tokencrate.stats import tables, transcripts
+from tokencrate.stats.report import meta_text, recent_clause, summary_line
 
 CWD_DIRECTORY = "--srv-PROJECTSECRET--"
 
@@ -154,7 +157,7 @@ class StatsReportTests(unittest.TestCase):
         self.assertIn("\n## Definitions\n\n- **Context**: one request as the server saw it", text)
         self.assertIn("\n- **Slot**: the context one request may use on a rendered preset", text)
         # Without a rendered preset file the fit table is its note.
-        self.assertIn("## Preset fit\n\nNo rendered presets: `up` or `presets render` writes build/models.ini", text)
+        self.assertIn("## Preset fit\n\nNo rendered presets: `up` renders them", text)
         # Requests: input and output are summed once per request; the context
         # columns are nearest-rank percentiles and the >16K/32K/48K shares.
         self.assertIn("| pi | 4 | 5900 | 450 | 74% | 2050 | 16500 | 16500 | 25% | 0% | 0% |", text)
@@ -183,25 +186,23 @@ class StatsReportTests(unittest.TestCase):
         # window says nothing more, an older one keeps the clause.
         sessions = stats.read_sessions(self.agents_dir)
         pi_last = 1790006400.0 + 240  # 2026-09-21T16:04:00Z; the cloud and omp sessions end about two hours later
+        self.assertEqual(recent_clause(sessions, now=pi_last + 86400 + 1), "2 sessions and 3 requests in the last 24 h")
+        self.assertEqual(recent_clause(sessions, now=pi_last + 3 * 86400), "none in the last 24 h")
+        self.assertEqual(recent_clause(sessions, stats.Filter(since=stats.since_cutoff("2h")), now=None), "")
+        self.assertEqual(recent_clause(sessions, stats.Filter(since=stats.since_cutoff("24h")), now=None), "")
         self.assertEqual(
-            stats.recent_clause(sessions, now=pi_last + 86400 + 1), "2 sessions and 3 requests in the last 24 h"
-        )
-        self.assertEqual(stats.recent_clause(sessions, now=pi_last + 3 * 86400), "none in the last 24 h")
-        self.assertEqual(stats.recent_clause(sessions, stats.Filter(since=stats.since_cutoff("2h")), now=None), "")
-        self.assertEqual(stats.recent_clause(sessions, stats.Filter(since=stats.since_cutoff("24h")), now=None), "")
-        self.assertEqual(
-            stats.meta_text(sessions, now=pi_last + 3600),
+            meta_text(sessions, now=pi_last + 3600),
             "3 sessions, 6 requests, all agents, all time; 3 sessions and 6 requests in the last 24 h",
         )
-        self.assertTrue(stats.summary_line(sessions, now=pi_last + 3600).endswith("in the last 24 h"))
+        self.assertTrue(summary_line(sessions, now=pi_last + 3600).endswith("in the last 24 h"))
 
     def test_the_preset_fit_table_judges_every_rendered_slot(self) -> None:
         # The fixture's contexts reach 19,160 tokens: a 16K slot would have
         # refused three of the six requests (two sessions' peaks), a 32K
         # slot none. Rows are sorted by preset name.
         sessions = stats.read_sessions(self.agents_dir)
-        self.assertEqual(stats.fit_verdict(sessions, 16384), (3, 2, False))
-        self.assertEqual(stats.fit_verdict(sessions, 32768), (0, 0, True))
+        self.assertEqual(tables.fit_verdict(sessions, 16384), (3, 2, False))
+        self.assertEqual(tables.fit_verdict(sessions, 32768), (0, 0, True))
         text = stats.report(sessions, slots={"ci-small": 32768, "ci-tiny": 16384})
         self.assertIn(
             "| Preset | Slot | Requests over slot | Sessions over slot | Fit |\n| --- | ---: | ---: | ---: | --- |\n"
@@ -251,17 +252,17 @@ class StatsReportTests(unittest.TestCase):
                 stats.since_cutoff(bad, now)
 
     def test_timestamps_and_levels_are_read_defensively(self) -> None:
-        self.assertEqual(stats.timestamp("2026-09-21T16:00:00.000Z"), 1790006400.0)
-        self.assertIsNone(stats.timestamp("2026-09-21T16:00:00.000Z" + "0" * 40))
-        self.assertIsNone(stats.timestamp("0001-01-01T00:00:00"))
-        self.assertIsNone(stats.timestamp(1789999200))
-        self.assertIsNone(stats.timestamp("TOPSECRET"))
-        self.assertEqual(stats.level_name("xhigh"), "xhigh")
-        self.assertEqual(stats.level_name("X"), "?")
-        self.assertEqual(stats.level_name(None), "?")
-        self.assertEqual(stats.duration_text(38), "38s")
-        self.assertEqual(stats.duration_text(270), "4m 30s")
-        self.assertEqual(stats.duration_text(4320), "1h 12m")
+        self.assertEqual(transcripts.timestamp("2026-09-21T16:00:00.000Z"), 1790006400.0)
+        self.assertIsNone(transcripts.timestamp("2026-09-21T16:00:00.000Z" + "0" * 40))
+        self.assertIsNone(transcripts.timestamp("0001-01-01T00:00:00"))
+        self.assertIsNone(transcripts.timestamp(1789999200))
+        self.assertIsNone(transcripts.timestamp("TOPSECRET"))
+        self.assertEqual(transcripts.level_name("xhigh"), "xhigh")
+        self.assertEqual(transcripts.level_name("X"), "?")
+        self.assertEqual(transcripts.level_name(None), "?")
+        self.assertEqual(tables.duration_text(38), "38s")
+        self.assertEqual(tables.duration_text(270), "4m 30s")
+        self.assertEqual(tables.duration_text(4320), "1h 12m")
 
     def test_without_transcripts_the_report_says_where_they_would_be(self) -> None:
         with TemporaryDirectory(prefix="tokencrate-stats-") as empty:
@@ -282,19 +283,41 @@ class StatsReportTests(unittest.TestCase):
             text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertNotIn("FOREIGNMODEL", text)
 
+    def test_a_transcript_is_checked_as_the_object_that_is_read(self) -> None:
+        # A FIFO where a transcript was would block a plain open until
+        # something wrote to it; a link is refused without being followed;
+        # a regular file below the directory opens and reads.
+        sessions = self.agents_dir / "pi" / "PROJECTSECRET-1a2b3c" / ".pi" / "agent" / "sessions" / CWD_DIRECTORY
+        root = Path(os.path.realpath(self.agents_dir))
+        os.mkfifo(sessions / "pipe.jsonl")
+        (sessions / "link.jsonl").symlink_to(sessions / "2026-09-21T16-00-00-000Z_a.jsonl")
+        for name in ("pipe.jsonl", "link.jsonl"):
+            with self.assertRaises(OSError, msg=name):
+                transcripts.open_transcript(sessions / name, root)
+        with transcripts.open_transcript(sessions / "2026-09-21T16-00-00-000Z_a.jsonl", root) as handle:
+            self.assertIn('"type": "session"', handle.readline())
+        text = stats.report(stats.read_sessions(self.agents_dir))
+        self.assertIn("3 session(s), 6 request(s)", text)
+
     def test_an_integer_past_the_digit_limit_is_skipped(self) -> None:
         # json.loads raises a plain ValueError for it, not a JSONDecodeError.
         session = stats.Session("pi")
-        stats.read_line(
+        transcripts.read_line(
             '{"type": "message", "message": {"role": "assistant", "usage": {"input": ' + "9" * 5000 + "}}}", session
         )
+        self.assertEqual(session.requests, [])
+
+    def test_a_deeply_nested_line_is_skipped(self) -> None:
+        # json.loads raises RecursionError, not ValueError, for it.
+        session = stats.Session("pi")
+        transcripts.read_line("[" * 100000, session)
         self.assertEqual(session.requests, [])
 
     def test_a_line_beyond_the_limit_is_skipped(self) -> None:
         sessions = self.agents_dir / "pi" / "PROJECTSECRET-1a2b3c" / ".pi" / "agent" / "sessions" / CWD_DIRECTORY
         short = assistant("tokencrate", "big-model", "stop", tokens(7, 7, 0))
         (sessions / "big.jsonl").write_text(short + "\n" + "x" * 4096 + "\n", encoding="utf-8")
-        with unittest.mock.patch.object(stats, "LINE_LIMIT", 1024):
+        with unittest.mock.patch.object(transcripts, "LINE_LIMIT", 1024):
             read = stats.read_sessions(self.agents_dir)
         models = {request.model for session in read for request in session.requests}
         self.assertIn("big-model", models)
@@ -312,14 +335,14 @@ class StatsReportTests(unittest.TestCase):
         self.assertIsNone(stats.duration(True))
 
     def test_percentiles_are_nearest_rank_observations(self) -> None:
-        self.assertEqual(stats.percentile([5], 0.9), 5)
-        self.assertEqual(stats.percentile([1, 2, 3, 4], 0.5), 2)
-        self.assertEqual(stats.percentile([1, 2, 3, 4], 0.9), 4)
-        self.assertEqual(stats.percentile(list(range(1, 101)), 0.99), 99)
+        self.assertEqual(tables.percentile([5], 0.9), 5)
+        self.assertEqual(tables.percentile([1, 2, 3, 4], 0.5), 2)
+        self.assertEqual(tables.percentile([1, 2, 3, 4], 0.9), 4)
+        self.assertEqual(tables.percentile(list(range(1, 101)), 0.99), 99)
 
     def test_the_transcript_directories_are_the_retained_ones(self) -> None:
-        self.assertEqual(stats.sessions_directory("pi"), ".pi/agent/sessions")
-        self.assertEqual(stats.sessions_directory("omp"), ".omp/agent/sessions")
+        self.assertEqual(transcripts.sessions_directory("pi"), ".pi/agent/sessions")
+        self.assertEqual(transcripts.sessions_directory("omp"), ".omp/agent/sessions")
 
 
 class StatsCommandTests(unittest.TestCase):
@@ -360,62 +383,6 @@ class StatsCommandTests(unittest.TestCase):
         self.assertIn("--since is only valid with stats", result.stderr)
         result = self.scratch.run("stats", "--agent", "claude")
         self.assertIn("--agent requires pi or omp", result.stderr)
-
-    def test_stats_serves_in_the_background_until_stopped_or_down(self) -> None:
-        import os
-        import signal
-        import urllib.request
-
-        write_transcripts(self.scratch.storage / "agents")
-        port = str(free_port())
-        started = self.scratch.run(
-            "stats", "--serve", "--detach", "--port", port, "--since", "2026-09-01", PATH="/usr/bin:/bin"
-        )
-        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
-        self.assertIn(f"Serving the stats page at http://127.0.0.1:{port}/ in the background", started.stdout)
-        record = json.loads((self.scratch.root / "build" / "stats-serve.pid").read_text())
-        self.addCleanup(lambda: os.path.exists(f"/proc/{record['pid']}") and os.kill(record["pid"], signal.SIGKILL))
-        self.assertEqual(record["port"], int(port))
-        self.assertIsInstance(record["started"], int)
-        self.assertIn("Serving the stats page", (self.scratch.root / "build" / "stats-serve.log").read_text())
-        # The page answers with the child's own filter, and status names it.
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as response:
-            self.assertIn("all agents, since 2026-09-01", response.read().decode())
-        status = self.scratch.run("status")
-        self.assertIn(f"Stats page: serving at http://127.0.0.1:{port}/ (pid {record['pid']}", status.stdout)
-        # A second one is refused while the first runs.
-        refused = self.scratch.run("stats", "--serve", "--detach", "--port", port)
-        self.assertIn("a stats server is already serving", refused.stderr)
-        self.assertIn("Stopped the stats page.", self.scratch.run("stats", "--stop").stdout)
-        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
-        self.assertFalse(os.path.exists(f"/proc/{record['pid']}"))
-        self.assertIn("No stats page is served in the background.", self.scratch.run("stats", "--stop").stdout)
-        # down ends a detached server with the rest; a stale file is ignored.
-        started = self.scratch.run("stats", "--serve", "--detach", "--port", port, PATH="/usr/bin:/bin")
-        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
-        record = json.loads((self.scratch.root / "build" / "stats-serve.pid").read_text())
-        self.assertIn("Stopped the stats page.", self.scratch.run("down").stdout)
-        self.assertFalse(os.path.exists(f"/proc/{record['pid']}"))
-        (self.scratch.root / "build" / "stats-serve.pid").write_text(json.dumps({"pid": 2**22 - 1, "port": 4210}))
-        self.assertNotIn("Stats page:", self.scratch.run("status").stdout)
-        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
-        self.assertIn("--stop takes no other stats option", self.scratch.run("stats", "--stop", "--port", port).stderr)
-        self.assertIn("--detach applies to stats --serve", self.scratch.run("stats", "--detach").stderr)
-        self.assertIn("--detach is only valid with stats --serve", self.scratch.run("bench", "--detach").stderr)
-        # A bad cutoff is refused by the parent, and a port another program
-        # holds is refused before anything starts.
-        bad = self.scratch.run("stats", "--serve", "--detach", "--port", port, "--since", "yesterday")
-        self.assertIn("--since requires a duration", bad.stderr)
-        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
-        import socket
-
-        with socket.socket() as holder:
-            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            holder.bind(("127.0.0.1", int(port)))
-            holder.listen(1)
-            busy = self.scratch.run("stats", "--serve", "--detach", "--port", port)
-        self.assertIn(f"host port {port} is already in use", busy.stderr)
-        self.assertFalse((self.scratch.root / "build" / "stats-serve.pid").exists())
 
     def test_stats_filters_by_time_and_agent(self) -> None:
         write_transcripts(self.scratch.storage / "agents")

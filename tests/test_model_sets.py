@@ -17,6 +17,7 @@ from unittest import mock
 
 from tests.support import shipped
 from tokencrate import PROJECT_ROOT, TokenCrateError, models
+from tokencrate.models import download, drafts, hub, library
 from tokencrate.names import select_sets
 
 MANIFESTS = PROJECT_ROOT / "config" / "model-sets"
@@ -124,9 +125,9 @@ class ModelSetTests(unittest.TestCase):
         return server.server_address[1]
 
     def use_hub(self, port: int) -> None:
-        """Point the module's Hub URL at a local server; the token rule keys on its host."""
-        self.addCleanup(setattr, models, "HUB_URL", models.HUB_URL)
-        models.HUB_URL = f"http://127.0.0.1:{port}"
+        """Point the hub module's URL at a local server; the token rule keys on its host."""
+        self.addCleanup(setattr, hub, "HUB_URL", hub.HUB_URL)
+        hub.HUB_URL = f"http://127.0.0.1:{port}"
 
     def use_free_space(self, free: int) -> None:
         """Make shutil.disk_usage, which the free-space check consults, report `free` bytes."""
@@ -402,7 +403,7 @@ class ModelSetTests(unittest.TestCase):
                 real_replace(source, target)
 
             with (
-                mock.patch("tokencrate.models.os.replace", side_effect=replace_except_publication),
+                mock.patch("os.replace", side_effect=replace_except_publication),
                 self.assertRaises(PermissionError),
             ):
                 self.fetch(model_set, models_root, None)
@@ -425,13 +426,13 @@ class ModelSetTests(unittest.TestCase):
             models_root = Path(directory)
             destination = models_root / model_file.destination
             destination.parent.mkdir(parents=True)
-            staging = models.staging_directory(model_file, destination)
+            staging = library.staging_directory(model_file, destination)
             staging.mkdir(parents=True)
-            staged, _ = models.staged_paths(model_file, staging)
+            staged, _ = library.staged_paths(model_file, staging)
             staged.write_bytes(content)
             self.use_free_space(0)
 
-            with mock.patch.object(models, "open_url", side_effect=AssertionError("no network")):
+            with mock.patch.object(download, "open_url", side_effect=AssertionError("no network")):
                 self.fetch(model_set, models_root, None)
 
             self.assertEqual(destination.read_bytes(), content)
@@ -456,17 +457,17 @@ class ModelSetTests(unittest.TestCase):
             destination.parent.mkdir(parents=True)
             self.use_free_space(600)
             with self.assertRaisesRegex(TokenCrateError, "are free"):
-                models.require_free_space(models_root, [models.pending_file(model_file, destination)])
+                library.require_free_space(models_root, [library.pending_file(model_file, destination)])
 
-            staging = models.staging_directory(model_file, destination)
+            staging = library.staging_directory(model_file, destination)
             staging.mkdir(parents=True)
-            _, part = models.staged_paths(model_file, staging)
+            _, part = library.staged_paths(model_file, staging)
             part.write_bytes(b"x" * 17_000)
-            pending = [models.pending_file(model_file, destination)]
-            models.require_free_space(models_root, pending)
+            pending = [library.pending_file(model_file, destination)]
+            library.require_free_space(models_root, pending)
             self.use_free_space(599)
             with self.assertRaisesRegex(TokenCrateError, "are free"):
-                models.require_free_space(models_root, pending)
+                library.require_free_space(models_root, pending)
 
     def test_fetch_resumes_a_part_file_with_only_the_remaining_space_free(self):
         content = bytes(range(256)) * 64
@@ -484,9 +485,9 @@ class ModelSetTests(unittest.TestCase):
             destination = models_root / model_file.destination
             destination.parent.mkdir(parents=True)
             # The .part sits where fetch() stages, so the estimate and the resume agree.
-            staging = models.staging_directory(model_file, destination)
+            staging = library.staging_directory(model_file, destination)
             staging.mkdir(parents=True)
-            _, part = models.staged_paths(model_file, staging)
+            _, part = library.staged_paths(model_file, staging)
             part.write_bytes(content[:done])
             self.use_free_space(len(content) - done)
 
@@ -495,6 +496,118 @@ class ModelSetTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), content)
             self.assertFalse(list(models_root.rglob(".tokencrate-downloads")))
         self.assertEqual(ranges[-1], f"bytes={done}-")
+
+    def install(self, models_root: Path, model_file, content: bytes) -> Path:
+        """Place content at the pinned destination the way another tool would: no stamp."""
+        destination = models_root / model_file.destination
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(content)
+        return destination
+
+    def hashing(self):
+        """A wrapper around sha256_file whose call_count says how often a file was read."""
+        patcher = mock.patch.object(library, "sha256_file", wraps=library.sha256_file)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def test_fetch_records_the_verified_file_and_status_trusts_the_record(self):
+        content = b"small pinned model"
+        model_set, model_file = self.fixture_set(content)
+        self.use_hub(self.serve(lambda handler: serve_bytes(handler, content)))
+        with tempfile.TemporaryDirectory() as directory:
+            models_root = Path(directory)
+            self.fetch(model_set, models_root, None)
+            destination = models_root / model_file.destination
+            stamp = library.stamp_path(destination)
+            self.assertEqual(stamp.name, "model.gguf.tokencrate-verified")
+            self.assertEqual(json.loads(stamp.read_text()), library.stamp_of(destination.stat(), model_file.sha256))
+            self.assertEqual([path.name for path in destination.parent.iterdir() if path != destination], [stamp.name])
+
+            hashing = self.hashing()
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(models.status([model_set], models_root), 0)
+            self.assertEqual(hashing.call_count, 0)
+            self.assertNotIn("verifying:", output.getvalue())
+
+    def test_an_unstamped_file_is_hashed_once_and_announced(self):
+        content = b"small pinned model"
+        model_set, model_file = self.fixture_set(content)
+        hashing = self.hashing()
+        with tempfile.TemporaryDirectory() as directory:
+            models_root = Path(directory)
+            destination = self.install(models_root, model_file, content)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(models.status([model_set], models_root), 0)
+            self.assertEqual(hashing.call_count, 1)
+            self.assertIn("verifying: 1 file(s) (0.0 GB) by checksum", output.getvalue())
+            self.assertEqual(library.read_stamp(destination), library.stamp_of(destination.stat(), model_file.sha256))
+
+            with quiet():
+                self.assertEqual(models.status([model_set], models_root), 0)
+                self.fetch(model_set, models_root, None)
+            self.assertEqual(hashing.call_count, 1)
+
+    def test_a_record_that_disagrees_with_the_file_or_the_manifest_is_rehashed(self):
+        content = b"small pinned model"
+        model_set, model_file = self.fixture_set(content)
+        hashing = self.hashing()
+        with tempfile.TemporaryDirectory() as directory:
+            models_root = Path(directory)
+            destination = self.install(models_root, model_file, content)
+            good = library.stamp_of(destination.stat(), model_file.sha256)
+            stale = [
+                good | {"size": good["size"] + 1},
+                good | {"mtime_ns": good["mtime_ns"] + 1},
+                good | {"sha256": "0" * 64},
+            ]
+            for index, record in enumerate(stale, start=1):
+                library.stamp_path(destination).write_text(json.dumps(record))
+                with quiet():
+                    self.assertEqual(models.status([model_set], models_root), 0)
+                self.assertEqual(hashing.call_count, index)
+                self.assertEqual(library.read_stamp(destination), good)
+
+            # A new mtime, which any rewrite of the file leaves behind, is hashed again.
+            os.utime(destination, ns=(good["mtime_ns"], good["mtime_ns"] + 1))
+            with quiet():
+                self.assertEqual(models.status([model_set], models_root), 0)
+            self.assertEqual(hashing.call_count, len(stale) + 1)
+
+            library.stamp_path(destination).write_bytes(b"not json")
+            with quiet():
+                self.assertEqual(models.status([model_set], models_root), 0)
+            self.assertEqual(hashing.call_count, len(stale) + 2)
+            self.assertEqual(library.read_stamp(destination), library.stamp_of(destination.stat(), model_file.sha256))
+
+    def test_a_failed_stamp_write_leaves_nothing_beside_the_file(self):
+        content = b"small pinned model"
+        _, model_file = self.fixture_set(content)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = self.install(Path(directory), model_file, content)
+            with mock.patch("os.replace", side_effect=PermissionError("read-only")):
+                library.write_stamp(destination, model_file.sha256)
+            # The library is left as it was: no stamp and no temporary file.
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+
+    def test_status_verify_rehashes_a_recorded_file(self):
+        content = b"small pinned model"
+        model_set, model_file = self.fixture_set(content)
+        hashing = self.hashing()
+        with tempfile.TemporaryDirectory() as directory:
+            models_root = Path(directory)
+            destination = self.install(models_root, model_file, content)
+            library.write_stamp(destination, model_file.sha256)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(models.status([model_set], models_root, verify=True), 0)
+            self.assertEqual(hashing.call_count, 1)
+            self.assertIn("verifying: 1 file(s)", output.getvalue())
+
+            # A stamp never makes a wrong file ready once the file is hashed.
+            destination.write_bytes(b"other pinned model")
+            library.write_stamp(destination, model_file.sha256)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(models.status([model_set], models_root, verify=True), 1)
+            self.assertIn("wrong checksum", output.getvalue())
 
     def test_status_reports_missing_without_creating_directories(self):
         model_set, _ = self.fixture_set()
@@ -533,8 +646,8 @@ class ModelSetTests(unittest.TestCase):
                 {"rfilename": "mmproj-F16.gguf", "size": 7, "lfs": {"sha256": "3" * 64}},
             ],
         }
-        self.addCleanup(setattr, models, "hub_json", models.hub_json)
-        models.hub_json = lambda url, token: payload
+        self.addCleanup(setattr, drafts, "hub_json", drafts.hub_json)
+        drafts.hub_json = lambda url, token: payload
         text = models.draft("hf:example/model:model-00001-of-00002.gguf", None)
         with self.assertRaisesRegex(TokenCrateError, "requires the first shard"):
             models.draft("hf:example/model:model-00002-of-00002.gguf", None)
@@ -555,8 +668,8 @@ class ModelSetTests(unittest.TestCase):
 
     def test_draft_without_a_card_license_falls_back_to_a_placeholder(self):
         payload = {"sha": "d" * 40, "siblings": [{"rfilename": "m.gguf", "size": 5, "lfs": {"sha256": "1" * 64}}]}
-        self.addCleanup(setattr, models, "hub_json", models.hub_json)
-        models.hub_json = lambda url, token: payload
+        self.addCleanup(setattr, drafts, "hub_json", drafts.hub_json)
+        drafts.hub_json = lambda url, token: payload
 
         text = models.draft("hf:example/model:m.gguf", None)
 
@@ -568,8 +681,8 @@ class ModelSetTests(unittest.TestCase):
         # The Hub does not always report size or sha256; a draft the maintainer
         # cannot parse is worse than one that names the fields to fill in.
         payload = {"sha": "d" * 40, "siblings": [{"rfilename": "m.gguf"}]}
-        self.addCleanup(setattr, models, "hub_json", models.hub_json)
-        models.hub_json = lambda url, token: payload
+        self.addCleanup(setattr, drafts, "hub_json", drafts.hub_json)
+        drafts.hub_json = lambda url, token: payload
 
         text = models.draft("hf:example/model:m.gguf", None)
 

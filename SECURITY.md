@@ -7,12 +7,11 @@ describes what an agent container can and cannot touch;
 and their limits.
 
 Use the repository's **Security → Report a vulnerability** action to open a
-private GitHub security advisory. If that action is unavailable,
-open a public issue containing no vulnerability details and ask a maintainer to
+private GitHub security advisory. If that action is unavailable, open a
+bug report containing no vulnerability details and ask a maintainer to
 establish a private channel.
 
-Keep cloud provider keys in the file `LLM_CLOUD_KEYS_FILE` names, readable
-by your user only, and the Hugging Face token in `.env`. Never place
-credentials in presets, model-set or skill-set manifests, agent-set
-directories (they are copied into the image), image build arguments, logs,
-or reports.
+Keep cloud provider keys in the file `LLM_CLOUD_KEYS_FILE` names, owned by
+your user and readable by your user only. Keep the Hugging Face token in
+`.env`. Never place credentials in presets, model-set or skill-set
+manifests, agent-set directories, image build arguments, logs, or reports.

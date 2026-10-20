@@ -5,7 +5,9 @@ are build/models.ini, the preset file llama-server reads in router mode (a
 `[*]` section of shared keys and one section per loadable preset, keyed by
 the long flag names without dashes), and the agent model lists under
 build/agents (pi/models.json and omp/models.yml, both JSON text; oh-my-pi
-reads JSON as YAML). The renderer owns the keys that tie a preset to the
+reads JSON as YAML). The pi list is also what the wrapper reads back for the
+loadable presets and their slots; the router file is output only. The
+renderer owns the keys that tie a preset to the
 container layout (model paths, chat template, context, slots) and the ones
 the router sets for every child (host, port, alias); presets express
 everything else through typed keys.
@@ -14,31 +16,39 @@ everything else through typed keys.
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import TokenCrateError, models
 from .agentmodels import AGENT_THINKING_LEVELS, omp_models, pi_models_json
+from .files import write_atomic
 from .names import PRESET_NAME_RE, load_catalog, read_toml
 from .names import description as read_description
 
 # The rendered router preset file; services/llama/Dockerfile boots it.
 CONFIG_FILE_NAME = "models.ini"
+# The rendered pi model list; `rendered_model_ids` and `rendered_slots` read it.
+PI_MODEL_LIST = Path("agents", "pi", "models.json")
 MODELS_ROOT_IN_CONTAINER = "/models"
 CHAT_TEMPLATES_IN_CONTAINER = "/etc/tokencrate/chat-templates"
 UI_CONFIG_IN_CONTAINER = "/etc/tokencrate/ui-config.json"
 # The [*] section, which every child server inherits: the Jinja template
 # engine (tool calls and chat_template_kwargs), the Prometheus counters
 # (GET /metrics?model= on the loopback port; smoke checks them, and a
-# request for an unloaded preset is expected to load it first), and the
+# request for an unloaded preset is expected to load it first), no slots
+# endpoint (GET /slots reports each slot's state and may carry the prompt
+# in flight; every network the server joins could read it, and nothing
+# in TokenCrate does), and the
 # UI defaults (the router
 # loads the same file for the UI at the root; the UI reads whichever
 # /props it fetched last).
-SHARED_KEYS = (("jinja", "true"), ("metrics", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
-SECTION_RE = re.compile(r"^\[([^\]]+)\]$", re.MULTILINE)
+SHARED_KEYS = (
+    ("jinja", "true"),
+    ("metrics", "true"),
+    ("no-slots", "true"),
+    ("ui-config-file", UI_CONFIG_IN_CONTAINER),
+)
 # The choices are the values the shipped presets use or a validation
 # record has measured; a value llama-server accepts but no preset has run
 # with is added together with the preset that runs it.
@@ -413,19 +423,6 @@ def agent_models(rendered: list[RenderedPreset]) -> list[dict]:
     return models_list
 
 
-def write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
 def evaluate(configuration: Configuration, default_preset: str, models_root: Path | None) -> tuple[list, str]:
     """Judge every preset, print one line each, and build the router preset
     file's text, which is where a value the router would truncate is
@@ -471,7 +468,7 @@ def render(
     rendered, config = evaluate(configuration, default_preset, models_root)
     models_list = agent_models(rendered)
     write_atomic(output_dir / CONFIG_FILE_NAME, config)
-    write_atomic(output_dir / "agents" / "pi" / "models.json", json.dumps(pi_models_json(models_list), indent=2) + "\n")
+    write_atomic(output_dir / PI_MODEL_LIST, json.dumps(pi_models_json(models_list), indent=2) + "\n")
     # oh-my-pi looks for models.yml; JSON is valid YAML, so the name stays.
     write_atomic(output_dir / "agents" / "omp" / "models.yml", json.dumps(omp_models(models_list), indent=2) + "\n")
     loadable = sum(1 for item in rendered if item.loadable)
@@ -479,29 +476,24 @@ def render(
     return rendered
 
 
-def rendered_model_ids(output_dir: Path) -> set[str]:
-    """The model ids (section names) in the rendered router preset file;
-    empty when nothing has been rendered into output_dir yet."""
+def rendered_models(output_dir: Path) -> list[dict]:
+    """The entries of the rendered pi model list, one per loadable preset in
+    pi's spelling (`id`, `contextWindow`); empty when nothing has been
+    rendered into output_dir yet."""
     try:
-        text = (output_dir / CONFIG_FILE_NAME).read_text(encoding="utf-8")
+        text = (output_dir / PI_MODEL_LIST).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return set()
-    return set(SECTION_RE.findall(text)) - {"*"}
+        return []
+    return json.loads(text)["providers"]["tokencrate"]["models"]
+
+
+def rendered_model_ids(output_dir: Path) -> set[str]:
+    """The model ids rendered as loadable; empty before the first render."""
+    return {entry["id"] for entry in rendered_models(output_dir)}
 
 
 def rendered_slots(output_dir: Path) -> dict[str, int]:
-    """Each rendered preset's context per slot (`ctx-size` over `parallel`,
-    as the file above spells them) by model id, read back from the rendered
-    preset file; empty when nothing has been rendered yet. A section
-    without a whole-number `ctx-size` is left out."""
-    try:
-        text = (output_dir / CONFIG_FILE_NAME).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    slots = {}
-    parts = re.split(r"^\[([^\]]+)\]$", text, flags=re.MULTILINE)
-    for name, body in zip(parts[1::2], parts[2::2], strict=True):
-        keys = dict(re.findall(r"^([a-z-]+) = (\d+)$", body, flags=re.MULTILINE))
-        if name != "*" and PRESET_NAME_RE.fullmatch(name) and "ctx-size" in keys:
-            slots[name] = int(keys["ctx-size"]) // max(1, int(keys.get("parallel", 1)))
-    return slots
+    """Each rendered preset's context per slot (`ctx_size` over `parallel`,
+    which the list carries as the context window) by model id; empty before
+    the first render."""
+    return {entry["id"]: entry["contextWindow"] for entry in rendered_models(output_dir)}

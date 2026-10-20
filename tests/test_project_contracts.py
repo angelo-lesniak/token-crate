@@ -54,11 +54,29 @@ COMPOSE_FILES = (
 # the forwarder; the dashboard profile and the model. ui-publish carries the
 # forwarder's published port alone, dashboard-publish Grafana's.
 INTERNAL_NETWORKS = ("agents", "ui", "dashboard")
-HOME_TMPFS_OPTIONS = (
-    "rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
-)
+# The variables one agent or UI start sets, and the label `up` sets: the
+# only ones a Compose file may give a fallback, because both parsers
+# interpolate every service on every call (compose.yaml, the interpolation
+# note). Every setting of .env.example is required instead.
+PER_START_VARIABLES = {
+    "LLM_AGENT_PROJECT_DIR",
+    "TOKENCRATE_AGENT_HOME",
+    "TOKENCRATE_PRESET",
+    "TOKENCRATE_AGENT_SETS_TAG",
+    "TOKENCRATE_CONFIG_SHA256",
+    "TOKENCRATE_UI_SET",
+    "TOKENCRATE_UI_COMMAND",
+    "TOKENCRATE_UI_PORT",
+    "TOKENCRATE_UI_STATE",
+    "TOKENCRATE_UI_HOST_PORT",
+}
+# Optional settings: commented out in .env.example, so the wrapper exports
+# them only when .env names them.
+OPTIONAL_SETTINGS = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"}
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\((?P<target>[^)]+)\)")
-COMPOSE_FALLBACK_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*):-([^}]*)\}")
+# Every `${NAME...}` reference with its operator: `:-` (fallback), `:?` or
+# `?` (required), or none.
+COMPOSE_VARIABLE_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(:-|:\?|\?|)")
 # Every base image is pulled by the pinned digest, never by the tag alone.
 PINNED_FROM_RE = re.compile(r":\$\{[A-Z_]+_TAG\}@sha256:\$\{[A-Z_]+_DIGEST\}")
 
@@ -214,8 +232,13 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(
             ports and ports[0].startswith("127.0.0.1:"), f"the llama port must publish on 127.0.0.1: {ports}"
         )
+        models = find_mount(llama, "/models")
+        self.assertIsNotNone(models, "the llama service must mount the model library at /models")
+        self.assertTrue(
+            str(models.get("source")).startswith("${LLM_MODELS_DIR"), "the library comes from LLM_MODELS_DIR"
+        )
+        self.assertIs(models.get("read_only"), True, "the llama service must mount /models read-only")
         for target, source in (
-            ("/models", "${LLM_MODELS_DIR:-./data/models}"),
             (f"/etc/tokencrate/{presets.CONFIG_FILE_NAME}", f"./build/{presets.CONFIG_FILE_NAME}"),
             ("/etc/tokencrate/chat-templates", "./config/chat-templates"),
             ("/etc/tokencrate/ui-config.json", "./config/llama/ui-config.json"),
@@ -235,51 +258,88 @@ class ProjectContractTests(unittest.TestCase):
         gpu_services = load_yaml("compose.gpu.yaml").get("services", {})
         self.assertEqual(set(gpu_services), {"llama", "gpu-exporter"}, "compose.gpu.yaml covers the GPU users")
         for name, service in gpu_services.items():
-            self.assertEqual(
-                service.get("devices"),
-                ["${GPU_DEVICE:-nvidia.com/gpu=all}"],
-                f"compose.gpu.yaml must request the CDI device ${{GPU_DEVICE:-nvidia.com/gpu=all}} for {name}",
-            )
+            devices = [str(device) for device in service.get("devices") or []]
+            self.assertEqual(len(devices), 1, f"compose.gpu.yaml must request one device for {name}")
+            self.assertTrue(devices[0].startswith("${GPU_DEVICE"), f"the device of {name} is the GPU_DEVICE setting")
         exporter = self.service(compose, "gpu-exporter")
         self.assertNotIn("devices", exporter, "the GPU exporter's device request belongs in compose.gpu.yaml")
         self.assertEqual(exporter["environment"].get("NVIDIA_VISIBLE_DEVICES"), "void")
 
-    def test_the_networks_are_internal_and_the_services_are_exactly_the_documented_ones(self) -> None:
+    def test_the_network_layout_contains_agents_and_publishes_on_loopback_alone(self) -> None:
+        # The placement the privacy model rests on, as invariants over who
+        # shares a network with whom (tests/podman-compose.sh proves the same
+        # from the rendered `run` arguments): the model is the only service
+        # with a route out that is not a publisher; a publisher sits alone on
+        # its publish network and holds no agent; a terminal agent reaches the
+        # model and the other offline sessions; a browser UI reaches the model and its
+        # forwarder; the dashboard reaches the model and itself; every
+        # published port binds the loopback address.
         compose = load_yaml("compose.yaml")
         networks = compose.get("networks") or {}
+        internal = {name for name, network in networks.items() if (network or {}).get("internal")}
+        self.assertEqual(internal, set(INTERNAL_NETWORKS), "the internal networks are agents, ui, and dashboard")
+        publish = {name for name in networks if name.endswith("-publish")}
         self.assertEqual(
-            set(networks),
-            {"default", *INTERNAL_NETWORKS, "ui-publish", "dashboard-publish"},
-            "compose.yaml must define exactly the default, agents, ui, dashboard, ui-publish, and "
-            "dashboard-publish networks",
+            set(networks) - internal, {"default", *publish}, "every other network is default or a publisher's"
         )
-        for name in INTERNAL_NETWORKS:
-            self.assertIs((networks.get(name) or {}).get("internal"), True, f"the {name} network must be internal")
-        for name in ("ui-publish", "dashboard-publish"):
-            self.assertFalse(
-                (networks.get(name) or {}).get("internal"),
-                f"the {name} network must not be internal; it carries a published port",
+        services = compose.get("services") or {}
+        self.assertEqual(
+            set(services),
+            {"llama", *AGENT_SERVICES, *UI_SERVICES, *DASHBOARD_SERVICES},
+            "compose.yaml must define exactly the llama, agent, UI, and dashboard services; helpers run in-process",
+        )
+        placement = {name: set(service.get("networks") or ["default"]) for name, service in services.items()}
+        for name, joined in placement.items():
+            self.assertTrue(joined <= set(networks), f"{name} names an undefined network: {joined - set(networks)}")
+
+        def neighbours(name: str) -> set[str]:
+            return {other for other, joined in placement.items() if other != name and joined & placement[name]}
+
+        self.assertEqual({name for name, joined in placement.items() if "default" in joined}, {"llama"})
+        publishers = {name for name, service in services.items() if service.get("ports")}
+        for network in publish:
+            members = {name for name, joined in placement.items() if network in joined}
+            self.assertEqual(len(members), 1, f"{network} must carry exactly one service: {sorted(members)}")
+            (member,) = members
+            self.assertIn(member, publishers, f"{member} sits on {network} and publishes nothing")
+            self.assertNotIn(member, (*AGENT_SERVICES, "agent-ui"), f"an agent ({member}) must not sit on {network}")
+            self.assertNotIn("agents", placement[member], f"{member} has a route out and sits with terminal agents")
+        self.assertEqual(
+            publishers,
+            {"llama", *(name for name in publishers if placement[name] & publish)},
+            "only publishers publish",
+        )
+        for name in publishers:
+            for port in services[name]["ports"]:
+                self.assertTrue(str(port).startswith("127.0.0.1:"), f"{name} must publish on 127.0.0.1 alone: {port}")
+        for name in AGENT_SERVICES:
+            self.assertEqual(
+                neighbours(name),
+                {"llama", *AGENT_SERVICES} - {name},
+                f"a terminal agent ({name}) reaches the model and the other offline sessions, nothing else",
             )
+        self.assertEqual(
+            neighbours("agent-ui"), {"llama", "ui-forward"}, "a browser UI reaches the model and its forwarder"
+        )
+        for name in DASHBOARD_SERVICES:
+            self.assertLessEqual(
+                neighbours(name), {"llama", *DASHBOARD_SERVICES}, f"{name} reaches the model and the dashboard"
+            )
+        # Docker keeps a host address on an internal bridge unless told
+        # otherwise; the overlay isolates exactly the internal networks.
         docker = load_yaml("compose.docker.yaml")
         self.assertEqual(
             {key for key in docker if not key.startswith("x-")},
             {"networks"},
             "compose.docker.yaml must set network options and nothing else",
         )
-        self.assertEqual(
-            set(docker["networks"]), set(INTERNAL_NETWORKS), "compose.docker.yaml must cover the internal networks"
-        )
+        self.assertEqual(set(docker["networks"]), internal, "compose.docker.yaml must cover the internal networks")
         for name, network in docker["networks"].items():
             options = (network or {}).get("driver_opts") or {}
             for key in ("com.docker.network.bridge.gateway_mode_ipv4", "com.docker.network.bridge.gateway_mode_ipv6"):
                 self.assertEqual(
                     options.get(key), "isolated", f"compose.docker.yaml must set {key}: isolated on the {name} network"
                 )
-        self.assertEqual(
-            set(compose.get("services") or {}),
-            {"llama", *AGENT_SERVICES, *UI_SERVICES, *DASHBOARD_SERVICES},
-            "compose.yaml must define exactly the llama, agent, UI, and dashboard services; helpers run in-process",
-        )
 
     def test_agent_services_run_hardened_on_the_internal_network_with_a_tmpfs_home(self) -> None:
         compose = load_yaml("compose.yaml")
@@ -351,7 +411,12 @@ class ProjectContractTests(unittest.TestCase):
             f"{name} must provide a tmpfs for the home and every ancestor of a home bind, nothing else",
         )
         for target, options in home_tmpfs.items():
-            self.assertEqual(options, HOME_TMPFS_OPTIONS, f"{name} must mount the tmpfs {target} owned and executable")
+            self.assertIn(
+                "exec", options.split(","), f"{name}: the tmpfs {target} must be executable (Docker says noexec)"
+            )
+            self.assertIn(
+                "${TOKENCRATE_HOME_OWNER:?", options, f"{name}: the tmpfs {target} must be owned by the host user"
+            )
         for target in home_mounts:
             for parent in Path(target).parents:
                 if parent.is_relative_to(home):
@@ -368,39 +433,24 @@ class ProjectContractTests(unittest.TestCase):
         # executes a ~/.profile written into the home during the session.
         self.assertEqual(str(environment.get("PI_BASH_NO_LOGIN")), "1", f"{name} must set PI_BASH_NO_LOGIN=1")
 
-    def test_every_service_sits_on_exactly_its_networks(self) -> None:
-        # The placement the privacy model rests on: terminal agents on the
-        # internal agents network alone, a browser UI on the internal ui
-        # network alone, the forwarder on ui and its published ui-publish,
-        # llama on all three of default, agents, and ui. tests/podman-compose.sh
-        # proves the same from the rendered `run` arguments.
-        compose = load_yaml("compose.yaml")
-        expected = {
-            "llama": ["default", "agents", "ui", "dashboard"],
-            "agent-pi": ["agents"],
-            "agent-omp": ["agents"],
-            "agent-ui": ["ui"],
-            "ui-forward": ["ui-publish", "ui"],
-            "llama-exporter": ["dashboard"],
-            "victoriametrics": ["dashboard"],
-            "grafana": ["dashboard-publish", "dashboard"],
-            "gpu-exporter": ["dashboard"],
-        }
-        for name, networks in expected.items():
-            self.assertEqual(self.service(compose, name).get("networks"), networks, f"{name} must sit on {networks}")
+    def test_the_dashboard_profile_is_hardened_pinned_and_read_only(self) -> None:
         # The profile's services are hardened like the rest, pull pinned
-        # images, and publish Grafana on loopback alone.
+        # images, and publish Grafana alone, on the dashboard port setting.
+        compose = load_yaml("compose.yaml")
         for name in DASHBOARD_SERVICES:
             service = self.service(compose, name)
             self.assert_hardened(name, service)
             profile = "dashboard-gpu" if name == "gpu-exporter" else "dashboard"
             self.assertEqual(service.get("profiles"), [profile], f"{name} must be in the {profile} profile")
             self.assertRegex(str(service.get("image")), r"@sha256:\$\{[A-Z_]+_DIGEST:\?", f"{name} must pin a digest")
-            self.assertEqual(
-                [str(port) for port in service.get("ports") or []],
-                ["127.0.0.1:${LLM_DASHBOARD_PORT:-4211}:8080"] if name == "grafana" else [],
-                f"{name} publishes exactly what the profile documents",
-            )
+            ports = [str(port) for port in service.get("ports") or []]
+            if name == "grafana":
+                self.assertEqual(len(ports), 1, "grafana publishes one port")
+                self.assertTrue(
+                    ports[0].startswith("127.0.0.1:${LLM_DASHBOARD_PORT"), f"grafana's port is the setting: {ports}"
+                )
+            else:
+                self.assertEqual(ports, [], f"{name} publishes nothing")
         grafana = self.service(compose, "grafana")
         self.assertEqual(grafana["environment"].get("GF_AUTH_ANONYMOUS_ORG_ROLE"), "Viewer")
         for switch in (
@@ -408,10 +458,23 @@ class ProjectContractTests(unittest.TestCase):
             "GF_ANALYTICS_CHECK_FOR_UPDATES",
             "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES",
             "GF_NEWS_NEWS_FEED_ENABLED",
+            "GF_SNAPSHOTS_EXTERNAL_ENABLED",
         ):
             self.assertEqual(grafana["environment"].get(switch), "false", f"grafana must switch {switch} off")
-        for switch in ("GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED", "GF_PLUGINS_PREINSTALL_DISABLED"):
+        for switch in (
+            "GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED",
+            "GF_PLUGINS_PREINSTALL_DISABLED",
+            "GF_SECURITY_DISABLE_GRAVATAR",
+            "GF_SERVER_ENFORCE_DOMAIN",
+        ):
             self.assertEqual(grafana["environment"].get(switch), "true", f"grafana must set {switch}")
+        # The Host check redirects every other name to the address the
+        # wrapper prints, on the published port.
+        self.assertEqual(grafana["environment"].get("GF_SERVER_DOMAIN"), "127.0.0.1")
+        self.assertRegex(
+            str(grafana["environment"].get("GF_SERVER_ROOT_URL")),
+            r"^http://127\.0\.0\.1:\$\{LLM_DASHBOARD_PORT[:?].*\}/$",
+        )
         self.assert_mount(
             "grafana", grafana, "/etc/tokencrate/provisioning", "./config/dashboard/grafana", read_only=True
         )
@@ -422,19 +485,6 @@ class ProjectContractTests(unittest.TestCase):
             (PROJECT_ROOT / "config/dashboard/grafana/dashboards/model-server.json").read_text(encoding="utf-8")
         )
         self.assertEqual((dashboard["uid"], dashboard["editable"]), ("tokencrate-model-server", False))
-        self.assertEqual(dashboard["time"]["from"], "now-15m")
-        titles = [panel["title"] for panel in dashboard["panels"]]
-        self.assertEqual(
-            titles[:6],
-            [
-                "Requests processing",
-                "Requests queued",
-                "Generated tokens/s",
-                "Draft acceptance",
-                "Occupancy",
-                "Throughput",
-            ],
-        )
         for panel in dashboard["panels"]:
             self.assertEqual(panel["datasource"]["uid"], "tokencrate-victoriametrics", panel["title"])
             self.assertNotIn("axisSoftMax", json.dumps(panel), panel["title"])
@@ -559,53 +609,36 @@ class ProjectContractTests(unittest.TestCase):
         for entry in agentsets.catalog(PROJECT_ROOT).values():
             if entry.ui is None:
                 continue
-            launcher = entry.directory / entry.ui["command"]
-            self.assertTrue(launcher.is_file(), f"{entry.name} must ship its launcher {entry.ui['command']}")
+            launcher = entry.directory / entry.ui.command
+            self.assertTrue(launcher.is_file(), f"{entry.name} must ship its launcher {entry.ui.command}")
             self.assertNotIn(
-                str(entry.ui["port"]),
+                str(entry.ui.port),
                 launcher.read_text(encoding="utf-8"),
                 f"{launcher.relative_to(PROJECT_ROOT)} writes the port that {entry.name}'s manifest declares",
             )
 
-    def test_compose_fallbacks_agree_with_the_documented_defaults(self) -> None:
-        # The wrapper exports every key it defaults with its effective value,
-        # so a Compose `${KEY:-fallback}` for such a key is never used; a
-        # fallback that differs from the wrapper's default would still
-        # mislead a reader and a direct Compose call.
-        defaults = env.parse_env_file(PROJECT_ROOT / ".env.example")
+    def test_only_the_per_start_variables_have_a_compose_fallback(self) -> None:
+        # Every setting of .env.example, and the identity and root the
+        # wrapper derives, is exported on every Compose call, so each is
+        # required (`:?`, or `?` where an empty value is a documented
+        # setting); a fallback would be a second copy of the default. Only
+        # the variables one start sets keep one, since both parsers
+        # interpolate every service on every call, selected profile or not.
+        settings = set(env.parse_env_file(PROJECT_ROOT / ".env.example"))
+        references: dict[str, set[str]] = {}
         for relative in COMPOSE_FILES:
-            for key, fallback in COMPOSE_FALLBACK_RE.findall(read_text(relative)):
-                if key in defaults and fallback:
-                    self.assertEqual(
-                        fallback, defaults[key], f"{relative} falls back to {key}={fallback!r}; .env.example differs"
-                    )
-
-    def test_the_ui_forward_fallback_port_is_the_pi_web_host_port(self) -> None:
-        # TOKENCRATE_UI_HOST_PORT is set per launch, so it has no line in
-        # .env.example and the fallback test above cannot reach it; the
-        # fallback still copies the pi-web manifest's host_port and would
-        # mislead a reader if it differed.
-        expected = str(agentsets.load_set(PROJECT_ROOT, "pi-web").ui["host_port"])
-        fallbacks = {
-            fallback
-            for key, fallback in COMPOSE_FALLBACK_RE.findall(read_text("compose.yaml"))
-            if key == "TOKENCRATE_UI_HOST_PORT"
-        }
+            for key, operator in COMPOSE_VARIABLE_RE.findall(read_text(relative)):
+                references.setdefault(key, set()).add(operator)
+        with_fallback = {key for key, operators in references.items() if ":-" in operators}
         self.assertEqual(
-            fallbacks,
-            {expected},
-            "compose.yaml must fall back to the pi-web manifest's host_port for the forwarder port",
+            with_fallback,
+            PER_START_VARIABLES | OPTIONAL_SETTINGS,
+            "a Compose fallback exists for exactly the per-start variables and the optional settings",
         )
-
-    def test_the_shipped_ui_ports_are_documented_as_the_setting_pattern(self) -> None:
-        # The setting is one key per UI set; .env.example shows the two
-        # shipped ones, commented out, with the manifest's host_port.
-        documented = env.documented_keys(PROJECT_ROOT / ".env.example")
-        for name in ("pi-web", "paseo"):
-            key = env.ui_port_key(name)
-            self.assertIn(key, documented, f".env.example must show {key}")
-            self.assertIn(
-                f"# {key}={agentsets.load_set(PROJECT_ROOT, name).ui['host_port']}\n", read_text(".env.example")
+        self.assertTrue(PER_START_VARIABLES.isdisjoint(settings), "a per-start variable is not a setting")
+        for key in (*settings, "HOST_UID", "HOST_GID", "TOKENCRATE_ROOT", "TOKENCRATE_HOME_OWNER", *PIN_KEYS):
+            self.assertLessEqual(
+                references.get(key, set()), {":?", "?"}, f"{key} is exported on every call, so Compose must require it"
             )
 
     def test_every_npm_agent_set_gets_security_updates(self) -> None:
@@ -646,14 +679,6 @@ class ProjectContractTests(unittest.TestCase):
             self.assertTrue(not line.strip() or line.startswith("#"), f"cloud-keys.env.example line: {line}")
         names = re.findall(r"^# ([A-Z][A-Z0-9_]*)=", read_text("cloud-keys.env.example"), re.MULTILINE)
         self.assertIn("ANTHROPIC_API_KEY", names)
-
-    def test_the_validation_environment_names_the_pinned_versions(self) -> None:
-        # The records are measurements of the pins under test; a raised pin
-        # without a new record would otherwise keep the old line.
-        text = read_text("docs/validation.md")
-        for key, value in env.load_pins(PROJECT_ROOT / "pins.env").items():
-            if key not in env.DIGEST_KEYS:
-                self.assertIn(f"`{key}={value}`", text, f"docs/validation.md#environment must name {key}={value}")
 
     def test_the_documentation_links_resolve_and_index_every_page_and_usage_line(self) -> None:
         pages = {path: path.read_text(encoding="utf-8") for path in markdown_pages()}

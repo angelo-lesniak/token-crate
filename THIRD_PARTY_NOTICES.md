@@ -47,7 +47,7 @@ weights are downloaded to user-controlled storage and are not distributed
 under TokenCrate's MIT license. Users must review and accept each model
 license; `models fetch` prints them before writing files.
 
-The repository vendors uPlot 1.6.32 under `tokencrate/pages/vendor/`
+The repository vendors uPlot 1.6.32 under `tokencrate/stats/pages/vendor/`
 (`uPlot.iife.js` and `uPlot.min.css`; MIT; <https://github.com/leeoniya/uPlot>):
 byte-for-byte the files of the published npm artifact
 `https://registry.npmjs.org/uplot/-/uplot-1.6.32.tgz`, hash-pinned by

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import json
 import socket
@@ -11,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests.support import Scratch, free_port
-from tokencrate import TokenCrateError, engine, env, uis
+from tokencrate import TokenCrateError, agentsets, engine, env, uis
 
 
 def container(name: str, role: int = 0, port: str = "4224", project: str = "tokencrate", access: str = "") -> dict:
@@ -43,36 +44,27 @@ class UiTests(unittest.TestCase):
         self.settings = env.load(self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4"))
         self.engine = engine.Engine("docker", self.settings)
 
-    def test_defaults_and_overrides(self):
-        # --port for one launch, then LLM_UI_PORT_<SET>, then the manifest's
-        # host_port; a set without one needs one of the other two.
-        fresh = env.load(self.scratch.root, self.scratch.environment(LLM_PORT=None))
-        self.assertEqual(fresh.port, "4207")
-        self.assertEqual(fresh.ui_port("pi-web", default=4224), "4224")
-        self.assertEqual(fresh.ui_port("custom", "54224"), "54224")
-        with self.assertRaisesRegex(
-            TokenCrateError, "custom declares no host_port; pass --port or set LLM_UI_PORT_CUSTOM"
-        ):
-            fresh.ui_port("custom")
-        self.assertEqual(env.ui_port_key("custom.UI"), "LLM_UI_PORT_CUSTOM_UI")
-        local = self.scratch.root / ".env"
-        keys = "LLM_UI_PORT_PI_WEB=4444\nLLM_UI_PORT_PASEO=4445\nLLM_UI_PORT_CUSTOM_UI=4446\n"
-        local.write_text(keys)
-        with contextlib.redirect_stderr(io.StringIO()) as stderr:
-            configured = env.load(self.scratch.root, self.scratch.environment())
-        self.assertEqual(stderr.getvalue(), "", "a UI port key follows the documented pattern; no warning")
-        self.assertEqual(configured.ui_port("pi-web", default=4224), "4444")
-        self.assertEqual(configured.ui_port("paseo", default=4250), "4445")
-        self.assertEqual(configured.ui_port("custom.UI"), "4446")
-        for name in ("pi-web", "paseo", "custom.UI"):
-            self.assertEqual(configured.ui_port(name, "5555"), "5555")
-        self.assertEqual(local.read_text(), keys)
+    def test_the_host_port_is_the_manifests_unless_port_names_one(self):
+        # --port for one launch, else the manifest's host_port; a set
+        # without one needs --port. No setting takes part.
+        entry = uis.ui_entry(self.settings, "pi-web")
+        self.assertEqual(uis.host_port(entry, ""), "4224")
+        self.assertEqual(uis.host_port(entry, "54224"), "54224")
         for invalid in ("0", "65536", "-1", "localhost:4224", "1.5", " 4224"):
             with self.assertRaisesRegex(TokenCrateError, "--port requires a port"):
-                fresh.ui_port("pi-web", invalid, 4224)
-        local.write_text("LLM_UI_PORT_PI_WEB=70000\n")
-        with self.assertRaisesRegex(TokenCrateError, "LLM_UI_PORT_PI_WEB requires a port"):
-            env.load(self.scratch.root, self.scratch.environment()).ui_port("pi-web", default=4224)
+                uis.host_port(entry, invalid)
+        custom = dataclasses.replace(entry, name="custom", ui=dataclasses.replace(entry.ui, host_port=None))
+        with self.assertRaisesRegex(TokenCrateError, "^UI set custom declares no host_port; pass --port$"):
+            uis.host_port(custom, "")
+        self.assertEqual(uis.host_port(custom, "4444"), "4444")
+        with self.assertRaisesRegex(TokenCrateError, "agent set coding is not a UI set"):
+            uis.ui_entry(self.settings, "coding")
+        local = self.scratch.root / ".env"
+        local.write_text("LLM_UI_PORT_PI_WEB=4444\n")
+        local.chmod(0o600)
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            env.load(self.scratch.root, self.scratch.environment())
+        self.assertIn("keys not listed in .env.example are ignored: LLM_UI_PORT_PI_WEB", stderr.getvalue())
 
     def test_occupied_port_belongs_only_to_its_actual_forwarder(self):
         port = str(free_port())
@@ -193,7 +185,7 @@ class UiTests(unittest.TestCase):
             patch.object(uis, "containers", return_value=running + sibling),
             patch.object(self.engine, "require_port"),
             patch.object(self.engine, "remove_containers") as removed,
-            patch.object(uis, "prepare", return_value={}),
+            patch("tokencrate.session.prepare", return_value={}),
             patch.object(uis, "wait_for_ui", side_effect=TokenCrateError("failed readiness")),
             contextlib.redirect_stdout(io.StringIO()),
         ):
@@ -212,7 +204,24 @@ class UiTests(unittest.TestCase):
             removed.assert_called_once_with(running)
             calls = self.engine.compose.call_args_list
             ui_name, forward_name = uis.container_names("paseo")
-            self.assertEqual(calls[1].args, ("run", "--detach", "--no-deps", "-T", "--name", ui_name, "agent-ui"))
+            # The set's shared directory is mounted by the run, not by a
+            # Compose file: Paseo's launcher keeps its daemon identity there.
+            store = self.settings.agents_dir / "pi" / "paseo-state"
+            self.assertEqual(
+                calls[1].args,
+                (
+                    "run",
+                    "--detach",
+                    "--no-deps",
+                    "-T",
+                    "-v",
+                    f"{store}:{uis.UI_STATE_MOUNT}",
+                    "--name",
+                    ui_name,
+                    "agent-ui",
+                ),
+            )
+            self.assertEqual(oct(store.stat().st_mode & 0o777), "0o700")
             self.assertFalse(calls[1].kwargs["egress"])
             self.assertEqual(
                 calls[2].args,
@@ -221,6 +230,16 @@ class UiTests(unittest.TestCase):
             self.assertNotIn("egress", calls[2].kwargs)
             self.assertFalse(any("down" in call.args for call in calls))
             self.assertEqual(calls[1].kwargs["TOKENCRATE_UI_SET"], "paseo")
+            self.assertEqual(calls[2].kwargs["TOKENCRATE_UI_HOST_PORT"], "4250")
+            self.assertEqual(agentsets.load_set(self.scratch.root, "paseo").ui.host_port, 4250)
+
+    def test_the_shared_ui_directory_is_a_real_path(self) -> None:
+        store = uis.ui_state_store(self.settings, "pi-web")
+        self.assertEqual(store, self.settings.agents_dir / "pi" / "pi-web-state")
+        self.assertEqual(uis.ui_state_store(self.settings, "pi-web"), store)
+        (self.settings.agents_dir / "pi" / "custom-state").symlink_to(store)
+        with self.assertRaisesRegex(TokenCrateError, "custom-state is a symbolic link"):
+            uis.ui_state_store(self.settings, "custom")
 
     def test_readiness_checks_both_containers_by_name(self):
         self.engine.container_state = Mock(side_effect=["running", "exited"])
@@ -249,7 +268,6 @@ class UiTests(unittest.TestCase):
             self.assertFalse(finished.wait(0.05))
         thread.join(2)
         self.assertTrue(finished.is_set())
-        self.assertNotEqual(self.engine.lock_file, engine.Engine("podman", self.settings).lock_file)
 
     def test_all_ui_names_and_addresses_are_containment_targets(self):
         # The UI of a set started with --egress or --cloud marks its name

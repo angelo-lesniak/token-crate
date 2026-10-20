@@ -4,7 +4,7 @@
 services:
   llama:
     devices:
-      - "${GPU_DEVICE:-nvidia.com/gpu=all}"
+      - "${GPU_DEVICE:?exported by bin/tokencrate from .env}"
   gpu-exporter:
     devices:
-      - "${GPU_DEVICE:-nvidia.com/gpu=all}"
+      - "${GPU_DEVICE:?exported by bin/tokencrate from .env}"

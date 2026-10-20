@@ -43,17 +43,19 @@ node --check config/agent-sets/metrics/timings/index.js
 node --check config/agent-sets/web/js-debug-adapter
 node --check services/agents/ui-forward.js
 node --check services/dashboard/llama-exporter.js
-node --check tokencrate/pages/live.js
-node --check tokencrate/pages/stats.js
-node --check tokencrate/pages/vendor/uPlot.iife.js
+node --check tokencrate/stats/pages/live.js
+node --check tokencrate/stats/pages/stats.js
+node --check tokencrate/stats/pages/vendor/uPlot.iife.js
 
-# Each module imports on its own: the unit tests import them in one order,
-# which can hide an import cycle that another entry point runs into.
-for module in tokencrate/*.py; do
-  module=${module#tokencrate/}
-  module=${module%.py}
-  [[ "$module" == __main__ ]] || "$python_bin" -c "import tokencrate.$module"
-done
+# Each module imports on its own, subpackages included: the unit tests
+# import them in one order, which can hide an import cycle that another
+# entry point runs into.
+while IFS= read -r file; do
+  module=${file%.py}
+  module=${module%/__init__}
+  module=${module//\//.}
+  [[ "$module" == *.__main__ ]] || "$python_bin" -c "import $module"
+done < <(find tokencrate -name '*.py' | sort)
 "$python_bin" -m unittest discover -s tests -t . -p 'test_*.py'
 
 if command -v ruff >/dev/null 2>&1; then
@@ -107,10 +109,19 @@ fi
 # selection; render the empty selection so Compose can resolve the path.
 TOKENCRATE_AGENT_SETS_TAG=$("$python_bin" -c 'from tokencrate import PROJECT_ROOT, agentsets; print(agentsets.render(PROJECT_ROOT, PROJECT_ROOT / "build", agentsets.select(PROJECT_ROOT, "")))')
 export TOKENCRATE_AGENT_SETS_TAG
-# The wrapper sets the home tmpfs owner per engine and its root on every
-# call; a render needs both.
+# The Compose files require every setting and the four values the wrapper
+# derives on each call (compose.yaml, the interpolation note); the render
+# exports the documented defaults from the reference, which bin/tokencrate
+# keeps shell-literal.
+set -a
+# shellcheck source=/dev/null
+. ./.env.example
+set +a
 export TOKENCRATE_HOME_OWNER=U
 export TOKENCRATE_ROOT="$PROJECT_ROOT"
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+export HOST_UID HOST_GID
 
 # Render the Compose files with the Docker Compose parser (the Podman one
 # ran above); Compose interpolates every image tag from pins.env itself.

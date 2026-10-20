@@ -1,4 +1,16 @@
-name: "${COMPOSE_PROJECT_NAME:-tokencrate}"
+name: "${COMPOSE_PROJECT_NAME:?exported by bin/tokencrate from .env}"
+
+# Interpolation: every setting of .env.example and the four values the
+# wrapper derives (HOST_UID, HOST_GID, TOKENCRATE_ROOT, TOKENCRATE_HOME_OWNER)
+# are required (`:?`): bin/tokencrate exports each on every Compose call,
+# and tests/podman-compose.sh and tests/static.sh export the documented
+# defaults for a render. The variables one agent or UI start sets
+# (LLM_AGENT_PROJECT_DIR, TOKENCRATE_AGENT_HOME, TOKENCRATE_PRESET,
+# TOKENCRATE_AGENT_SETS_TAG, TOKENCRATE_UI_*) and the label `up` sets
+# (TOKENCRATE_CONFIG_SHA256) keep an inert fallback, because both parsers
+# interpolate every service on every call, selected profile or not, so a
+# required session variable would fail `up`. GIT_AUTHOR_NAME and
+# GIT_AUTHOR_EMAIL are optional settings (commented out in .env.example).
 
 # Shared hardening for interactive coding-agent containers. Agents reach only
 # the model through the internal `agents` network; compose.agent-egress.yaml
@@ -15,8 +27,10 @@ x-agent-common: &agent-common
     - no-new-privileges:true
   stdin_open: true
   tty: true
-  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
   networks: [agents]
+  # Set per start (the interpolation note above); the project is mounted
+  # at its host path.
   working_dir: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
   tmpfs:
     # `exec` is explicit because Docker mounts a tmpfs `noexec` unless told
@@ -24,7 +38,7 @@ x-agent-common: &agent-common
     # runs it under /tmp (odin) would work on one engine and not the other.
     # It removes no boundary; the project directory is writable and
     # executable, which is where a session's own code lives.
-    - &agent-tmp "/tmp:rw,exec,nosuid,nodev,mode=1777,size=${LLM_AGENT_TMPFS_SIZE:-1g}"
+    - &agent-tmp "/tmp:rw,exec,nosuid,nodev,mode=1777,size=${LLM_AGENT_TMPFS_SIZE:?exported by bin/tokencrate from .env}"
     # World-writable like /tmp: the entrypoint runs as the host user, not root.
     - &agent-run "/run/tokencrate:rw,nosuid,nodev,mode=1777,size=64m"
     # The home is a tmpfs that lives as long as the container. Only the
@@ -56,12 +70,12 @@ x-agent-mounts:
     target: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
   skills: &agent-skills-mount
     type: bind
-    source: "${LLM_SKILLS_DIR:-./data/skills}"
+    source: "${LLM_SKILLS_DIR:?exported by bin/tokencrate from .env}"
     target: /opt/tokencrate/skills
     read_only: true
   local-skills: &agent-local-skills-mount
     type: bind
-    source: "${LLM_LOCAL_SKILLS_DIR:-./local/skills}"
+    source: "${LLM_LOCAL_SKILLS_DIR:?exported by bin/tokencrate from .env}"
     target: /opt/tokencrate/skills-local
     read_only: true
 
@@ -86,6 +100,7 @@ x-agent-pi-tmpfs: &agent-pi-tmpfs
 
 x-agent-pi-volumes: &agent-pi-volumes
   - *agent-project-mount
+  # The home is set per start (the interpolation note above).
   - &pi-sessions
     type: bind
     source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/.pi/agent/sessions"
@@ -114,10 +129,13 @@ x-agent-environment: &agent-environment
   # would execute a ~/.profile written into the home during the session.
   # pi already passes --noprofile --norc.
   PI_BASH_NO_LOGIN: "1"
-  UMASK: "${UMASK:-0002}"
+  UMASK: "${UMASK:?exported by bin/tokencrate from .env}"
+  # Set per start (the interpolation note above).
   TOKENCRATE_PRESET: "${TOKENCRATE_PRESET:-}"
-  TOKENCRATE_SKILL_SETS: "${LLM_SKILL_SETS:-}"
+  # `?` rather than `:?`: an empty list is a documented setting.
+  TOKENCRATE_SKILL_SETS: "${LLM_SKILL_SETS?exported by bin/tokencrate from .env}"
   TOKENCRATE_PROJECT_DIR: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
+  # Optional settings: unset unless .env names an identity.
   GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-}"
   GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-}"
   GIT_COMMITTER_NAME: "${GIT_AUTHOR_NAME:-}"
@@ -135,26 +153,26 @@ services:
         LLAMA_CPP_DIGEST: "${LLAMA_CPP_DIGEST:?pin it in pins.env}"
     init: true
     read_only: true
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
-    restart: "${RESTART_POLICY:-no}"
+    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
+    restart: "${RESTART_POLICY:?exported by bin/tokencrate from .env}"
     # Model servers unload in seconds; a minute covers a busy one.
     stop_grace_period: 60s
-    pids_limit: "${LLM_PIDS_LIMIT:-1024}"
+    pids_limit: "${LLM_PIDS_LIMIT:?exported by bin/tokencrate from .env}"
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
     tmpfs:
-      - "/tmp:rw,nosuid,nodev,mode=1777,size=${LLM_TMPFS_SIZE:-2g}"
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=${LLM_TMPFS_SIZE:?exported by bin/tokencrate from .env}"
     ports:
       # Published on loopback only; no setting widens it. Container port 8080
       # must match the --port of the router in services/llama/Dockerfile.
-      - "127.0.0.1:${LLM_PORT:-4207}:8080"
+      - "127.0.0.1:${LLM_PORT:?exported by bin/tokencrate from .env}:8080"
     # The GPU device request lives in compose.gpu.yaml so CPU-only checks can
     # run the same image without a CDI device.
     networks: [default, agents, ui, dashboard]
     volumes:
       - type: bind
-        source: "${LLM_MODELS_DIR:-./data/models}"
+        source: "${LLM_MODELS_DIR:?exported by bin/tokencrate from .env}"
         target: /models
         read_only: true
       - type: bind
@@ -194,6 +212,7 @@ services:
       # SHA-256 of the rendered build/models.ini the container was started
       # with. It is part of the service configuration, so Compose
       # recreates the container on `up` when the rendered configuration changed.
+      # Set by `up`; a session start leaves it empty (the interpolation note).
       io.tokencrate.config-sha256: "${TOKENCRATE_CONFIG_SHA256:-}"
 
   agent-pi:
@@ -212,7 +231,9 @@ services:
   # The host reaches it through ui-forward. The wrapper starts one pair
   # per UI set with `compose run` under fixed container names; the label
   # names the set, which is how `ui stop`, `ui logs`, and `status` find
-  # the pair (a render without the wrapper leaves it empty: no UI).
+  # the pair. The TOKENCRATE_UI_* variables are set per start (the
+  # interpolation note above); a render without the wrapper gets an empty
+  # set, a command that exists in no image, and port 0.
   agent-ui:
     <<: [*agent-common, *agent-pi-image]
     profiles: ["ui"]
@@ -238,9 +259,9 @@ services:
       - *pi-etc-tokencrate-agent-generated
       - *agent-skills-mount
       - *agent-local-skills-mount
-      # The UI set's state directory (`state` in its manifest), the one UI
-      # path bound from the host; the fallback lets a render without the
-      # wrapper resolve, `ui` always sets the real one.
+      # The per-project UI state (`state` in the set's manifest). The per-set
+      # store, LLM_AGENTS_DIR/pi/<set>-state, is mounted by the `run -v` of
+      # `ui` at /run/tokencrate/ui-state (uis.UI_STATE_MOUNT), not here.
       - type: bind
         source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/${TOKENCRATE_UI_STATE:-.ui-state}"
         target: "/home/agent/${TOKENCRATE_UI_STATE:-.ui-state}"
@@ -261,13 +282,13 @@ services:
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [ui-publish, ui]
     labels: *ui-label
     ports:
       # Loopback only, like the llama port. The container listens on 8080.
       # A `run` publishes it with --service-ports.
-      - "127.0.0.1:${TOKENCRATE_UI_HOST_PORT:-4224}:8080"
+      - "127.0.0.1:${TOKENCRATE_UI_HOST_PORT:-0}:8080"
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=16m"
     environment:
@@ -277,10 +298,7 @@ services:
         source: "${TOKENCRATE_ROOT:?set by bin/tokencrate}/services/agents/ui-forward.js"
         target: /etc/tokencrate/ui-forward.js
         read_only: true
-    # The fallbacks name a port nothing listens on and an empty set, so
-    # that the static gate can render this profile without the wrapper;
-    # `ui` always sets the real ones.
-    command: ["node", "/etc/tokencrate/ui-forward.js", "tokencrate-ui-${TOKENCRATE_UI_SET:-}", "${TOKENCRATE_UI_PORT:-0}", "8080", "${TOKENCRATE_UI_HOST_PORT:-4224}"]
+    command: ["node", "/etc/tokencrate/ui-forward.js", "tokencrate-ui-${TOKENCRATE_UI_SET:-}", "${TOKENCRATE_UI_PORT:-0}", "8080", "${TOKENCRATE_UI_HOST_PORT:-0}"]
 
   agent-omp:
     <<: *agent-common
@@ -350,7 +368,7 @@ services:
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard]
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=16m"
@@ -374,7 +392,7 @@ services:
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard]
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"
@@ -408,12 +426,12 @@ services:
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard-publish, dashboard]
     ports:
       # Loopback only. Grafana listens on 8080 like every published service,
       # which is the port the wrapper's port check reads.
-      - "127.0.0.1:${LLM_DASHBOARD_PORT:-4211}:8080"
+      - "127.0.0.1:${LLM_DASHBOARD_PORT:?exported by bin/tokencrate from .env}:8080"
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"
       # Grafana's database, plugins, and logs: nothing to keep, since the
@@ -443,6 +461,18 @@ services:
       GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
       GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      # The two outbound features a viewer could trigger: publishing a
+      # snapshot to snapshots.raintank.io and avatar lookups at gravatar.com.
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      # Host check: a request whose Host is not the published address is
+      # redirected to it (301), so a page that rebinds its name to this
+      # address cannot read Grafana's answers. The wrapper prints
+      # 127.0.0.1; `localhost` redirects there. Grafana exempts
+      # /api/health, which tells the version and nothing else.
+      GF_SERVER_DOMAIN: 127.0.0.1
+      GF_SERVER_ENFORCE_DOMAIN: "true"
+      GF_SERVER_ROOT_URL: "http://127.0.0.1:${LLM_DASHBOARD_PORT:?exported by bin/tokencrate from .env}/"
     volumes:
       - type: bind
         source: ./config/dashboard/grafana
@@ -464,7 +494,7 @@ services:
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard]
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"

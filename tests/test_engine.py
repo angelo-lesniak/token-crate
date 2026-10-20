@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import re
+import socket
 import subprocess
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -94,6 +99,92 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenCrateError, "docker network failed"):
             missing.network_gateway("agents")
         self.assertEqual(missing.network_gateway("agents", missing_ok=True), "")
+
+    def test_the_stack_record_decides_the_engine_and_refuses_a_disagreeing_setting(self) -> None:
+        # Podman is usable, so detection would pick it; a stack recorded on
+        # Docker keeps `down` and `status` on Docker until it is forgotten.
+        engine.Engine("docker", self.settings()).record_stack()
+        self.assertEqual(
+            json.loads((self.scratch.root / "build" / "stack.json").read_text()),
+            {"engine": "docker", "project": "tokencrate"},
+        )
+        self.assertEqual(engine.detect(self.settings(CONTAINER_ENGINE=""), launching=False).name, "docker")
+        self.assertEqual(engine.detect(self.settings(CONTAINER_ENGINE="docker")).name, "docker")
+        refusal = (
+            "the stack runs on docker, not podman (build/stack.json); "
+            "run: CONTAINER_ENGINE=docker bash bin/tokencrate down"
+        )
+        with self.assertRaisesRegex(TokenCrateError, re.escape(refusal)):
+            engine.detect(self.settings(CONTAINER_ENGINE="podman"), launching=False)
+        # `up` passes what doctor gathered; a selection that disagrees with
+        # the record is refused the same way, and a consistent one is used
+        # without another probe.
+        probed = engine.select(self.settings(CONTAINER_ENGINE="docker").subprocess_env(), "docker")
+        with patch.object(engine, "select") as select:
+            self.assertEqual(engine.detect(self.settings(), selection=probed).name, "docker")
+        select.assert_not_called()
+        other = engine.select(self.settings().subprocess_env(), "podman")
+        with self.assertRaisesRegex(TokenCrateError, "the stack runs on docker, not podman"):
+            engine.detect(self.settings(), selection=other)
+        # Another project's record, and no record, leave detection alone.
+        engine.Engine("docker", self.settings(COMPOSE_PROJECT_NAME="other")).record_stack()
+        self.assertEqual(engine.detect(self.settings(CONTAINER_ENGINE="")).name, "podman")
+        engine.Engine("docker", self.settings()).forget_stack()
+        self.assertEqual(engine.detect(self.settings(CONTAINER_ENGINE="")).name, "podman")
+        engine.Engine("docker", self.settings()).forget_stack()
+        (self.scratch.root / "build" / "stack.json").write_text("{")
+        with self.assertRaisesRegex(TokenCrateError, "cannot read the stack record .*stack.json: .*; remove it"):
+            engine.detect(self.settings(CONTAINER_ENGINE=""))
+
+    def test_the_lock_is_per_project_and_names_its_holder_while_it_waits(self) -> None:
+        settings = self.settings()
+        docker, podman = engine.Engine("docker", settings), engine.Engine("podman", settings)
+        self.assertEqual(docker.lock_file, self.scratch.root / "build" / "locks" / "tokencrate.lock")
+        self.assertEqual(docker.lock_file, podman.lock_file)
+        entered, finished = threading.Event(), threading.Event()
+
+        def other():
+            entered.set()
+            with podman.lock("down"):
+                finished.set()
+
+        with docker.lock("up"), patch.object(engine, "warn") as warn:
+            self.assertEqual(docker.lock_file.read_text(), f"{os.getpid()} up\n")
+            thread = threading.Thread(target=other)
+            thread.start()
+            self.assertTrue(entered.wait(2))
+            self.assertFalse(finished.wait(0.1))
+        thread.join(2)
+        self.assertTrue(finished.is_set())
+        warn.assert_called_once_with(f"waiting for `up` (pid {os.getpid()}) to finish")
+        self.assertEqual(docker.lock_file.read_text(), f"{os.getpid()} down\n")
+        # A caller that names no command is still serialized and reported.
+        with docker.lock():
+            self.assertEqual(docker.lock_file.read_text(), f"{os.getpid()}\n")
+
+    def test_the_port_check_is_one_bind_for_doctor_and_the_start(self) -> None:
+        docker = engine.Engine("docker", self.settings())
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = str(listener.getsockname()[1])
+            self.assertIn("in use", engine.loopback_bind_error(port))
+            with self.assertRaisesRegex(TokenCrateError, f"cannot use host port {port}: "):
+                docker.require_port("llama", port)
+        self.assertEqual(engine.loopback_bind_error(port), "")
+        docker.require_port("llama", port)
+
+    def test_bridge_forwarding_reads_the_flag_in_the_rootless_namespace(self) -> None:
+        for flag, expected in (("0", ("0", "")), ("1", ("1", ""))):
+            podman = engine.detect(self.settings(CONTAINER_ENGINE="podman", FAKE_ENGINE_FORWARDING=flag))
+            self.assertEqual(podman.bridge_forwarding("podman1"), expected)
+        podman = engine.detect(self.settings(CONTAINER_ENGINE="podman", FAKE_ENGINE_FORWARDING="missing"))
+        self.assertEqual(
+            podman.bridge_forwarding("podman1"),
+            ("", "cat: /proc/sys/net/ipv4/conf/podman1/forwarding: No such file or directory"),
+        )
+        podman = engine.detect(self.settings(CONTAINER_ENGINE="podman", FAKE_ENGINE_FORWARDING="fail"))
+        self.assertEqual(podman.bridge_forwarding("podman1"), ("", "Error: cannot join the rootless network namespace"))
 
     def test_inspect_engine_reads_the_docker_server_version(self) -> None:
         settings = self.settings(CONTAINER_ENGINE="docker")

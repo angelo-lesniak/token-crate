@@ -8,15 +8,18 @@ import os
 import time
 from pathlib import Path
 
-from . import TokenCrateError, presets
+from . import TokenCrateError, presets, warn
+from .agenthome import AGENTS
 from .engine import PROJECT_LABEL, Engine
-from .engine import network_gateway as engine_network_gateway
 from .env import Settings
 from .localhttp import http_get, http_post
 
 # A container in one of these states will not answer (`removed`: the engine
 # no longer knows it); anything else is polled again until the timeout.
 STOPPED_STATES = ("exited", "dead", "stopped", "removing", "removed")
+# How many polls (two seconds apart) the default preset may still read
+# `unloaded` after this run's own load request before that counts as failed.
+LOAD_GRACE_POLLS = 3
 
 
 # What `init` writes: `.env.example` stays the defaults layer, so a setting
@@ -44,15 +47,13 @@ def init_project(settings: Settings) -> None:
 
 
 def prepare_host_directories(settings: Settings) -> None:
-    for path in (
-        settings.models_dir,
-        settings.agents_dir / "pi",
-        settings.agents_dir / "omp",
-        settings.skills_dir,
-        settings.local_skills_dir,
-        settings.root / "reports",
-    ):
-        path.mkdir(parents=True, exist_ok=True)
+    """The storage entries `init` owns, plus the home directory of each
+    agent below the agents directory."""
+    for place in settings.storage:
+        if place.created_by_init:
+            place.path.mkdir(parents=True, exist_ok=True)
+    for agent in AGENTS:
+        (settings.agents_dir / agent).mkdir(exist_ok=True)
 
 
 def models_directory(settings: Settings) -> Path:
@@ -91,33 +92,41 @@ def start_stack(settings: Settings, engine: Engine, configuration: presets.Confi
     image, start the llama service in the background, and wait until it is
     ready. The rendered preset file's hash travels as a container label, so
     Compose recreates the container when the file changed and keeps it
-    otherwise. With LLM_DASHBOARD=true the dashboard profile follows."""
-    with engine.lock():
+    otherwise. With LLM_DASHBOARD=true the dashboard profile follows. The
+    stack lock covers the Compose `up` calls and the stack record only: the
+    image build is content-addressed and the readiness wait polls, so a
+    `down` meanwhile removes the container and the wait reports that."""
+    # The ports are judged first so a taken one fails before the build,
+    # and again under the lock, which is the judgement that counts.
+    engine.require_port("llama", settings.port)
+    if settings.dashboard:
+        if settings.dashboard_port == settings.port:
+            raise TokenCrateError("LLM_DASHBOARD_PORT must differ from LLM_PORT")
+        engine.require_port("grafana", settings.dashboard_port)
+    rendered = render(settings, configuration)
+    default_preset = settings.default_preset
+    if default_preset and default_preset not in {item.preset.name for item in rendered if item.loadable}:
+        raise TokenCrateError(
+            f"the default preset {default_preset} is not loadable; download its model set "
+            f"(bash bin/tokencrate models fetch {configuration.find(default_preset).model_set}) "
+            "or set LLM_DEFAULT_PRESET to a preset listed as loadable above"
+        )
+    extra = {"TOKENCRATE_CONFIG_SHA256": config_digest(settings)}
+    engine.compose("build", "llama", **extra)
+    with engine.lock("up"):
         engine.require_port("llama", settings.port)
-        if settings.dashboard:
-            if settings.dashboard_port == settings.port:
-                raise TokenCrateError("LLM_DASHBOARD_PORT must differ from LLM_PORT")
-            engine.require_port("grafana", settings.dashboard_port)
-        rendered = render(settings, configuration)
-        default_preset = settings.default_preset
-        if default_preset and default_preset not in {item.preset.name for item in rendered if item.loadable}:
-            raise TokenCrateError(
-                f"the default preset {default_preset} is not loadable; download its model set "
-                f"(bash bin/tokencrate models fetch {configuration.find(default_preset).model_set}) "
-                "or set LLM_DEFAULT_PRESET to a preset listed as loadable above"
-            )
-        extra = {"TOKENCRATE_CONFIG_SHA256": config_digest(settings)}
-        engine.compose("build", "llama", **extra)
         engine.compose("up", "--no-build", "--detach", "llama", **extra)
-        wait_until_ready(settings, engine, timeout)
-        if settings.dashboard:
+        engine.record_stack()
+    wait_until_ready(settings, engine, timeout)
+    if settings.dashboard:
+        with engine.lock("up"):
+            engine.require_port("grafana", settings.dashboard_port)
             start_dashboard(settings, engine)
 
 
 def start_dashboard(settings: Settings, engine: Engine) -> None:
     """The dashboard profile beside the running model: VictoriaMetrics'
     samples live under data/dashboard, Grafana answers on loopback."""
-    (settings.root / "data" / "dashboard" / "victoria").mkdir(parents=True, exist_ok=True)
     services, profiles = list(DASHBOARD_SERVICES), ["dashboard"]
     if settings.gpu:
         services.append(DASHBOARD_GPU_SERVICE)
@@ -130,8 +139,9 @@ def start_dashboard(settings: Settings, engine: Engine) -> None:
 
 
 def stop_stack(engine: Engine) -> None:
-    """Remove all project-owned containers and networks without launch config."""
-    with engine.lock():
+    """Remove all project-owned containers and networks without launch
+    config, then the stack record, so the next `up` may choose its engine."""
+    with engine.lock("down"):
         owned = engine.containers()
         engine.remove_containers(owned)
         pods = sorted({item["Pod"] for item in owned if item.get("Pod")})
@@ -147,12 +157,17 @@ def stop_stack(engine: Engine) -> None:
         ).stdout.split()
         if networks:
             engine.command("network", "rm", *networks)
+        engine.forget_stack()
 
 
 def require_isolated_networks(engine: Engine) -> None:
     """The internal networks as the Compose files declare them: internal,
-    created by this Compose project, and on Docker without a gateway
-    address (compose.docker.yaml). Compose keeps an existing network with
+    created by this Compose project, on Docker without a gateway address
+    (compose.docker.yaml), and on rootless Podman with IPv4 forwarding
+    off on the bridge, which is what keeps a session on another network
+    from reaching the containers on it (docs/privacy.md: an internal
+    bridge created before forwarding was switched on in the engine's
+    network namespace forwards). Compose keeps an existing network with
     the options it was created with, so a network made without the
     overlay, or by hand under the project's name, would keep its options
     silently. `up` refuses before any download, and every agent session
@@ -170,12 +185,23 @@ def require_isolated_networks(engine: Engine) -> None:
             )
         if not document.get("Internal", document.get("internal")):
             raise TokenCrateError(f"the {network} network is not internal. Run: bash bin/tokencrate down, then up")
-        gateway = engine_network_gateway(document)
-        if engine.name == "docker" and gateway:
+        if engine.name == "docker" and (gateway := engine.network_gateway(network)):
             raise TokenCrateError(
                 f"the {network} network keeps a host gateway address ({gateway}); it was created without "
                 "gateway mode isolated. Run: bash bin/tokencrate down, then up"
             )
+        if engine.name == "podman" and (interface := document.get("network_interface")):
+            flag, cause = engine.bridge_forwarding(str(interface))
+            if flag == "1":
+                raise TokenCrateError(
+                    f"the {network} network's bridge {interface} forwards IPv4 traffic, so a session on "
+                    "another network can reach it. Run: bash bin/tokencrate down, then up"
+                )
+            # No bridge exists while no container uses the network; it is
+            # created with the first one. Anything else is worth a line,
+            # not a refusal: the probe failed, the boundary is unjudged.
+            if not flag and "No such file" not in cause:
+                warn(f"could not read the forwarding flag of bridge {interface}: {cause}")
 
 
 def model_states(settings: Settings) -> dict[str, str] | None:
@@ -230,6 +256,7 @@ def wait_until_ready(settings: Settings, engine: Engine, timeout: int, **poll_op
     container_id = engine.running_llama_id()
     preset = settings.default_preset
     load_started = False
+    polls = asked = 0
     refused = ""
     for _ in poll(
         lambda: engine.container_state(container_id),
@@ -238,35 +265,43 @@ def wait_until_ready(settings: Settings, engine: Engine, timeout: int, **poll_op
         timed_out=f"container did not become ready within {timeout}s. Check the logs: bash bin/tokencrate logs",
         **poll_options,
     ):
+        polls += 1
         states = model_states(settings)
-        if states is not None:
-            if not preset:
-                print(f"TokenCrate is healthy at {settings.service_url}/")
-                return
-            status = states.get(preset, "")
-            if status in ("loaded", "sleeping"):
-                print(f"TokenCrate is ready at {settings.service_url}/ with preset {preset} loaded")
-                return
-            if status == "loading":
-                load_started = True
-            elif status != "unloaded" or load_started:
-                # A load this run asked for and that left the preset unloaded
-                # was either refused outright or failed while loading; the
-                # refusal is the more useful half when there is one.
-                cause = f" (the load request was refused: {refused})" if refused else ""
-                raise TokenCrateError(
-                    f"preset {preset} is {status or 'not listed'} instead of loaded{cause}. "
-                    "Check the logs: bash bin/tokencrate logs"
-                )
-            elif occupied := [name for name, value in states.items() if value in ("loading", "loaded", "sleeping")]:
-                print(
-                    f"TokenCrate is running at {settings.service_url}/ with preset {occupied[0]} loaded; "
-                    f"preset {preset} loads on its first request"
-                )
-                return
-            else:
+        if states is None:
+            continue
+        if not preset:
+            print(f"TokenCrate is healthy at {settings.service_url}/")
+            return
+        status = states.get(preset, "")
+        if status in ("loaded", "sleeping"):
+            print(f"TokenCrate is ready at {settings.service_url}/ with preset {preset} loaded")
+            return
+        if status == "loading":
+            load_started = True
+            continue
+        if status == "unloaded" and not load_started and not refused:
+            if not asked:
+                if occupied := [name for name, value in states.items() if value in ("loading", "loaded", "sleeping")]:
+                    print(
+                        f"TokenCrate is running at {settings.service_url}/ with preset {occupied[0]} loaded; "
+                        f"preset {preset} loads on its first request"
+                    )
+                    return
                 refused = http_post(f"{settings.service_url}/models/load", {"model": preset})
-                load_started = True
+                asked = polls
+                continue
+            if polls - asked <= LOAD_GRACE_POLLS:
+                # The router spawns the model server after answering the
+                # load request; the listing may still say unloaded.
+                continue
+        # `loading` then `unloaded` is a model server that exited; a load
+        # this run asked for and that never began was refused outright or
+        # failed at once, and the refusal is the more useful half.
+        cause = f" (the load request was refused: {refused})" if refused else ""
+        raise TokenCrateError(
+            f"preset {preset} is {status or 'not listed'} instead of loaded{cause}. "
+            "Check the logs: bash bin/tokencrate logs"
+        )
 
 
 def print_containers(settings: Settings, engine: Engine) -> None:
