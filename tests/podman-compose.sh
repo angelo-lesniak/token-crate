@@ -12,16 +12,27 @@ cd "$PROJECT_ROOT"
 command -v podman-compose >/dev/null 2>&1 \
   || { printf 'podman-compose compatibility: podman-compose is required\n' >&2; exit 1; }
 
-unset COMPOSE_PROJECT_NAME FAKE_PODMAN_LOG LLM_AGENT_PROJECT_DIR TOKENCRATE_PRESET
+unset FAKE_PODMAN_LOG LLM_AGENT_PROJECT_DIR TOKENCRATE_PRESET
+# The Compose files require every setting and the four values the wrapper
+# derives on each call (compose.yaml, the interpolation note). The
+# settings come from the reference at their documented defaults, which
+# bin/tokencrate keeps shell-literal; the storage paths are then pointed
+# at a scratch directory.
+set -a
+# shellcheck source=/dev/null
+. ./.env.example
+set +a
 export COMPOSE_PROJECT_NAME=tokencrate
+export TOKENCRATE_HOME_OWNER=U
+export TOKENCRATE_ROOT="$PROJECT_ROOT"
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+export HOST_UID HOST_GID
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf -- "$TEST_ROOT"' EXIT
 export LLM_MODELS_DIR="$TEST_ROOT/models"
 export LLM_AGENTS_DIR="$TEST_ROOT/agents"
 export TOKENCRATE_AGENT_HOME="$TEST_ROOT/agent-home"
-# The wrapper sets these on every call; a render needs them too.
-export TOKENCRATE_HOME_OWNER=U
-export TOKENCRATE_ROOT="$PROJECT_ROOT"
 export LLM_SKILLS_DIR="$TEST_ROOT/skills"
 export LLM_LOCAL_SKILLS_DIR="$TEST_ROOT/local-skills"
 export LLM_AGENT_PROJECT_DIR="$TEST_ROOT/project"
@@ -50,13 +61,14 @@ render() {
 }
 
 # The file combinations bin/tokencrate can pass, in its order: base, GPU
-# overlay, Podman overlay, and the egress overlay with both agent profiles.
-render --file compose.yaml
-render --file compose.yaml --file compose.gpu.yaml
+# overlay, Podman overlay, and the egress overlay with both agent profiles;
+# the wrapper always adds an engine overlay (engine.compose).
 render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml
 render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml \
   --file compose.agent-egress.yaml --profile agent-pi --profile agent-omp
 render --file compose.yaml --file compose.podman.yaml --profile ui
+render --file compose.yaml --file compose.podman.yaml --profile dashboard
+render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml --profile dashboard --profile dashboard-gpu
 
 # Network placement: agents join only the internal network unless the egress
 # overlay is added; llama joins the published default network and the agents
@@ -139,13 +151,56 @@ if grep -Fq -- '--device' "$network_log"; then
 fi
 grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
   || { printf 'podman-compose compatibility: llama does not join the ui network\n' >&2; exit 1; }
+grep -Eq -- '--network=tokencrate_dashboard(:|$| )' "$network_log" \
+  || { printf 'podman-compose compatibility: llama does not join the dashboard network\n' >&2; exit 1; }
+
+# The dashboard profile: the exporter and VictoriaMetrics on the internal
+# dashboard network alone; Grafana also on dashboard-publish for its port.
+for service in llama-exporter victoriametrics; do
+  run_logged "$service" "${podman_files[@]}" --profile dashboard
+  grep -Eq -- '--network=tokencrate_dashboard(:|$| )' "$network_log" \
+    || { printf 'podman-compose compatibility: %s does not join the dashboard network\n' "$service" >&2; exit 1; }
+  if grep -Eq -- '--network=tokencrate_(agents|default|ui|ui-publish|dashboard-publish)' "$network_log"; then
+    printf 'podman-compose compatibility: %s joined a network other than dashboard\n' "$service" >&2
+    exit 1
+  fi
+  grep -Fq -- '--read-only' "$network_log" \
+    || { printf 'podman-compose compatibility: %s is not read-only\n' "$service" >&2; exit 1; }
+done
+# The GPU exporter: the dashboard network alone, the CDI device only
+# through the gpu overlay, and read-only like the rest.
+run_logged gpu-exporter "${podman_files[@]}" --profile dashboard-gpu
+grep -Eq -- '--network=tokencrate_dashboard(:|$| )' "$network_log" \
+  || { printf 'podman-compose compatibility: gpu-exporter does not join the dashboard network\n' >&2; exit 1; }
+grep -Fq -- '--device' "$network_log" \
+  || { printf 'podman-compose compatibility: gpu-exporter has no GPU device with the gpu overlay\n' >&2; exit 1; }
+grep -Fq -- '--read-only' "$network_log" \
+  || { printf 'podman-compose compatibility: gpu-exporter is not read-only\n' >&2; exit 1; }
+run_logged gpu-exporter --file compose.yaml --file compose.podman.yaml --env-file pins.env --profile dashboard-gpu
+if grep -Fq -- '--device' "$network_log"; then
+  printf 'podman-compose compatibility: gpu-exporter has a GPU device without the gpu overlay\n' >&2
+  exit 1
+fi
+run_args=(--service-ports)
+run_logged grafana "${podman_files[@]}" --profile dashboard
+run_args=()
+grep -Fq -- '--network=tokencrate_dashboard-publish' "$network_log" \
+  || { printf 'podman-compose compatibility: grafana does not join the dashboard-publish network\n' >&2; exit 1; }
+grep -Fq -- "-p 127.0.0.1:$LLM_DASHBOARD_PORT:8080" "$network_log" \
+  || { printf 'podman-compose compatibility: grafana does not publish its port on loopback\n' >&2; exit 1; }
+if grep -Eq -- '--network=tokencrate_(agents|default|ui|ui-publish)' "$network_log"; then
+  printf 'podman-compose compatibility: grafana joined an agent or UI network\n' >&2
+  exit 1
+fi
 
 # The browser UI sits on the ui network only, and with the egress overlay
 # on ui and default; the forwarder publishes from ui-publish, which no
-# agent joins. The wrapper starts both with `run`, so what the log shows
-# is what a UI gets: the set label from the Compose file (podman-compose
-# ignores `run -l`) and, for the forwarder, the service port through
-# --service-ports.
+# agent joins. The wrapper starts both with `run` and sets the UI
+# variables per start (here: a set name and a host port with no meaning),
+# so what the log shows is what a UI gets: the set label from the Compose
+# file (podman-compose ignores `run -l`) and, for the forwarder, the
+# service port through --service-ports.
+export TOKENCRATE_UI_SET=x TOKENCRATE_UI_HOST_PORT=4299
 run_args=(--name tokencrate-ui-x)
 run_logged agent-ui "${podman_files[@]}" --profile ui
 run_args=()
@@ -157,7 +212,7 @@ if grep -Eq -- '--network=tokencrate_(agents|default|ui-publish)' "$network_log"
   printf 'podman-compose compatibility: agent-ui joined a network other than ui\n' >&2
   exit 1
 fi
-grep -Fq -- '--label io.tokencrate.ui-set=' "$network_log" \
+grep -Fq -- '--label io.tokencrate.ui-set=x' "$network_log" \
   || { printf 'podman-compose compatibility: agent-ui carries no UI set label\n' >&2; exit 1; }
 run_logged agent-ui "${podman_files[@]}" --file compose.agent-egress.yaml --profile ui
 grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
@@ -171,7 +226,7 @@ run_logged ui-forward "${podman_files[@]}" --profile ui
 run_args=()
 grep -Fq -- '--network=tokencrate_ui-publish' "$network_log" \
   || { printf 'podman-compose compatibility: ui-forward does not join the ui-publish network\n' >&2; exit 1; }
-grep -Fq -- '-p 127.0.0.1:4224:8080' "$network_log" \
+grep -Fq -- "-p 127.0.0.1:$TOKENCRATE_UI_HOST_PORT:8080" "$network_log" \
   || { printf 'podman-compose compatibility: run --service-ports did not publish the forwarder port on loopback\n' >&2; exit 1; }
 grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
   || { printf 'podman-compose compatibility: ui-forward does not join the ui network\n' >&2; exit 1; }

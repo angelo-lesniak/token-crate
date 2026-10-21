@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 
 # TOKENCRATE_PREFIX puts the fixed container paths below a temporary root
-# for the engine-free entrypoint test; it is empty in the container.
+# for the entrypoint test of the static gate; it is empty in the container.
 readonly PREFIX=${TOKENCRATE_PREFIX:-}
 readonly RUN_DIR="$PREFIX/run/tokencrate"
 readonly SKILLS_ROOT="$RUN_DIR/skills"
@@ -143,7 +143,9 @@ export USER=agent LOGNAME=agent
 # --- it sets TOKENCRATE_CLOUD. It is read the way the wrapper reads .env:
 # --- one NAME=value line per key, matching quotes removed, nothing
 # --- expanded, blank and # lines skipped. The names this script sets
-# --- itself are refused; every other name is the user's choice.
+# --- itself and the image's own settings (its telemetry and offline
+# --- switches, the Node options) are refused; every other name is the
+# --- user's choice. A UI launcher exports its own switches after this.
 if [[ -n "${TOKENCRATE_CLOUD:-}" || -e "$CLOUD_KEYS" ]]; then
   [[ -f "$CLOUD_KEYS" ]] || die "the cloud keys file is not mounted as a regular file at $CLOUD_KEYS"
   number=0
@@ -154,8 +156,9 @@ if [[ -n "${TOKENCRATE_CLOUD:-}" || -e "$CLOUD_KEYS" ]]; then
     name=${line%%=*}
     [[ "$line" == *=* && "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "cloud keys file line $number is not NAME=value"
     case "$name" in
-      PATH | HOME | USER | LOGNAME | IFS | BASH_ENV | ENV | TOKENCRATE_* | LD_* | GIT_CONFIG_GLOBAL | PI_CONFIG_FILES | PI_BASH_NO_LOGIN)
-        die "cloud keys file line $number sets $name, which the agent entrypoint owns" ;;
+      PATH | HOME | USER | LOGNAME | IFS | BASH_ENV | ENV | TOKENCRATE_* | LD_* | GIT_CONFIG_GLOBAL | PI_CONFIG_FILES | PI_BASH_NO_LOGIN \
+        | PI_TELEMETRY | PI_SKIP_VERSION_CHECK | PI_OFFLINE | PI_LENS_* | PILENS_* | DOTNET_CLI_* | NODE_OPTIONS | BUN_INSTALL)
+        die "cloud keys file line $number sets $name, which the agent image owns" ;;
     esac
     value=${line#*=}
     value=${value%"${value##*[![:space:]]}"}

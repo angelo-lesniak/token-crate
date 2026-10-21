@@ -5,13 +5,16 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support import shipped
-from tokencrate import PROJECT_ROOT, TokenCrateError, agentmodels, models, presets
+from tokencrate import PROJECT_ROOT, TokenCrateError, agentmodels, files, models, presets
 
 CONFIG = PROJECT_ROOT / "config"
 GPT_OSS_20B_WEIGHTS = "ggml-org/gpt-oss-20b-GGUF/gpt-oss-20b-MXFP4.gguf"
@@ -71,7 +74,7 @@ def read_ini(path: Path) -> dict[str, dict[str, str]]:
 class PresetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model_sets = models.available_sets(CONFIG / "model-sets")
+        cls.model_sets = models.catalog(CONFIG)
 
     def workdir(self) -> Path:
         path = Path(tempfile.mkdtemp())
@@ -126,7 +129,15 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(list(config), ["*", *LOADABLE_PRESETS])
         # Every child inherits the shared section; the router adds host, port,
         # and alias itself, so no section names them.
-        self.assertEqual(config["*"], {"jinja": "true", "ui-config-file": "/etc/tokencrate/ui-config.json"})
+        self.assertEqual(
+            config["*"],
+            {
+                "jinja": "true",
+                "metrics": "true",
+                "no-slots": "true",
+                "ui-config-file": "/etc/tokencrate/ui-config.json",
+            },
+        )
         for forbidden in ("host", "port", "alias"):
             self.assertNotIn(forbidden, text)
         # Only the default preset loads at start; the file is plain `key = value` lines.
@@ -152,9 +163,6 @@ class PresetTests(unittest.TestCase):
         self.assertEqual({key for key in mtp if mtp[key] != uncensored.get(key)}, {"model"})
         self.assertEqual({key for key in mtp if mtp[key] != mtp_long.get(key)}, {"ctx-size", "ctx-checkpoints"})
         self.assertEqual({key for key in mtp_long if mtp_long[key] != uncensored_long.get(key)}, {"model"})
-        # The two 128K presets differ only in drafting.
-        long = config["qwen3.8-27b-q4-long"]
-        self.assertEqual({key for key in mtp_long if mtp_long[key] != long.get(key)}, {"spec-type", "spec-draft-n-max"})
         # The Flash-Next presets reuse the 27B's patched template, which
         # their file embeds, and never draft with MTP.
         flash = config["qwen3.8-flash-next-q4"]
@@ -284,7 +292,23 @@ class PresetTests(unittest.TestCase):
         self.assertIn(f"{VALIDATED}\n", stdout)
         self.assertEqual(presets.rendered_model_ids(output), set())
 
-    def test_render_check_validates_the_shipped_configuration(self):
+    def test_write_atomic_replaces_the_file_whole_or_not_at_all(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents" / "pi" / "models.json"
+            files.write_atomic(path, "first\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), "first\n")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+            with (
+                mock.patch("os.replace", side_effect=PermissionError("read-only")),
+                self.assertRaises(PermissionError),
+            ):
+                files.write_atomic(path, "second\n")
+            # The previous file stands and the temporary file is gone.
+            self.assertEqual(path.read_text(encoding="utf-8"), "first\n")
+            self.assertEqual(os.listdir(path.parent), [path.name])
+
+    def test_presets_check_validates_the_shipped_configuration(self):
         output = self.workdir() / "build"
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             rendered = presets.validate(presets.load(CONFIG, 10920), default_preset="")
@@ -374,7 +398,7 @@ class PresetTests(unittest.TestCase):
             f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list shows the loadable ones",
         )
         # A build number gates until the pin reaches it.
-        gpt_oss = models.available_sets(self.gated_config("b10921") / "model-sets")["gpt-oss-20b-mxfp4"]
+        gpt_oss = models.catalog(self.gated_config("b10921"))["gpt-oss-20b-mxfp4"]
         self.assertEqual(presets.build_wait(gpt_oss, 10920), "waits for llama.cpp build b10921 (pinned: b10920)")
         self.assertEqual(presets.build_wait(gpt_oss, 10921), "")
         rendered, stdout, _ = self.render(self.gated_config("b10920"))
@@ -432,6 +456,16 @@ class PresetTests(unittest.TestCase):
             head + 'reasoning_effort = "brief"\nreasoning_efforts = ["brief"]\n', "agent thinking level names"
         )
         self.preset_error(head + 'reasoning_effort = "low"\nreasoning_efforts = ["low", "low"]\n', "must not repeat")
+        # The default is written for every request that names no effort, so
+        # it must be a declared level: neither a word alone nor one outside
+        # the list.
+        self.preset_error(
+            head + 'reasoning_effort = "brief"\n', "reasoning_effort must be one of reasoning_efforts (none declared)"
+        )
+        self.preset_error(
+            head + 'reasoning_effort = "xhigh"\nreasoning_efforts = ["low", "high"]\n',
+            "reasoning_effort must be one of reasoning_efforts (low, high)",
+        )
         self.preset_error(head.replace("ctx_size = 8192", "ctx_size = 1000"), "at least 1024")
         self.preset_error(head.replace("ctx_size = 8192\n", ""), "[server] ctx_size is required")
         self.preset_error(head + "parallel = 3\n", "divisible by parallel")
@@ -460,7 +494,7 @@ class PresetTests(unittest.TestCase):
         # after the typed keys (the router keeps the last value of a key).
         path = self.workdir() / "extra.toml"
         path.write_text(
-            PRESET_HEAD + 'reasoning_effort = "low"\nenable_thinking = false\n'
+            PRESET_HEAD + 'reasoning_effort = "low"\nreasoning_efforts = ["low"]\nenable_thinking = false\n'
             '[server.extra]\nverbose = true\nload-mode = "none"\n'
             'override-kv = "a=int:1"\nlog-prompts-dir = "/tmp/prompts"\n',
             encoding="utf-8",
@@ -511,15 +545,23 @@ class PresetTests(unittest.TestCase):
             self.render(config_dir, check=True)
         self.assertIn("source must be a relative path", str(caught.exception))
 
-    def test_rendered_model_ids_reads_the_rendered_preset_file(self):
+    def test_the_pi_model_list_is_read_back_for_ids_and_slots(self):
+        # Nothing rendered yet: both readers answer empty.
         output = self.workdir() / "build"
         self.assertEqual(presets.rendered_model_ids(output), set())
-        path = output / "models.ini"
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            "[*]\njinja = true\n\n[a]\nmodel = /models/a.gguf\n\n[b]\nmodel = /models/b.gguf\n", encoding="utf-8"
-        )
-        self.assertEqual(presets.rendered_model_ids(output), {"a", "b"})
+        self.assertEqual(presets.rendered_slots(output), {})
+        # After a render, the ids and the slots (ctx-size over parallel) agree
+        # with the router file, which llama-server alone reads: removing it
+        # changes neither answer.
+        _, _, output = self.render()
+        config = read_ini(output / "models.ini")
+        sections = {name: section for name, section in config.items() if name != "*"}
+        expected = {name: int(s["ctx-size"]) // int(s["parallel"]) for name, s in sections.items()}
+        self.assertEqual(set(expected), set(LOADABLE_PRESETS))
+        self.assertEqual(presets.rendered_model_ids(output), set(expected))
+        self.assertEqual(presets.rendered_slots(output), expected)
+        (output / "models.ini").unlink()
+        self.assertEqual(presets.rendered_slots(output), expected)
 
 
 if __name__ == "__main__":

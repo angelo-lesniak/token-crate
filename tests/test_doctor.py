@@ -16,19 +16,19 @@ from pathlib import Path
 from unittest import mock
 
 from tests.support import SOURCE_ROOT
-from tokencrate import doctor, env
-from tokencrate.doctor import Finding, GpuFacts, HostFacts
-from tokencrate.engine import EngineFacts
+from tokencrate import TokenCrateError, agentsets, doctor, env
+from tokencrate.doctor import Finding, GpuFacts, HostFacts, SetProblem, StorageFact
+from tokencrate.engine import Engine, EngineFacts, Selection
+from tokencrate.env import HostPath
 
 MIN_DRIVER_MAJOR = 580
 DEVICE = "nvidia.com/gpu=all"
 NOTE = "       CDI checks read configuration only; the first up and bash bin/tokencrate smoke prove device resolution."
-STORAGE = [
-    ("models", "/srv/models", True, True),
-    ("agents", "/srv/agents", True, True),
-    ("skills", "/srv/skills", True, True),
-    ("local-skills", "/srv/local-skills", True, True),
-]
+MODELS = HostPath("the models directory", Path("/srv/models"), writable=True)
+AGENTS = HostPath("the agents directory", Path("/srv/agents"), writable=True)
+SKILLS = HostPath("the skills directory", Path("/srv/skills"), writable=True)
+LOCAL_SKILLS = HostPath("the private skills directory", Path("/srv/local-skills"))
+STORAGE = [StorageFact(place, True, True) for place in (MODELS, AGENTS, SKILLS, LOCAL_SKILLS)]
 
 
 def podman_facts(**changes: object) -> EngineFacts:
@@ -122,7 +122,7 @@ class EvaluateTests(unittest.TestCase):
             "[ok] podman version 6.1.0-fake",
             "[ok] podman engine is reachable",
             "[ok] podman-compose version 1.6.0-fake",
-            "[ok] Podman 6 meets the tested minimum (6)",
+            "[ok] Podman 6 meets the validated minimum (6)",
             "[ok] Podman engine is rootless",
             "[ok] Podman uses crun",
             "[ok] the Podman compose provider keeps CDI device requests",
@@ -132,8 +132,8 @@ class EvaluateTests(unittest.TestCase):
             "[ok] system memory 63 GiB covers the preset requirement of 1 GiB",
             "[ok] the CDI configuration lists the requested NVIDIA device: nvidia.com/gpu=all",
             NOTE,
-            "[ok] models directory exists: /srv/models",
-            "[ok] local-skills directory exists: /srv/local-skills",
+            "[ok] the models directory exists: /srv/models",
+            "[ok] the private skills directory exists: /srv/local-skills",
         ):
             self.assertIn(expected, lines)
 
@@ -148,7 +148,7 @@ class EvaluateTests(unittest.TestCase):
             "[ok] system memory 63 GiB covers the preset requirement of 1 GiB",
             "[ok] the CDI configuration lists the requested NVIDIA device: nvidia.com/gpu=all",
             NOTE,
-            "[ok] models directory exists: /srv/models",
+            "[ok] the models directory exists: /srv/models",
         ]
         self.assertEqual([line for line in lines if line in order], order)
 
@@ -317,11 +317,14 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(any("GPU memory" in line for line in lines))
 
     def test_missing_gpu_stack_fails_when_the_gpu_is_wanted(self) -> None:
-        lines = evaluate(healthy_facts(gpu=None, nvidia_ctk_present=False, cdi_devices=[]))
+        # The line keeps what nvidia-smi said, the way the engine lines do.
+        cause = "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver."
+        facts = healthy_facts(gpu=None, gpu_error=cause, nvidia_ctk_present=False, cdi_devices=[])
+        lines = evaluate(facts)
         self.assertEqual(
             failures(lines),
             [
-                "[fail] nvidia-smi found no NVIDIA GPU (missing tool or driver); the supported GPU path is unavailable",
+                f"[fail] nvidia-smi found no NVIDIA GPU: {cause}; the supported GPU path is unavailable",
                 "[fail] nvidia-ctk was not found; install the NVIDIA Container Toolkit and generate CDI devices",
             ],
         )
@@ -374,7 +377,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(
             findings[index - 1].message, f"the CDI configuration lists the requested NVIDIA device: {DEVICE}"
         )
-        self.assertEqual(findings[index + 1].message, "models directory exists: /srv/models")
+        self.assertEqual(findings[index + 1].message, "the models directory exists: /srv/models")
         self.assertEqual(doctor.format_finding(findings[index]), NOTE)
 
     def test_system_memory_allows_five_percent_slack(self) -> None:
@@ -417,45 +420,47 @@ class EvaluateTests(unittest.TestCase):
         lines = evaluate(healthy_facts(engine=podman_facts(version_line="podman version 5.4.2")))
         self.assertEqual(failures(lines), [])
         self.assertIn(
-            "[warn] Podman podman version 5.4.2 is older than 6, which is the oldest version TokenCrate is tested on; "
-            "run bash bin/tokencrate smoke --agent pi --egress while a browser UI runs to check the network boundary",
+            "[warn] Podman podman version 5.4.2 is older than 6, which is the oldest version TokenCrate is validated "
+            "on; run bash bin/tokencrate smoke --agent pi --egress while a browser UI runs to check the network "
+            "boundary",
             lines,
         )
 
     def test_storage_directories_are_reported_per_label(self) -> None:
+        # A read-only mount (the private skills) needs to be readable only.
         storage = [
-            ("models", "/srv/models", False, False),
-            ("agents", "/srv/agents", True, False),
-            ("skills", "/srv/skills", True, True),
-            ("local-skills", "/srv/local-skills", True, False),
+            StorageFact(MODELS, False, False),
+            StorageFact(AGENTS, True, False),
+            StorageFact(SKILLS, True, True),
+            StorageFact(LOCAL_SKILLS, True, False),
         ]
         lines = evaluate(healthy_facts(storage=storage))
         self.assertEqual(
             warnings(lines),
-            ["[warn] models directory does not exist yet: /srv/models (bin/tokencrate init creates it)"],
+            ["[warn] the models directory does not exist yet: /srv/models (bin/tokencrate init creates it)"],
         )
         self.assertEqual(
             failures(lines),
             [
-                "[fail] agents directory is not writable: /srv/agents",
-                "[fail] local-skills directory is not readable: /srv/local-skills",
+                "[fail] the agents directory is not writable: /srv/agents",
+                "[fail] the private skills directory is not readable: /srv/local-skills",
             ],
         )
-        self.assertIn("[ok] skills directory exists: /srv/skills", lines)
+        self.assertIn("[ok] the skills directory exists: /srv/skills", lines)
 
     def test_a_list_setting_that_names_no_set_warns(self) -> None:
         # A stale .env (LLM_AGENT_SETS=preset) passes every host check;
         # the first agent start would refuse it, doctor says so first.
         problems = [
-            ("LLM_AGENT_SETS", "names no known set: preset (run: bash bin/tokencrate agent-sets list)"),
-            ("LLM_SKILL_SETS", "unsafe LLM_SKILL_SETS name: 'a b'"),
+            SetProblem("LLM_AGENT_SETS", "unknown agent set: preset (run: bash bin/tokencrate agent-sets list)"),
+            SetProblem("LLM_SKILL_SETS", "unsafe skill set name: 'a b'"),
         ]
         lines = evaluate(healthy_facts(set_problems=problems))
         self.assertEqual(
             warnings(lines),
             [
-                "[warn] LLM_AGENT_SETS names no known set: preset (run: bash bin/tokencrate agent-sets list)",
-                "[warn] LLM_SKILL_SETS unsafe LLM_SKILL_SETS name: 'a b'",
+                "[warn] LLM_AGENT_SETS unknown agent set: preset (run: bash bin/tokencrate agent-sets list)",
+                "[warn] LLM_SKILL_SETS unsafe skill set name: 'a b'",
             ],
         )
         self.assertEqual(failures(lines), [])
@@ -487,6 +492,25 @@ class RunTests(unittest.TestCase):
         gather.assert_called_once_with(settings)
         return status, stdout.getvalue()
 
+    def test_gathered_facts_are_taken_as_given(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copy(SOURCE_ROOT / ".env.example", tmp)
+            settings = env.load(Path(tmp), environ={"LLM_GPU": "false"})
+        with (
+            mock.patch("tokencrate.doctor.gather") as gather,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            status = doctor.run(
+                settings,
+                min_driver_major=MIN_DRIVER_MAJOR,
+                preset=None,
+                required_vram_gib=None,
+                required_ram_gib=None,
+                facts=healthy_facts(),
+            )
+        gather.assert_not_called()
+        self.assertEqual(status, 0)
+
     def test_healthy_report_exits_zero(self) -> None:
         status, output = self.run_doctor(healthy_facts(), {"LLM_GPU": "true"})
         self.assertEqual(status, 0)
@@ -516,6 +540,7 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copy(SOURCE_ROOT / ".env.example", tmp)
             Path(tmp, ".env").write_text("GPU_DEVICE=nvidia.com/gpu=1\n", encoding="utf-8")
+            Path(tmp, ".env").chmod(0o600)
             settings = env.load(Path(tmp), environ={})
         facts = healthy_facts(cdi_devices=["nvidia.com/gpu=1"])
         with (
@@ -537,6 +562,15 @@ import sys
 if "--query-gpu=driver_version,memory.total,memory.free,name" not in sys.argv:
     sys.exit(1)
 print("610.57.04, 32607, 31000, Fake RTX 5090 Ti")
+"""
+
+# What nvidia-smi prints on a host whose driver is not loaded.
+FAKE_NVIDIA_SMI_FAILING = """\
+import sys
+
+print("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.", file=sys.stderr)
+print("Make sure that the latest NVIDIA driver is installed and running.", file=sys.stderr)
+sys.exit(9)
 """
 
 # Answers like the real engine: --version, info, the combined rootless/runtime
@@ -595,6 +629,7 @@ class GatherTests(unittest.TestCase):
         self.fake("nvidia-smi", FAKE_NVIDIA_SMI)
         facts = doctor.gather(self.settings(LLM_GPU="true"))
         self.assertEqual(facts.gpu, GpuFacts("610.57.04", 32607, 31000, "Fake RTX 5090 Ti"))
+        self.assertEqual(facts.gpu_error, "")
         # MemTotal is read on every host; this one reports whatever it has.
         self.assertIsInstance(facts.ram_kb, int)
         self.assertIsNone(facts.engine)
@@ -606,8 +641,37 @@ class GatherTests(unittest.TestCase):
         self.assertEqual(facts.uname, "")
         self.assertIsInstance(facts.port_in_use, bool)
         self.assertEqual(facts.port, "4207")
-        self.assertEqual([item[0] for item in facts.storage], ["models", "agents", "skills", "local-skills"])
-        self.assertEqual(facts.storage[0], ("models", str(self.root / "data" / "models"), False, False))
+        # The mounted entries of the storage map, in its order.
+        self.assertEqual(
+            [fact.place.key for fact in facts.storage],
+            ["LLM_MODELS_DIR", "LLM_AGENTS_DIR", "LLM_SKILLS_DIR", "LLM_LOCAL_SKILLS_DIR"],
+        )
+        first = facts.storage[0]
+        self.assertEqual(
+            (first.place.path, first.exists, first.accessible), (self.root / "data" / "models", False, False)
+        )
+
+    def test_gather_keeps_the_first_line_nvidia_smi_gave_when_it_fails(self) -> None:
+        self.fake("nvidia-smi", FAKE_NVIDIA_SMI_FAILING)
+        facts = doctor.gather(self.settings(LLM_GPU="true"))
+        self.assertIsNone(facts.gpu)
+        self.assertEqual(
+            facts.gpu_error, "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver."
+        )
+        facts = doctor.gather(self.settings(LLM_GPU="true", PATH=str(self.tmp / "nowhere")))
+        self.assertEqual((facts.gpu, facts.gpu_error), (None, "nvidia-smi was not found"))
+
+    def test_gather_words_a_set_problem_as_the_start_refuses_it(self) -> None:
+        settings = self.settings(LLM_AGENT_SETS="preset", LLM_SKILL_SETS="a b")
+        with self.assertRaises(TokenCrateError) as refused:
+            agentsets.select(self.root, "preset")
+        self.assertEqual(
+            doctor.gather(settings).set_problems,
+            [
+                SetProblem("LLM_AGENT_SETS", str(refused.exception)),
+                SetProblem("LLM_SKILL_SETS", "unsafe skill set name: 'a b'"),
+            ],
+        )
 
     def test_gather_judges_the_port_with_the_bind_the_start_makes(self) -> None:
         # A loopback listener occupies the port the way a service would;
@@ -676,17 +740,31 @@ class GatherTests(unittest.TestCase):
         assert facts.engine is not None
         self.assertTrue(facts.engine.reachable)
 
+    def test_gather_follows_the_stack_record_the_way_detect_does(self) -> None:
+        self.fake("podman", FAKE_PODMAN)
+        Engine("docker", self.settings()).record_stack()
+        # Docker is absent on this PATH; the record still names it.
+        facts = doctor.gather(self.settings())
+        self.assertEqual(facts.engine, EngineFacts(name="docker"))
+        with self.assertRaisesRegex(TokenCrateError, "the stack runs on docker, not podman"):
+            doctor.gather(self.settings(CONTAINER_ENGINE="podman"))
+        self.assertEqual(facts.selection, Selection(chosen=EngineFacts(name="docker")))
+        self.assertEqual(
+            healthy_facts(engine=None, candidates=[podman_facts()], unsupported_engine="lxc").selection,
+            Selection(candidates=(podman_facts(),), unsupported="lxc"),
+        )
+
     def test_storage_facts_reflect_the_directories(self) -> None:
         (self.root / "data" / "models").mkdir(parents=True)
         (self.root / "local" / "skills").mkdir(parents=True)
         (self.root / "local" / "skills").chmod(0o000)
         self.addCleanup((self.root / "local" / "skills").chmod, 0o755)
         facts = doctor.gather(self.settings())
-        by_label = {label: (exists, accessible) for label, _, exists, accessible in facts.storage}
-        self.assertEqual(by_label["models"], (True, True))
-        self.assertEqual(by_label["agents"], (False, False))
+        by_key = {fact.place.key: (fact.exists, fact.accessible) for fact in facts.storage}
+        self.assertEqual(by_key["LLM_MODELS_DIR"], (True, True))
+        self.assertEqual(by_key["LLM_AGENTS_DIR"], (False, False))
         if os.getuid() != 0:
-            self.assertEqual(by_label["local-skills"], (True, False))
+            self.assertEqual(by_key["LLM_LOCAL_SKILLS_DIR"], (True, False))
 
 
 class HelperTests(unittest.TestCase):

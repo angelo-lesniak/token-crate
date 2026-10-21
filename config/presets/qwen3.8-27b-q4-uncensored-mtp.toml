@@ -9,8 +9,6 @@ model_set = "qwen3.8-27b-huihui-abliterated-ud-q4-k-xl"
 # original) and every variant looped in its reasoning in 30 to 45 percent
 # of runs; the "reply terminates" check of `smoke` shows a loop when one of
 # its two completions hits it, so run `smoke` more than once.
-# docs/validation.md records the smoke checks, memory use, and speed
-# on each tested llama.cpp build.
 [server]
 ctx_size = 65536
 n_predict = 16384

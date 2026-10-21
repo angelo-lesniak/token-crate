@@ -4,13 +4,16 @@ engine, routed through the fake engine in tests/fixtures/engine-bin."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
+import subprocess
+import sys
 import tomllib
 import unittest
 
-from tests.support import SOURCE_ROOT, Scratch, shipped
-from tokencrate import cli, env, presets
+from tests.support import SOURCE_ROOT, Scratch, free_port, shipped
+from tokencrate import TokenCrateError, cli, env, presets
 
 # The build-gate messages name the pinned build, which moves with every
 # llama.cpp upgrade; read it from the file the scratch checkout copies.
@@ -37,7 +40,11 @@ class CliTests(unittest.TestCase):
         self.expect_failure("--sets applies to smoke --agent", "smoke", "--sets", "missing", PATH="/usr/bin:/bin")
         self.assertIn("Usage:", self.succeed("--help"))
         self.assertIn("Usage:", self.succeed())
-        self.assertIn("LLAMA_CPP_TAG=", self.succeed("pins", PATH="/usr/bin:/bin"))
+        # `pins` prints pins.env without its comments and blank lines, nothing else.
+        pinned = [
+            line for line in (SOURCE_ROOT / "pins.env").read_text().splitlines() if line and not line.startswith("#")
+        ]
+        self.assertEqual(self.succeed("pins", PATH="/usr/bin:/bin").splitlines(), pinned)
         model_sets = self.succeed("models", "list", PATH="/usr/bin:/bin")
         self.assertIn("qwen3.8-27b-ud-q4-k-xl", model_sets)
         self.assertIn("gpt-oss-20b-mxfp4", model_sets)
@@ -53,6 +60,26 @@ class CliTests(unittest.TestCase):
         skill_sets = self.succeed("skills", "list", PATH="/usr/bin:/bin")
         self.assertIn("pocock-core", skill_sets)
         self.assertIn("skill-crate", skill_sets)
+
+    def test_a_closed_pipe_ends_a_listing_without_a_traceback(self) -> None:
+        # A listing fits the pipe buffer, so a reader that is gone (`| head`)
+        # is first seen by the final flush; left to interpreter shutdown it
+        # is an "Exception ignored" line and exit status 120.
+        for command in (["pins"], ["help"]):
+            with self.subTest(command=command):
+                read_end, write_end = os.pipe()
+                os.close(read_end)
+                result = subprocess.run(
+                    [sys.executable, "-m", "tokencrate", *command],
+                    cwd=self.scratch.root,
+                    env=self.scratch.environment(PATH="/usr/bin:/bin"),
+                    stdout=write_end,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                os.close(write_end)
+                self.assertEqual((result.returncode, result.stderr), (1, ""))
 
     def test_shim_runs_the_package_from_a_project_directory(self) -> None:
         result = self.scratch.run_shim("pins")
@@ -91,15 +118,15 @@ class CliTests(unittest.TestCase):
             listing, rf"gpt-oss-20b-fast \[gpt-oss-20b-mxfp4\] needs [0-9]+ GiB GPU memory; {re.escape(wait)} - "
         )
         self.assertRegex(listing, r"qwen3.8-27b-q4 \[qwen3.8-27b-ud-q4-k-xl\] needs [0-9]+ GiB GPU memory - ")
-        rendered = self.succeed("presets", "render", PATH="/usr/bin:/bin")
-        self.assertIn(f"gpt-oss-20b-fast: {wait}\n", rendered)
-        self.assertIn(VALIDATED, rendered)
+        validated = self.succeed("presets", "check", PATH="/usr/bin:/bin")
+        self.assertIn(f"gpt-oss-20b-fast: {wait}\n", validated)
+        self.assertIn(VALIDATED, validated)
         checked = self.succeed("doctor", "--preset", "gpt-oss-20b-fast", CONTAINER_ENGINE="podman", LLM_GPU="false")
         self.assertIn(f"[warn] preset gpt-oss-20b-fast {wait}; up leaves it out of the router", checked)
         self.assertIn("Doctor completed with 0 failure(s) and 2 warning(s).", checked)
         # up refuses the gated default before the stack starts, and before
         # the download a model-set argument asks for.
-        for arguments in (("up",), ("up", "--model-set", "gpt-oss-20b-mxfp4")):
+        for arguments in (("up",), ("up", "--model-sets", "gpt-oss-20b-mxfp4")):
             refused = self.scratch.run(*arguments, LLM_DEFAULT_PRESET="gpt-oss-20b-fast", LLM_GPU="false")
             self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
             self.assertIn(f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list", refused.stderr)
@@ -109,14 +136,62 @@ class CliTests(unittest.TestCase):
         named = f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list shows the loadable ones"
         running = {"FAKE_ENGINE_LLAMA_RUNNING": "true"}
         self.expect_failure(named, "smoke", "--preset", "gpt-oss-20b-fast", **running)
-        self.expect_failure(named, "bench", "--preset", "gpt-oss-20b-fast", **running)
+        self.expect_failure(named, "bench", "--presets", "gpt-oss-20b-fast", **running)
         self.expect_failure(named, "smoke", "--agent", "pi", "--preset", "gpt-oss-20b-fast", **running)
 
-    def test_render_validates_without_an_engine_and_writes_nothing(self) -> None:
-        output = self.succeed("presets", "render", PATH="/usr/bin:/bin")
+    def test_presets_check_validates_without_an_engine_and_writes_nothing(self) -> None:
+        output = self.succeed("presets", "check", PATH="/usr/bin:/bin")
         self.assertIn(VALIDATED, output)
         self.assertFalse((self.scratch.root / "build").exists())
-        self.expect_failure("unknown option for render: --check", "presets", "render", "--check")
+        self.expect_failure("unknown option for presets check: --check", "presets", "check", "--check")
+
+    def test_up_starts_the_dashboard_profile_after_the_model_is_ready(self) -> None:
+        # A loopback listener answers GET /models the way a router with
+        # nothing rendered would; with no default preset that is "healthy",
+        # and the dashboard services follow by name under their profile.
+        import http.server
+        import threading
+
+        self.expect_failure(
+            "LLM_DASHBOARD_PORT requires a port",
+            "up",
+            LLM_DASHBOARD="true",
+            LLM_DASHBOARD_PORT="99999",
+            LLM_GPU="false",
+        )
+        handler = type("Models", (http.server.BaseHTTPRequestHandler,), {})
+        handler.log_message = lambda *_args: None
+        handler.do_GET = lambda self: (
+            self.send_response(200),
+            self.send_header("Content-Length", "11"),
+            self.end_headers(),
+            self.wfile.write(b'{"data":[]}'),
+        )
+        server = http.server.HTTPServer(("127.0.0.1", int(self.scratch.port)), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        dashboard_port = str(free_port())
+        started = self.succeed(
+            "up",
+            "--timeout",
+            "5",
+            FAKE_ENGINE_LLAMA_RUNNING="true",
+            LLM_GPU="false",
+            LLM_DASHBOARD="true",
+            LLM_DASHBOARD_PORT=dashboard_port,
+        )
+        self.assertIn("TokenCrate is healthy", started)
+        self.assertIn(
+            "--profile dashboard --env-file pins.env up --no-build --detach llama-exporter victoriametrics grafana",
+            started,
+        )
+        self.assertNotIn("gpu-exporter", started)
+        self.assertIn(f"Dashboard at http://127.0.0.1:{dashboard_port}/", started)
+        self.assertTrue((self.scratch.root / "data" / "dashboard" / "victoria").is_dir())
+        # Off by default: no profile, no directory, no address.
+        plain = self.succeed("up", "--timeout", "5", FAKE_ENGINE_LLAMA_RUNNING="true", LLM_GPU="false")
+        self.assertNotIn("dashboard", plain)
 
     def test_up_runs_the_host_checks_first_and_stops_on_a_failure(self) -> None:
         # The scratch host has no GPU: with the GPU wanted, doctor fails and
@@ -156,7 +231,10 @@ class CliTests(unittest.TestCase):
         )
         refused = self.scratch.run("up", FAKE_ENGINE_LLAMA_RUNNING="true", FAKE_ENGINE_NETWORK=plain, LLM_GPU="false")
         self.assertIn("the agents network keeps a host gateway address (172.18.0.1)", refused.stderr)
-        # A network that is not internal, or not this project's, is refused on both engines.
+        # A network that is not internal, or not this project's, is refused
+        # on both engines; the start above recorded its engine in
+        # build/stack.json, which down removes, so the other engine is tried.
+        self.succeed("down", FAKE_ENGINE_LLAMA_RUNNING="true")
         for engine_name in ("docker", "podman"):
             for document, problem in (
                 (
@@ -295,7 +373,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("compose.agent-egress.yaml", session)
         self.assertIn("internet access (egress enabled)", session)
         self.assertIn(f"project={project}", session)
-        self.assertRegex(session, r"run --rm --name tokencrate-agent-[0-9a-f]{12} agent-omp omp --help")
+        self.assertRegex(session, r"run --rm -T --name tokencrate-agent-[0-9a-f]{12} agent-omp omp --help")
         # A pi session renders the selected agent sets first and tags the
         # image with the selection; --sets overrides LLM_AGENT_SETS.
         rendered = self.succeed(
@@ -310,7 +388,7 @@ class CliTests(unittest.TestCase):
             FAKE_ENGINE_LLAMA_RUNNING="true",
         )
         self.assertIn("Agent sets: debug (image tag suffix ", rendered)
-        [render_dir] = (self.scratch.root / "build" / "agents" / "pi").iterdir()
+        [render_dir] = (p for p in (self.scratch.root / "build" / "agents" / "pi").iterdir() if p.is_dir())
         self.assertIn("/opt/tokencrate/sets/debug/piex-dap", (render_dir / "pi-packages.txt").read_text())
         self.expect_failure(
             "--sets applies to pi only",
@@ -336,7 +414,7 @@ class CliTests(unittest.TestCase):
             project,
             FAKE_ENGINE_LLAMA_RUNNING="true",
         )
-        self.expect_failure("--sets is only valid with agent", "bench", "--sets", "debug")
+        self.expect_failure("--sets is only valid with smoke --agent, agent, or ui", "bench", "--sets", "debug")
         listing = self.succeed("agent-sets", "list")
         self.assertIn("coding - ", listing)
         self.assertIn("odin - ", listing)
@@ -367,10 +445,11 @@ class CliTests(unittest.TestCase):
     def test_ui_starts_the_ui_set_detached_behind_the_forwarder(self) -> None:
         project = str(self.scratch.project)
         self.scratch.render_fixture("qwen3.8-27b-q4")
+        # The manifests' host ports are taken on a developer host; the
+        # launches name the scratch port the fake engine and the listener use.
+        port = str(self.scratch.ui_port)
         common = {
             "FAKE_ENGINE_LLAMA_RUNNING": "true",
-            "LLM_UI_PORT_PI_WEB": str(self.scratch.ui_port),
-            "LLM_UI_PORT_PASEO": str(self.scratch.ui_port),
             "FAKE_ENGINE_UI_SET": "pi-web",
             "FAKE_ENGINE_UI_PORT": str(self.scratch.ui_port),
         }
@@ -380,6 +459,7 @@ class CliTests(unittest.TestCase):
         )
         self.expect_failure("unsafe agent set name", "ui", "../x", **common)
         self.expect_failure("no preset selected", "ui", "pi-web", "--dir", project, **common)
+        self.expect_failure("--port requires a port from 1 to 65535", "ui", "pi-web", "--port", "x", **common)
         # Nothing answers on the UI port and the container is reported as
         # exited: the start fails with the logs hint instead of waiting.
         self.expect_failure(
@@ -394,15 +474,19 @@ class CliTests(unittest.TestCase):
             **common,
         )
         with self.scratch.ui_listener():
-            started = self.succeed("ui", "pi-web", "--preset", "qwen3.8-27b-q4", "--dir", project, **common)
+            started = self.succeed(
+                "ui", "pi-web", "--preset", "qwen3.8-27b-q4", "--dir", project, "--port", port, **common
+            )
         # The UI set is appended to LLM_AGENT_SETS, the image is built for
         # that selection, and the UI and its forwarder start detached under
         # their fixed names in the ui profile; without a flag, never under
         # the egress overlay.
-        self.assertIn("Agent sets: coding, pi-web (image tag suffix ", started)
+        self.assertIn("Agent sets: coding, metrics, pi-web (image tag suffix ", started)
         self.assertIn("--profile ui --env-file pins.env build agent-ui", started)
-        self.assertIn(
-            "--profile ui --env-file pins.env run --detach --no-deps -T --name tokencrate-ui-pi-web agent-ui", started
+        self.assertRegex(
+            started,
+            r"--profile ui --env-file pins.env run --detach --no-deps -T "
+            r"-v \S+/pi/pi-web-state:/run/tokencrate/ui-state --name tokencrate-ui-pi-web agent-ui",
         )
         self.assertIn(
             "--profile ui --env-file pins.env run --detach --no-deps -T --service-ports --name "
@@ -413,7 +497,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("internet access", started)
         self.assertIn(f"pi-web is ready at http://127.0.0.1:{self.scratch.ui_port}/ for {project}", started)
         self.assertIn("bash bin/tokencrate ui stop", started)
-        [render_dir] = (self.scratch.root / "build" / "agents" / "pi").iterdir()
+        [render_dir] = (p for p in (self.scratch.root / "build" / "agents" / "pi").iterdir() if p.is_dir())
         self.assertIn("agent set pi-web", (render_dir / "Dockerfile").read_text())
         with self.scratch.ui_listener():
             paseo = self.succeed(
@@ -425,12 +509,16 @@ class CliTests(unittest.TestCase):
                 "paseo",
                 "--dir",
                 project,
+                "--port",
+                port,
                 **{**common, "FAKE_ENGINE_UI_SET": "paseo"},
             )
         self.assertIn("Agent sets: paseo (image tag suffix ", paseo)
         # --egress puts the UI container alone under the overlay.
         with self.scratch.ui_listener():
-            egress = self.succeed("ui", "pi-web", "--preset", "qwen3.8-27b-q4", "--dir", project, "--egress", **common)
+            egress = self.succeed(
+                "ui", "pi-web", "--preset", "qwen3.8-27b-q4", "--dir", project, "--port", port, "--egress", **common
+            )
         ui_run, forward_run = (line for line in egress.splitlines() if " run --detach " in line)
         self.assertIn("--file compose.agent-egress.yaml --profile ui", ui_run)
         self.assertNotIn("compose.agent-egress.yaml", forward_run)
@@ -439,6 +527,7 @@ class CliTests(unittest.TestCase):
         # and the forwarder run gets neither.
         keys = self.scratch.tmp / "cloud-keys.env"
         keys.write_text("OPENAI_API_KEY=sk-test\n")
+        keys.chmod(0o600)
         with self.scratch.ui_listener():
             cloud = self.succeed(
                 "ui",
@@ -447,6 +536,8 @@ class CliTests(unittest.TestCase):
                 "qwen3.8-27b-q4",
                 "--dir",
                 project,
+                "--port",
+                port,
                 "--cloud",
                 **{**common, "LLM_CLOUD_KEYS_FILE": str(keys)},
             )
@@ -475,9 +566,11 @@ class CliTests(unittest.TestCase):
         self.succeed("ui", "stop", **common)
         self.assertIn("logs --follow tokencrate-ui-pi-web", self.succeed("ui", "logs", **common))
         self.succeed("down", **common)
-        self.expect_failure("usage: bin/tokencrate ui stop", "ui", "stop", "../now", **common)
+        # The set name reaches no path and no command: the engine's labels
+        # are filtered by it, so any spelling is at most "not found".
+        self.expect_failure("no UI container found: ../now", "ui", "stop", "../now", **common)
         self.expect_failure("usage: bin/tokencrate ui <set>", "ui", **common)
-        self.expect_failure("--egress is only valid with agent, smoke --agent, or ui", "bench", "--egress")
+        self.expect_failure("--egress is only valid with smoke --agent, agent, or ui", "bench", "--egress")
 
     def test_agent_check_uses_the_selected_preset_and_never_egress(self) -> None:
         # The check starts the container the way `agent` does, so the same
@@ -498,10 +591,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("tokencrate-agent-check", check)
         # The gateway of the agents network, as the engine reports it, goes
         # into the check; the fake reports none (Docker's isolated mode).
-        self.assertIn(
-            "-e TOKENCRATE_ENGINE=docker -e TOKENCRATE_AGENTS_GATEWAY= -e TOKENCRATE_UI_TARGETS= "
-            "-e TOKENCRATE_EGRESS= agent-pi",
+        self.assertRegex(
             check,
+            r"-e TOKENCRATE_ENGINE=docker -e TOKENCRATE_AGENTS_GATEWAY= -e TOKENCRATE_UI_TARGETS= "
+            r"-e TOKENCRATE_EGRESS= --name tokencrate-agent-check-[0-9a-f]{12} agent-pi ",
         )
         self.assertIn("preset=qwen3.8-27b-q4-mtp", check)
         self.assertNotIn("compose.agent-egress.yaml", check)
@@ -573,15 +666,29 @@ class CliTests(unittest.TestCase):
         self.expect_failure("--timeout is only valid with up", "smoke", "--timeout", "1")
         self.expect_failure("unknown command: wait", "wait")
         self.expect_failure("unknown option for up: --refresh", "up", "--refresh")
-        self.expect_failure("all is available through models fetch", "up", "--model-set", "all")
-        self.expect_failure("unknown model set: missing-set (available: ", "up", "--model-set", "missing-set")
-        self.expect_failure("unknown option: --refresh", "models", "status", "--refresh", "qwen3.8-27b-ud-q4-k-xl")
-        self.expect_failure("--preset is only valid with", "presets", "render", "--preset", "missing")
+        self.expect_failure("all is available through models fetch", "up", "--model-sets", "all")
+        self.expect_failure(
+            "unknown model set: missing-set (available: ", "up", "--model-sets", "qwen3.8-27b-ud-q4-k-xl,missing-set"
+        )
+        self.expect_failure("unsafe model set name: '../x'", "up", "--model-sets", "../x")
+        self.expect_failure("--model-sets requires a comma-separated list of model set names", "up", "--model-sets", "")
+        self.expect_failure("unsafe preset name: '--long'", "bench", "--presets", "--long")
+        # A value that is the next flag, or empty, is not a value.
+        self.expect_failure("--preset requires a preset id", "smoke", "--preset", "--basic")
+        self.expect_failure("--dir requires a directory", "agent", "pi", "--dir", "")
+        self.expect_failure("--port requires a port from 1 to 65535", "stats", "--serve", "--port", "04210")
+        self.expect_failure(
+            "unknown option for models status: --refresh", "models", "status", "--refresh", "qwen3.8-27b-ud-q4-k-xl"
+        )
+        self.expect_failure(
+            "--verify applies to models status", "models", "fetch", "--verify", "qwen3.8-27b-ud-q4-k-xl"
+        )
+        self.expect_failure("--preset is only valid with", "presets", "check", "--preset", "missing")
         self.expect_failure("--basic is only valid with smoke", "bench", "--basic")
         self.expect_failure("usage: bin/tokencrate pins check", "pins", "check", "node", "extra")
         self.expect_failure("unknown pin component 'rust'", "pins", "check", "rust")
         self.expect_failure("no preset selected", "smoke", FAKE_ENGINE_LLAMA_RUNNING="true")
-        self.expect_failure("model draft needs", "models", "draft", "not-a-spec")
+        self.expect_failure("draft needs hf:<owner>/<repository>:<file.gguf>", "models", "draft", "not-a-spec")
         self.expect_failure("unknown command", "frobnicate")
         # doctor keeps the host checks and warns about a preset it cannot find.
         self.assertIn(
@@ -595,6 +702,95 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("Qwen3.8-27B-UD-Q4_K_XL.gguf: missing", result.stdout)
+
+
+class CommandTableTests(unittest.TestCase):
+    """The table is the interface: usage lines, flag sets, and refusals agree."""
+
+    # One accepted value per flag that carries one.
+    VALUES = {
+        "--preset": "x",
+        "--presets": "x",
+        "--model-sets": "x",
+        "--timeout": "5",
+        "--iterations": "2",
+        "--sets": "",
+        "--port": "4210",
+        "--dir": ".",
+        "--since": "7d",
+        "--agent": "pi",
+    }
+    FLAGS = sorted({flag for command in cli.COMMANDS for flag in command.flags} - {"--"})
+
+    def arguments(self, command: cli.Command, flag: str) -> list[str]:
+        """The flag with a value when it takes one, after the positional
+        arguments the entry needs."""
+        return ["x"] * command.arguments[0] + ([flag, self.VALUES[flag]] if flag in self.VALUES else [flag])
+
+    def test_every_usage_line_names_exactly_the_flags_its_entry_accepts(self) -> None:
+        for command in cli.COMMANDS:
+            with self.subTest(command=command.name):
+                self.assertIn(f"  {command.usage}\n      {command.summary}\n", cli.USAGE)
+                self.assertEqual(set(re.findall(r"--[a-z][a-z-]*", command.usage)), set(command.flags) - {"--"})
+                self.assertEqual("[-- args]" in command.usage, "--" in command.flags)
+
+    def test_argv_resolves_to_the_subcommand_or_mode_it_names(self) -> None:
+        for argv, expected in (
+            (["smoke", "--preset", "x", "--agent", "pi"], "smoke --agent"),
+            (["smoke"], "smoke"),
+            (["stats", "--since", "7d", "--serve"], "stats --serve"),
+            (["ui", "stop"], "ui stop"),
+            (["ui", "pi-web"], "ui"),
+            (["pins"], "pins"),
+            (["pins", "check", "node"], "pins check"),
+        ):
+            self.assertEqual(cli.resolve(argv)[0].name, expected, argv)
+        with self.assertRaises(TokenCrateError) as refused:
+            cli.resolve(["models", "bogus"])
+        self.assertEqual(str(refused.exception), "usage: bin/tokencrate models list | fetch | status | draft")
+
+    def test_every_flag_is_refused_by_every_entry_that_does_not_take_it(self) -> None:
+        for command in cli.COMMANDS:
+            for flag in self.FLAGS:
+                with self.subTest(command=command.name, flag=flag):
+                    if flag in command.flags:
+                        options, _ = cli.parse(command, self.arguments(command, flag))
+                        self.assertIn(flag, options)
+                        continue
+                    with self.assertRaises(TokenCrateError) as refused:
+                        cli.parse(command, self.arguments(command, flag))
+                    self.assertRegex(
+                        str(refused.exception),
+                        rf"^{re.escape(flag)} (is only valid with|applies to|is not valid with) ",
+                    )
+
+    def test_the_refusals_the_documentation_quotes_are_generated_unchanged(self) -> None:
+        by_name = cli.BY_NAME
+        for name, flag, expected in (
+            ("bench", "--egress", "--egress is only valid with smoke --agent, agent, or ui"),
+            ("bench", "--cloud", "--cloud is only valid with agent or ui"),
+            ("stats", "--preset", "--preset is only valid with doctor, smoke, agent, or ui"),
+            ("stats", "--presets", "--presets is only valid with bench"),
+            ("bench", "--serve", "--serve is only valid with stats"),
+            ("bench", "--since", "--since is only valid with stats"),
+            ("up", "--verify", "--verify is only valid with models status"),
+            ("stats", "--port", "--port applies to stats --serve"),
+            ("smoke", "--sets", "--sets applies to smoke --agent"),
+            ("smoke", "--egress", "--egress applies to smoke --agent"),
+            ("smoke --agent", "--basic", "--basic is not valid with --agent"),
+            ("models fetch", "--verify", "--verify applies to models status"),
+            ("up", "--bogus", "unknown option for up: --bogus"),
+        ):
+            self.assertEqual(cli.refusal(by_name[name], flag), expected)
+        with self.assertRaises(TokenCrateError) as refused:
+            cli.parse(by_name["agent"], ["pi", "--preset", "a", "--preset", "b"])
+        self.assertEqual(str(refused.exception), "--preset may be given once with agent")
+        with self.assertRaises(TokenCrateError) as refused:
+            cli.parse(by_name["stats"], ["extra"])
+        self.assertEqual(str(refused.exception), "unexpected argument for stats: extra")
+        with self.assertRaises(TokenCrateError) as refused:
+            cli.parse(by_name["ui stop"], ["a", "b"])
+        self.assertEqual(str(refused.exception), "usage: bin/tokencrate ui stop [<set>]")
 
 
 class SignalTests(unittest.TestCase):

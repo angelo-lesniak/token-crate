@@ -3,22 +3,19 @@
 An agent set adds toolchains, language servers, debug adapters, or
 extensions to the pi image through a reviewed manifest. Choose sets in
 `.env`; the wrapper includes them in the image at the next pi start.
-Nothing is installed at runtime.
-
-The first start of a selection builds its image and downloads its
-toolchains (a few hundred megabytes for `dotnet` or `odin`). Images for
-different selections coexist.
+Nothing is installed at runtime. The first start of a selection builds
+its image and downloads its toolchains; images for different selections
+coexist.
 
 ```bash
 bash bin/tokencrate agent-sets list        # the shipped and private sets
 bash bin/tokencrate agent pi --dir ~/src/my-project          # the sets in LLM_AGENT_SETS
-bash bin/tokencrate agent pi --sets coding,debug,odin --dir ~/src/my-project
 ```
 
-`LLM_AGENT_SETS` in `.env` selects the default sets (`coding`). Use
-`--sets` to override the selection for one session, or `--sets ''` for
-plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
-[`ui`](cli.md#ui) for command options.
+`LLM_AGENT_SETS` in `.env` selects the default sets (`coding,metrics`) for
+`agent pi` and `ui`. `--sets` overrides the selection for one launch, and
+`--sets ''` selects plain pi. [`agent`](cli.md#agent), [`smoke`](cli.md#smoke),
+and [`ui`](cli.md#ui) list the command options.
 
 ## Shipped sets
 
@@ -26,60 +23,38 @@ plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
 | --- | --- | --- |
 | `coding` | The pi coding extensions: pi-lens code intelligence (`lens_diagnostics` after edits; `lsp_navigation` and `ast_grep_*` on demand), anchored edits, `/plan`, `/advisor`, and the subagent tool with the `scout`, `planner`, `reviewer`, and `worker` definitions, each running on the session's own model | Any |
 | `debug` | One `debug` tool over whatever debug adapters the other sets ship | `dotnet`, `web`, or `odin` |
-| `dotnet` | The .NET SDK, csharp-ls, netcoredbg, a read-only NuGet cache warmed with the `console`, `classlib`, `xunit`, and `web` templates; uncached packages need `--egress`, an explicit source, and a writable project cache (`NUGET_PACKAGES`) | `debug` |
+| `dotnet` | The .NET SDK, csharp-ls, netcoredbg, and a read-only NuGet cache warmed with the `console`, `classlib`, `xunit`, and `web` templates; other packages need `--egress`, an explicit source, and a writable `NUGET_PACKAGES` | `debug` |
 | `web` | TypeScript, typescript-language-server, the Vue language tools and `vue-tsc`, js-debug behind a stdio bridge; `npm install` needs `--egress` | `debug` |
 | `browser` | The Chrome DevTools tools against Debian's Chromium, headless, without its own sandbox (the container is the sandbox) | `coding` |
+| `metrics` | A pi extension that records each request's time to first token and duration on the transcript's assistant message, which the [`stats`](cli.md#stats) Timings table reads; it adds no tool and no note | Any |
 | `odin` | The Odin compiler, OLS and `odinfmt` on the same monthly tag, clang as the linker, `lldb-dap`, SDL2, Vulkan, `glslc`; no display, so SDL uses its dummy drivers | `debug` |
 | `pi-web` | PI WEB, a browser UI for pi, started with `ui pi-web` | Any |
-| `paseo` | Paseo, a daemon with a browser UI that runs several pi sessions, started with `ui paseo`; about 0.5 GB | Any |
+| `paseo` | Paseo, a daemon with a browser UI that runs several pi sessions, started with `ui paseo`; about 0.5 GB more image | Any |
 
 The manifests hold the pinned versions, and `agent-sets list` prints each
-set's description.
-
-Every set appends its note to the tools note pi loads as global context,
-so the model knows what is installed and what needs `--egress`.
-
-The `debug` and `browser` sets are separate from `coding` because every
-tool schema is sent with every request; select them where an adapter or a
-browser exists
-([request-size record](validation.md#request-size-of-the-coding-set)).
+set's description. The `dotnet` set pins its SDK tarball by SHA-512;
+csharp-ls and the warmed NuGet packages come from nuget.org by version
+only, without a hash. The `debug` and `browser` sets are separate from
+`coding` because every tool schema is sent with every request; select
+them where an adapter or a browser exists.
 
 ## Common selections
 
-Each example starts where [Start here](../README.md#start-here) ends,
-with the stack up and the skill sets fetched. `--sets` applies to one
-launch; put a selection in `LLM_AGENT_SETS` to make it the default for
-`agent pi` and `ui`. [Validation](validation.md#status) states which
-selections are validated.
+Start with the stack up and skills fetched as in
+[Start here](../README.md#start-here).
 
-**A .NET backend with a Vue frontend in PI WEB.** The first launch builds
-the image, which downloads the .NET SDK and the npm packages:
+A .NET backend and Vue frontend in PI WEB:
 
 ```bash
 bash bin/tokencrate ui pi-web --sets coding,debug,dotnet,web,browser --dir ~/src/my-project
 ```
 
-Open <http://127.0.0.1:4224/>. The container has no route out, so
-`npm install` fails and NuGet restores only the packages of the warmed
-templates. Relaunch with `--egress` for new packages; NuGet also needs an
-explicit source and `NUGET_PACKAGES` set to a writable directory in the
-project. `ui stop pi-web` stops the UI and keeps its sessions.
-
-**Odin with Claude beside the local model.** With `--cloud`, the whole
-conversation, including file contents and tool output, goes to Anthropic
-once you pick a Claude model, and every process in the session can read
-the key. Use it only in a project you trust ([Cloud
-providers](agents.md#cloud-providers)). Copy the keys template, set
-`ANTHROPIC_API_KEY` in `local/cloud-keys.env`, and start pi:
+Odin in terminal pi:
 
 ```bash
-cp cloud-keys.env.example local/cloud-keys.env && chmod 600 local/cloud-keys.env
 bash bin/tokencrate agent pi --sets coding,debug,odin --cloud --dir ~/src/my-project
 ```
 
-pi starts on the local preset; `/model` switches to a Claude model and
-back. The container has no display; SDL uses its dummy drivers, and code
-that opens a window cannot run there.
 
 ## Writing a set
 
@@ -91,7 +66,7 @@ cannot write to the host's `local/` directory.
 The directory name is the set name. The wrapper rejects duplicate names
 across the two locations, unknown manifest keys, and paths that leave the
 set directory or carry characters other than letters, digits, and
-`._+@-` (the rule every manifest kind shares).
+`._+@-`.
 
 A manifest runs as root during the image build, with the build's network
 access. Its `env` and `into` keys can affect any image path; the manifest
@@ -105,10 +80,13 @@ apt = ["shellcheck", "pyflakes3"]
 note = "shellcheck and pyflakes3 are installed."
 ```
 
-This is a complete set. Add its name to `LLM_AGENT_SETS` for the next
-`agent pi` start, or run
-`bash bin/tokencrate smoke --agent pi --sets <name>` to build it and check
-containment.
+Build and check the set, replacing `<name>` with its directory name:
+
+```bash
+bash bin/tokencrate smoke --agent pi --sets <name>
+```
+
+[`smoke`](cli.md#smoke) explains the checks and their prerequisites.
 [CONTRIBUTING.md](../CONTRIBUTING.md#adding-an-agent-set) says what a
 shipped set needs beyond that. Manifest keys:
 
@@ -121,13 +99,13 @@ shipped set needs beyond that. Manifest keys:
 | `build` (list) | Lines of one Bash script, run with `errexit` and `pipefail` in the set directory as one layer after its files are copied into the image. Shell variables carry across lines; a line can end with a comment but cannot be one. Files of the set directory are installed from here (`install -m 0755 wrapper /usr/local/bin/wrapper`), and so is a Git checkout at a commit (see the `debug` set) |
 | `check` (list) | Lines of one Bash script, in the shape of `build`, that `smoke --agent` runs inside the container as the container user, with no route out (an `--egress` check skips them), in a scratch directory (`$CHECK_DIR`, also the working directory); the last line it prints is the report line. The gate requires the key of every shipped set, an empty list when nothing of it can be probed |
 | `pi_packages` (list) | Directories below the set directory that pi loads as packages (an extension with its `package.json`) |
-| `pi_lens` (table) | Merged into pi-lens's configuration, for example a language server under `lsp.servers` |
-| `note` (string) | Lines for the tools note |
+| `pi_lens` (table) | Merged into pi-lens's configuration and written as JSON, so TOML dates and times are refused; for example a language server under `lsp.servers` |
+| `note` (string) | Lines for the tools note pi loads as global context |
 | `ui` (table) | Makes the set a browser UI for `ui <set>`; see [UI sets](#ui-sets) |
 
 `env`, `apt`, and `asset` depend only on the manifest and run before the
-set directory is copied. Editing a note or lockfile therefore does not
-repeat those downloads. The whole directory is copied to
+set directory is copied, so editing a note or lockfile does not repeat
+those downloads. The whole directory is copied to
 `/opt/tokencrate/sets/<name>` in the image. Keep only required files there,
 and never credentials such as a private `.npmrc`.
 
@@ -137,23 +115,22 @@ A `[ui]` table makes the set a browser UI that `ui <set>` adds to the
 selection and runs instead of `pi` ([Browser UIs](agents.md#browser-uis)).
 
 A UI set's name ends the names of its containers, `tokencrate-ui-<set>`
-and `tokencrate-ui-forward-<set>`, so it holds lowercase letters,
-digits, and hyphens, at most 41 characters, starts with a letter or a
-digit, and does not start with `forward-`; `stop` and `logs` are
-reserved for UI commands.
+and `tokencrate-ui-forward-<set>`. It holds lowercase letters, digits,
+and hyphens, at most 41 characters, starts with a letter or a digit, and
+does not start with `forward-`; `stop` and `logs` are reserved for UI
+commands.
 
 | Key | Meaning |
 | --- | --- |
-| `command` | A program name on the image's `PATH` that the entrypoint runs instead of `pi`; install it with a `build` line. It must bind all interfaces of the container and keep running in the foreground |
+| `command` | A program name on the image's `PATH` that the entrypoint runs instead of `pi`; install it with a `build` line. It must listen on the container's `ui`-network address or on all interfaces (the shipped launchers read that address from `/proc/net/route` and bind it alone) and keep running in the foreground |
 | `port` | The container port it listens on (`1024` to `65535`), which the wrapper forwards the loopback port to |
-| `state` | One directory below the agent home (such as `.paseo`) that holds the UI's configuration, sessions, and identity. It is the UI's only home path bound from the host, so it persists per project ([storage layout](configuration.md#storage-layout)); it cannot be one of the agent's own directories (`.pi`, `.config`, and the like) |
-| `host_port` (optional) | The loopback port (`1024` to `65535`) the forwarder publishes unless `LLM_UI_PORT_<SET>` or `--port` names another ([`ui`](cli.md#ui)) |
-| `identity` (optional list) | Files directly below the `state` directory, written as `<state>/<file>` (`".paseo/server-id"`), that the wrapper keeps once per UI set under `LLM_AGENTS_DIR/pi/<set>-identity/` and copies into a project's home that lacks them before the start, such as a daemon's keypair |
+| `state` | One directory below the agent home (such as `.paseo`) that holds the UI's configuration and sessions. It is the UI's only home path bound from the host, so it persists per project ([storage layout](configuration.md#storage-layout)); it cannot be one of the agent's own directories (`.pi`, `.config`, and the like) |
+| `host_port` (optional) | The loopback port (`1024` to `65535`) the forwarder publishes unless `--port` names another ([`ui`](cli.md#ui)) |
 
-A UI's persistent files, including its identity paths, must live under
-its `state` directory; nothing else in the home outlives the container.
-A set without `host_port` needs `LLM_UI_PORT_<SET>` or `--port`; the
-manifest `port` remains internal. See [`ui`](cli.md#ui) for all options.
+What a UI keeps once for all projects goes in the per-set state
+directory mounted at `/run/tokencrate/ui-state` ([Storage
+layout](configuration.md#storage-layout)). A set without `host_port`
+needs `--port`; the manifest `port` remains internal.
 
 ## Upgrading a set
 
@@ -169,6 +146,5 @@ Update the source pin and its verification data together:
   `extensions/dap` between the two commits before changing the pin.
 
 Run `bash bin/tokencrate smoke --agent pi --sets <selection>` to build
-the image and check containment; each set's `check` lines run without
-internet access and report one line per set. Record the result as
-[Validation](validation.md#recording-a-result) describes.
+the image and run each set's `check` lines, and record the result as
+[Validation](validation.md#recording-a-run) describes.

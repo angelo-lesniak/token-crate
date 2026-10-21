@@ -1,10 +1,12 @@
-"""The real-container harness's cleanup ownership, without starting containers."""
+"""The real-container harness's cleanup and acceptance, without starting containers."""
 
 from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
+import runpy
 import tempfile
 import types
 import unittest
@@ -15,6 +17,53 @@ from tests import integration
 
 
 class IntegrationCleanupTests(unittest.TestCase):
+    def test_each_selection_requires_a_completed_assistant_answer(self) -> None:
+        cases = (
+            (None, "", "", False),
+            ("user", "", "hi", False),
+            ("assistant", "error", "partial", False),
+            ("assistant", "stop", "   ", False),
+            ("assistant", "stop", "An answer.", True),
+            ("assistant", "length", "An answer.", True),
+        )
+        self.assertIn("coding,metrics", integration.SELECTIONS)
+        for role, reason, text, passes in cases:
+            with self.subTest(role=role, reason=reason, text=text):
+                output = "wrapper banner\n"
+                if role:
+                    output += json.dumps(
+                        {
+                            "type": "message_end",
+                            "message": {
+                                "role": role,
+                                "stopReason": reason,
+                                "content": [{"type": "text", "text": text}],
+                            },
+                        }
+                    )
+                check = integration.IntegrationTests("test_pi_runs_each_selection")
+                check.project = integration.ROOT
+                with (
+                    mock.patch.object(
+                        check, "prompt", return_value=types.SimpleNamespace(returncode=0, stdout=output)
+                    ) as prompt,
+                    mock.patch.object(check, "assert_project_untouched"),
+                ):
+                    if passes:
+                        check.test_pi_runs_each_selection()
+                        self.assertEqual(prompt.call_count, len(integration.SELECTIONS))
+                        self.assertTrue(all("json" in call.args for call in prompt.call_args_list))
+                    else:
+                        with self.assertRaisesRegex(AssertionError, "no completed assistant answer"):
+                            check.test_pi_runs_each_selection()
+
+    def test_the_entry_point_lets_a_ctrl_c_reach_the_class_cleanups(self) -> None:
+        # Without catchbreak a KeyboardInterrupt unwinds past doClassCleanups:
+        # the stack stays up and the fixture copies stay in tracked config/.
+        with mock.patch.object(unittest, "main") as main:
+            runpy.run_path(integration.__file__, run_name="__main__")
+        main.assert_called_once_with(verbosity=2, catchbreak=True)
+
     def test_only_an_attempted_up_registers_stack_cleanup(self) -> None:
         for failure in (("skills", "fetch"), ("skills", "status"), ("up",)):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as raw:

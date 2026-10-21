@@ -1,31 +1,28 @@
 # Troubleshooting
 
-Start with these two commands:
+Each section is one observed failure: the message, its cause, and the
+remedy. Most refusals name their remedy;
+when one does not, start with these two commands:
 
 ```bash
 bash bin/tokencrate doctor
 bash bin/tokencrate logs
 ```
 
-## `bin/tokencrate` reports that python3 was not found or is too old
-
-The wrapper needs Python 3.11 or newer as `python3` (or `python`) on
-`PATH`. Install it with your distribution's package manager; the
-[README](../README.md#start-here) lists the other host tools.
-
 ## `doctor` reports the Docker Compose plugin under Podman
 
 `podman compose` delegates to the Docker Compose plugin, which drops the
-CDI GPU device request, so llama-server would start without the GPU.
-Install podman-compose (Arch: `pacman -S podman-compose`; elsewhere
-`pipx install podman-compose`) so that `podman compose version` reports
-`podman-compose`, then run `doctor` again. For CPU-only checks, set
-`LLM_GPU=false` instead.
+CDI GPU device request, so llama-server would start without the GPU;
+`up` refuses with `the Podman compose provider is the Docker Compose
+plugin, which drops CDI GPU devices; install podman-compose or set
+LLM_GPU=false for CPU-only checks`. Install podman-compose so that
+`podman compose version` reports `podman-compose`, then run `doctor`
+again.
 
 ## CUDA fails to initialize although `nvidia-smi` works
 
 The log shows `no CUDA-capable device is detected` or a driver version
-mismatch, or llama-server loads every layer on the CPU. The likely cause
+mismatch, or the model server loads every layer on the CPU. The likely cause
 is a CDI specification left stale by a driver upgrade; under Podman,
 `doctor` warns when the specification names another driver version.
 Regenerate it:
@@ -38,113 +35,92 @@ bash bin/tokencrate up
 
 ## `up` refuses to start because the default preset is not loadable
 
-The model set behind `LLM_DEFAULT_PRESET` has missing files; `up` lists
-each preset as `loadable` or `skipped` before it refuses. Plain `up` only
-checks that the files exist; `models status` also verifies checksums.
-Fetch the set, or set `LLM_DEFAULT_PRESET` to a loadable preset:
+The message is `the default preset <id> is not loadable; download its
+model set (bash bin/tokencrate models fetch <set>) or set
+LLM_DEFAULT_PRESET to a preset listed as loadable above`: the model set
+behind `LLM_DEFAULT_PRESET` has missing files, and the list `up` printed
+before the refusal shows which presets are loadable. Run the `models
+fetch` command the message names, or choose a listed preset.
 
-```bash
-bash bin/tokencrate models status all
-bash bin/tokencrate models fetch qwen3.8-27b-ud-q4-k-xl
-```
+## A command refuses because of the stack record
 
-## The running llama configuration differs from the rendered files
+`up` records the engine it started the stack on in `build/stack.json`,
+and a later command with another `CONTAINER_ENGINE` is refused: `the
+stack runs on docker, not podman (build/stack.json); run:
+CONTAINER_ENGINE=docker bash bin/tokencrate down`. Run that `down`, then
+`up` on the engine you want. An unreadable record is refused as `cannot
+read the stack record <path>: <error>; remove it if no stack is
+running`: check with `podman ps` or `docker ps` that no TokenCrate
+container runs, then delete the file.
 
-A failed `up` can leave generated model lists that differ from the
-running router, and agent and UI starts refuse the mismatch. Fix the
-earlier startup error, run `bash bin/tokencrate up`, and retry.
+## `up` or a session refuses an internal network
+
+`up`, `agent`, `smoke --agent`, and `ui` refuse when the `agents`, `ui`,
+or `dashboard` network is not in the shape the Compose files declare:
+
+- on Docker, `the agents network keeps a host gateway address (<address>);
+  it was created without gateway mode isolated. Run: bash bin/tokencrate
+  down, then up`, when a direct Compose call without
+  `compose.docker.yaml` created it;
+- on either engine, `the agents network is not internal. Run: bash
+  bin/tokencrate down, then up`, or `the agents network was not created
+  by this Compose project; remove it (podman network rm <project>_agents)
+  and run: bash bin/tokencrate up` for a network made by hand under the
+  project's name.
+
+[Internal networks](privacy.md#internal-networks) states the rule.
 
 ## The agent starts but every request fails
 
-The model is still loading, llama-server exited after the agent started,
-or the request does not fit the preset's slot, and llama-server answers
-`400 ... exceeds the available context size`. oh-my-pi's
-[first request](agents.md) fills much of a 32K slot; instead of
-`qwen3.8-27b-q4`, start it with `--preset qwen3.8-27b-q4-long`.
-
-```bash
-bash bin/tokencrate status
-bash bin/tokencrate logs
-bash bin/tokencrate smoke --agent pi
-```
-
-If the agent check reports `model endpoint is not reachable`, run `down`
-and `up`.
-
-## `agent` refuses the project directory
-
-The error names the violated rule; [`agent`](cli.md#agent) lists the
-path rules, which apply after symbolic links are resolved. If the path
-has a character a Compose mount cannot express, rename or move the
-project.
-
-## `agent` refuses to start because of a skill set
-
-The message names the command that resolves it, for example
-`skill set pocock-core is incomplete (missing: tdd); run: bash bin/tokencrate skills fetch pocock-core`.
-Run that command, or remove the set from `LLM_SKILL_SETS`.
-
-## The port is already in use
-
-`doctor` reports `host port ... is already in use` when another program
-holds `LLM_PORT`, and `up` refuses to start. Set another port in `.env`:
-
-```dotenv
-LLM_PORT=4307
-```
-
-## Paseo stays on "connecting" or shows the previous project
-
-If the UI was restarted for another project, reload the page. If Paseo
-stays on "connecting", clear the site's browser data (by default for
-`http://127.0.0.1:4250/`) or remove the host in Paseo's host picker, then
-reload. Paseo remembers the daemon identity of each address; deleting
-`LLM_AGENTS_DIR/pi/paseo-identity/` or changing `LLM_AGENTS_DIR` gives
-the daemon a new identity that the browser does not expect.
-
-## oh-my-pi forgets a setting after the container stops
-
-oh-my-pi saves settings to `~/.omp/agent/config.yml` on the tmpfs home,
-so the next container starts from `config/agents/omp/config.yml` again.
-Pass `--preset <id>` (or set `LLM_DEFAULT_PRESET`) to start on another
-model, and change the repository file for a lasting setting. Some keys
-cannot be changed in a session at all, because the repository file is
-also an overlay above the home copy;
-[Agent configuration](agents.md#agent-configuration) lists them.
+The model is still loading, the model server exited after the agent
+started, or the request does not fit the preset's slot, and the model
+server answers `400 ... exceeds the available context size`. Check `bash bin/tokencrate
+status` and `bash bin/tokencrate logs`; for a larger slot, pick a preset
+with a `-long` suffix from
+[Included presets](models.md#included-presets).
 
 ## The browser UI answers `403` with `refused a request for host`
 
-The forwarder in front of a browser UI (`ui <set>`) refused the request's
-`Host`, `Origin`, or `Sec-Fetch-Site` header; the response names the value.
-Open the address that `ui <set>` prints directly, not through a page of
-another site. A reverse proxy in front of it must pass that `Host` value
-on and rewrite or drop the `Origin` and `Sec-Fetch-Site` headers.
-[Privacy and containment](privacy.md#defaults-and-their-limits) states
-the full rule.
+The forwarder in front of a browser UI refused the request's `Host`,
+`Origin`, or `Sec-Fetch-Site` header; the response names the value. Open
+the address that `ui <set>` prints directly, not through a page of
+another site. [Forwarder](privacy.md#forwarder) states the rule and
+what a reverse proxy must pass on.
 
-## `up` or an agent session reports a gateway address on an internal network
+## Paseo asks to pair again or shows the previous project
 
-The message is `the agents network keeps a host gateway address` (or
-`ui`). On Docker, a network created without `compose.docker.yaml`, for
-example by a direct Compose call, lacks gateway mode `isolated`, and
-Compose keeps an existing network's settings. Recreate the networks:
+After a relaunch for another project, reload the page. For a fresh
+identity, stop the UI (`bash bin/tokencrate ui stop paseo`) and delete
+`daemon-keypair.json` and `server-id` from the per-set store
+`LLM_AGENTS_DIR/pi/paseo-state/` and from every project's `.paseo`
+directory under its agent home; the browser then pairs again. Deleting
+the store alone changes nothing, because the next start copies a
+project's identity back into it. [Browser UIs](agents.md#browser-uis)
+says how the identity is shared between projects.
 
-```bash
-bash bin/tokencrate down
-bash bin/tokencrate up
-bash bin/tokencrate smoke --agent pi
-```
+## pi reports `Summarization failed` and refuses the next prompt
 
-## `ui` reports that the container stopped or did not answer
+A turn that fills the preset's slot ends with `length`, and pi's
+compaction of the overflowing conversation can fail with `Summarization
+failed: generation hit the token cap and the summary is incomplete`; the
+agent then stays busy and refuses the next prompt. Reopen the
+conversation (validated in PI WEB): it compacts and continues. A `-long`
+preset gives the next session a 128K slot
+([Included presets](models.md#included-presets)).
 
-Run `bash bin/tokencrate ui logs <set>`. Skill-set and settings errors
-from the shared `agent pi` entrypoint appear before the daemon starts;
-lines from `paseo` or `pi-web` are daemon errors. A `502` in the first
-seconds means the UI is still starting.
+## A reply ends with `length` and no answer
+
+At `xhigh` the model can spend the whole reply budget on reasoning and
+return no answer. Lower the effort for the prompt
+([reasoning effort](models.md#reasoning-effort)) or raise the client's
+token limit. In `smoke` the same ending fails the `reply terminates`
+check, where it can also mean a reasoning loop ([`smoke`](cli.md#smoke)).
 
 ## Asking for help
 
-Open a
+Ask a question in
+[Discussions](https://github.com/angelo-lesniak/token-crate/discussions/categories/q-a);
+the issue chooser links the categories. Report a failure with a
 [bug report](https://github.com/angelo-lesniak/token-crate/issues/new?template=bug-report.yml).
 Remove host paths, prompts, project content, and other private
 information from logs and reports first. For security problems, follow

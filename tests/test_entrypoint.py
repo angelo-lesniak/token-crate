@@ -147,9 +147,17 @@ class EntrypointTests(unittest.TestCase):
         for content, message in (
             ("not a key line\n", "line 1 is not NAME=value"),
             ("OPENAI_API_KEY=sk\r\n", "line 1 has a carriage return"),
-            ("# fine\nPATH=/evil\n", "line 2 sets PATH, which the agent entrypoint owns"),
+            ("# fine\nPATH=/evil\n", "line 2 sets PATH, which the agent image owns"),
             ("TOKENCRATE_PRESET=other\n", "sets TOKENCRATE_PRESET"),
             ("IFS=x\n", "sets IFS"),
+            # The image's privacy switches (services/agents/Dockerfile and the
+            # sets' ENV lines) and the variables that load code into node.
+            ("PI_OFFLINE=0\n", "sets PI_OFFLINE"),
+            ("PI_TELEMETRY=1\n", "sets PI_TELEMETRY"),
+            ("PI_SKIP_VERSION_CHECK=0\n", "sets PI_SKIP_VERSION_CHECK"),
+            ("PI_LENS_DISABLE_TOOL_INSTALL=0\n", "sets PI_LENS_DISABLE_TOOL_INSTALL"),
+            ("DOTNET_CLI_TELEMETRY_OPTOUT=0\n", "sets DOTNET_CLI_TELEMETRY_OPTOUT"),
+            ("NODE_OPTIONS=--require=/tmp/x.js\n", "sets NODE_OPTIONS"),
         ):
             with self.subTest(content=content):
                 keys.write_text(content)

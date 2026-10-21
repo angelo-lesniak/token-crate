@@ -21,7 +21,7 @@ report() {
 
 printf '== TokenCrate agent container check (%s%s) ==\n' "${TOKENCRATE_AGENT:-unknown}" \
   "${TOKENCRATE_EGRESS:+, --egress}"
-report ok "running as $(id -u):$(id -g) with HOME=$HOME"
+report info "running as $(id -u):$(id -g) with HOME=$HOME"
 
 if [[ -w "$HOME" ]]; then
   report ok "agent home is writable: $HOME"
@@ -103,8 +103,8 @@ fi
 # nothing to probe, which the report says rather than passing silently.
 # A target the wrapper prefixed with `egress:` belongs to a UI started
 # with --egress or --cloud, which sits on the default network too: an
-# egress session reaching it is what the flag means, not a failure; an
-# offline session must still not reach it.
+# egress session may resolve its name, but the daemon binds only its ui
+# address, so a successful connection is always a failure.
 if [[ -z "${TOKENCRATE_UI_TARGETS:-}" ]]; then
   report warn 'no browser UI running; UI isolation not tested'
 fi
@@ -119,12 +119,12 @@ for target in ${TOKENCRATE_UI_TARGETS:-}; do
   peer=${target%:*}
   port=${target##*:}
   if [[ ! "$peer" =~ ^[0-9.]+$ ]] && getent hosts "$peer" >/dev/null 2>&1; then
-    report "$verdict" "the container resolves $peer; a browser UI is reachable by name$note"
+    report "$verdict" "the container resolves $peer$note"
   fi
   # Expanded by the inner shell; arguments stay data.
   # shellcheck disable=SC2016
   if timeout 3 bash -c 'exec 3<>/dev/tcp/"$1"/"$2"' _ "$peer" "$port" 2>/dev/null; then
-    report "$verdict" "the container reached browser UI $target$note"
+    report fail "the container reached browser UI $target$note"
   else
     report ok "browser UI $target is not reachable"
   fi
@@ -175,10 +175,10 @@ else
   report fail 'the root filesystem is not mounted read-only'
 fi
 
-if [[ -n "${TOKENCRATE_PROJECT_DIR:-}" && -d "$TOKENCRATE_PROJECT_DIR" ]]; then
-  report ok "project directory is mounted: $TOKENCRATE_PROJECT_DIR"
+if [[ -n "${TOKENCRATE_PROJECT_DIR:-}" && -d "$TOKENCRATE_PROJECT_DIR" && -w "$TOKENCRATE_PROJECT_DIR" ]]; then
+  report ok "project directory is mounted read-write: $TOKENCRATE_PROJECT_DIR"
 else
-  report fail "project directory is missing: ${TOKENCRATE_PROJECT_DIR:-unset}"
+  report fail "project directory is missing or not writable: ${TOKENCRATE_PROJECT_DIR:-unset}"
 fi
 
 # --- oh-my-pi saves its settings by writing a temporary file next to them

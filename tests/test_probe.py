@@ -22,6 +22,7 @@ class FakeRouter(BaseHTTPRequestHandler):
     several test cases."""
 
     MODELS = ("fixture-preset", "other")
+    N_CTX = {"fixture-preset": 4096, "other": 8192}
     reject_mid_system = False
     tool_call = True
     ignore_effort = False
@@ -56,14 +57,29 @@ class FakeRouter(BaseHTTPRequestHandler):
         elif path in ("/models", "/v1/models"):
             self.send_json({"data": [{"id": name, "status": {"value": "loaded"}} for name in self.MODELS]})
         elif path == "/props":
-            if self.route(urllib.parse.parse_qs(query).get("model", [None])[0]):
+            model = urllib.parse.parse_qs(query).get("model", [None])[0]
+            type(self).requests.append({"path": path, "payload": {"model": model}})
+            if self.route(model):
                 self.send_json(
                     {
                         "build_info": "b10920",
-                        "model_path": "/models/x.gguf",
-                        "default_generation_settings": {"n_ctx": 4096},
+                        "model_path": f"/models/{model}.gguf",
+                        "default_generation_settings": {"n_ctx": self.N_CTX[model]},
                     }
                 )
+        elif path == "/metrics":
+            if self.route(urllib.parse.parse_qs(query).get("model", [None])[0]):
+                body = (
+                    b"# TYPE llamacpp:prompt_tokens_total counter\n"
+                    b"llamacpp:prompt_tokens_total 12\n"
+                    b"llamacpp:tokens_predicted_total 8\n"
+                    b"llamacpp:n_busy_slots_per_decode 0\n"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
         else:
             self.send_json({"error": "not found"}, 404)
 
@@ -126,7 +142,14 @@ class FakeRouter(BaseHTTPRequestHandler):
                         "finish_reason": self.finish_reason,
                     }
                 ],
-                "timings": {"prompt_n": 12, "predicted_n": 8, "prompt_per_second": 500.0, "predicted_per_second": 42.0},
+                "timings": {
+                    "prompt_n": 12,
+                    "predicted_n": 8,
+                    "prompt_ms": 24.0,
+                    "predicted_ms": 190.5,
+                    "prompt_per_second": 500.0,
+                    "predicted_per_second": 42.0,
+                },
             }
         )
 
@@ -223,12 +246,17 @@ else:
         self.assertIn("reasoning effort reaches the template", names)
         by_name = {result.name: result for result in results}
         self.assertEqual(by_name["reply terminates"].detail, "finish_reason stop on 2 completion(s)")
+        self.assertEqual(
+            by_name["metrics counters"].detail, "3 llamacpp metric(s), including llamacpp:n_busy_slots_per_decode"
+        )
         basic = [result.name for result in probe.smoke(self.url, "fixture-preset", basic=True)]
         self.assertNotIn("streamed tool call", basic)
         # A toy model never emits the end-of-turn token, so judging
         # termination on it would always fail.
         self.assertNotIn("reply terminates", basic)
         self.assertIn("template keeps later system messages", basic)
+        # The counters are transport-level, so the tiny CI model checks them too.
+        self.assertIn("metrics counters", basic)
         facts = probe.server_facts(self.url, "fixture-preset")
         self.assertEqual(facts["build"], "b10920")
         text, status = probe.smoke_report("fixture-preset", self.url, results, facts)
@@ -236,27 +264,61 @@ else:
         self.assertTrue(text.startswith("# TokenCrate smoke report\n\n- Date: "), text)
         self.assertIn("- Preset: `fixture-preset`\n", text)
         self.assertIn(f"- Endpoint: {self.url}\n", text)
-        self.assertIn("- build: b10920\n- model_path: /models/x.gguf\n- n_ctx: 4096\n", text)
+        self.assertIn("- build: b10920\n- model_path: /models/fixture-preset.gguf\n- n_ctx: 4096\n", text)
         self.assertIn("\n| Check | Result | Detail |\n| --- | --- | --- |\n| model listing | pass |", text)
         self.assertIn("| streamed tool call | pass |", text)
         self.assertTrue(text.endswith("|\n\nAll checks passed.\n"), text)
 
         FakeRouter.requests = []
-        rows = probe.bench(self.url, ["fixture-preset"], iterations=2, long=True)
-        self.assertEqual([row["run"] for row in rows], ["short", "long"])
-        self.assertEqual(rows[0]["generation_tps"], 42.0)
-        self.assertEqual(rows[0]["iterations"], 2)
+        rows = probe.bench(self.url, ["fixture-preset", "other"], iterations=2, long=True)
+        self.assertEqual(
+            [(row.preset, row.run) for row in rows],
+            [("fixture-preset", "short"), ("fixture-preset", "long"), ("other", "short"), ("other", "long")],
+        )
+        # Every row carries its own preset's facts: the second preset's
+        # context size, not the first's.
+        self.assertEqual([row.n_ctx for row in rows], [4096, 4096, 8192, 8192])
+        self.assertEqual([row.model_path for row in rows[1:3]], ["/models/fixture-preset.gguf", "/models/other.gguf"])
+        self.assertEqual({row.build for row in rows}, {"b10920"})
+        self.assertEqual(rows[0].generation_tps, 42.0)
+        self.assertEqual(rows[0].iterations, 2)
+        # One timings sample per iteration feeds the JSON report.
+        self.assertEqual(len(rows[0].samples), 2)
+        self.assertEqual(rows[0].samples[0]["predicted_per_second"], 42.0)
+        # The facts are read once per preset, right after its warm-up, so the
+        # loaded preset answers and nothing is reloaded after the measurement.
+        sequence = [(request["path"], request["payload"]["model"]) for request in FakeRouter.requests]
+        per_preset = 1 + 1 + 2 * 2
+        self.assertEqual(len(sequence), 2 * per_preset)
+        for index, preset in ((0, "fixture-preset"), (per_preset, "other")):
+            self.assertEqual(sequence[index], ("/v1/chat/completions", preset))
+            self.assertEqual(sequence[index + 1], ("/props", preset))
+            self.assertEqual(set(sequence[index + 2 : index + per_preset]), {("/v1/chat/completions", preset)})
         bench_requests = [request for request in FakeRouter.requests if request["path"] == "/v1/chat/completions"]
-        self.assertEqual(len(bench_requests), 1 + 2 * 2)
         # Every iteration must process the whole prompt again, or the prompt
         # speed measures one cached token.
         self.assertEqual(bench_requests[1]["payload"]["temperature"], 0)
         self.assertIs(bench_requests[1]["payload"]["cache_prompt"], False)
-        text = probe.bench_report(self.url, rows, {"build": "b10920"})
+        text = probe.bench_report(self.url, rows)
         self.assertTrue(text.startswith("# TokenCrate bench report\n\n- Date: "), text)
-        self.assertIn(f"- Endpoint: {self.url}\n- build: b10920\n\n| Preset | Run |", text)
+        self.assertIn(
+            f"- Endpoint: {self.url}\n"
+            "- fixture-preset: n_ctx 4096 per slot, build b10920, /models/fixture-preset.gguf\n"
+            "- other: n_ctx 8192 per slot, build b10920, /models/other.gguf\n\n| Preset | Run |",
+            text,
+        )
         self.assertIn("| fixture-preset | short | 12 | 8 | 500.0 | 42.0 | 2 |", text)
+        self.assertIn("| other | long | 12 | 8 | 500.0 | 42.0 | 2 |", text)
         self.assertTrue(text.endswith("prompt caching disabled for the request.\n"), text)
+        document = json.loads(probe.bench_json(self.url, rows))
+        self.assertEqual((document["schema"], document["endpoint"]), (2, self.url))
+        # The facts are the rows', not the document's.
+        self.assertEqual(set(document) - {"date"}, {"schema", "endpoint", "rows"})
+        self.assertEqual(
+            [(row["preset"], row["n_ctx"], row["build"]) for row in document["rows"][1:3]],
+            [("fixture-preset", 4096, "b10920"), ("other", 8192, "b10920")],
+        )
+        self.assertEqual(document["rows"][0]["samples"][1]["prompt_ms"], 24.0)
 
     def test_completion_checks_ask_for_the_lowest_effort_and_room_for_an_answer(self):
         FakeRouter.requests.clear()

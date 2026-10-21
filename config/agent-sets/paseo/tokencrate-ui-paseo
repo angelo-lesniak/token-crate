@@ -9,12 +9,40 @@ set -Eeuo pipefail
 # two drift, and a mismatch shows only as the `ui` start timeout.
 readonly PORT=${TOKENCRATE_UI_PORT:?the wrapper sets this from the set manifest}
 export PASEO_HOME="$HOME/.paseo"
-export PASEO_LISTEN=0.0.0.0:$PORT PASEO_WEB_UI_ENABLED=true
+export PASEO_WEB_UI_ENABLED=true
 # No relay (the hosted rendezvous service) and no speech: the speech
 # features download models at daemon start, and the container has no
 # route out unless the UI was started with --egress or --cloud.
 export PASEO_RELAY_ENABLED=false PASEO_DICTATION_ENABLED=false PASEO_VOICE_MODE_ENABLED=false
-readonly HEALTH="http://127.0.0.1:$PORT/api/health"
+# The address the daemon listens on: the container's address on the UI
+# network, where the forwarder reaches it by name. A UI started with
+# --egress or --cloud has a second interface, on the default network,
+# which carries the default route; a daemon on every interface would
+# answer there too, past the forwarder's Host check (the host on Docker,
+# egress sessions on both engines). The image has no `ip`, so node reads
+# the route table and the interfaces.
+ui_address() {
+  node -e '
+    const routes = require("fs").readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1);
+    const egress = new Set(routes.map((line) => line.trim().split(/\s+/)).filter((fields) => fields[1] === "00000000").map((fields) => fields[0]));
+    const interfaces = Object.entries(require("os").networkInterfaces())
+      .map(([name, entries]) => [name, entries.filter((entry) => entry.family === "IPv4" && !entry.internal).map((entry) => entry.address)])
+      .filter(([, addresses]) => addresses.length > 0);
+    // No network at all (network_mode none): loopback is the only place
+    // to listen. One interface: the UI network, whatever its routes. More:
+    // the UI network is the one without the default route.
+    const candidates = interfaces.length <= 1 ? interfaces : interfaces.filter(([name]) => !egress.has(name));
+    const addresses = candidates.flatMap(([, entries]) => entries);
+    if (interfaces.length === 0) {
+      console.log("127.0.0.1");
+    } else if (addresses.length === 1) {
+      console.log(addresses[0]);
+    } else {
+      console.error("TokenCrate UI: expected one interface without a default route, found " + addresses.length);
+      process.exit(1);
+    }
+  '
+}
 mkdir -p "$PASEO_HOME"
 [[ ! -L "$PASEO_HOME/config.json" && ( ! -e "$PASEO_HOME/config.json" || -f "$PASEO_HOME/config.json" ) ]] \
   || { echo "TokenCrate UI: $PASEO_HOME/config.json must be a regular file; move it aside" >&2; exit 1; }
@@ -23,6 +51,27 @@ mkdir -p "$PASEO_HOME"
 # mean nothing here, so it is removed: this launcher is the only daemon
 # the container will run.
 rm -f "$PASEO_HOME/paseo.pid"
+# The daemon's identity, a keypair and a server id. Paseo's web client
+# tells daemons apart by it and treats another identity at the address it
+# knows as a host it cannot reach, so every project's daemon must present
+# the same one. Each project has its own agent home; the wrapper mounts
+# one directory per UI set at /run/tokencrate/ui-state, so the first
+# daemon's identity is copied out there once it runs, and copied into the
+# home of every later project before its daemon starts.
+readonly STATE=/run/tokencrate/ui-state
+readonly IDENTITY=(daemon-keypair.json server-id)
+copy_identity() { # <from> <to>: the identity files the target lacks
+  local file
+  # Without the wrapper's state mount (a start outside `ui`) there is
+  # nothing to share: the daemon keeps its own identity.
+  [[ -d $1 && -d $2 ]] || return 0
+  for file in "${IDENTITY[@]}"; do
+    if [[ -f "$1/$file" && ! -e "$2/$file" ]]; then
+      cp -p "$1/$file" "$2/$file"
+    fi
+  done
+}
+copy_identity "$STATE" "$PASEO_HOME"
 # Paseo's create-agent form takes its provider and model from what the
 # browser saved the last time, never from the daemon, so the first start
 # seeds what the daemon can do: the providers whose command lines are not
@@ -52,7 +101,10 @@ try {
 } finally { fs.rmSync(temporary, { force: true }); }
 JS
 fi
-echo "TokenCrate UI: Paseo listens on port $PORT inside the container"
+address=$(ui_address)
+export PASEO_LISTEN=$address:$PORT
+readonly HEALTH="http://$address:$PORT/api/health"
+echo "TokenCrate UI: Paseo listens on $address:$PORT inside the container"
 # Paseo runs as a runner, a supervisor, and the daemon; a signal to the
 # runner leaves the other two behind, so the stop goes through Paseo.
 paseo daemon start --foreground &
@@ -72,6 +124,7 @@ if [[ "$ready" != true ]]; then
   wait "$daemon" || true
   exit 1
 fi
+copy_identity "$PASEO_HOME" "$STATE"
 # The project directory is the only project: Paseo works in workspaces,
 # so the first start registers it as a local workspace (no worktree), and
 # a later start finds it in the daemon's state under the agent home.

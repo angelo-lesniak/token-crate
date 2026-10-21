@@ -3,9 +3,9 @@ description = "Qwen3.8-27B at three bits, one 32K slot: the smallest 27B preset,
 model_set = "qwen3.8-27b-ud-q3-k-xl"
 
 # The smallest 27B preset: UD-Q3_K_XL, 13.1 GB against the default set's
-# 17.6 GB. Held 13.5 GiB (docs/validation.md). What three bits cost this
-# model on agent work is not measured, so gpt-oss-20b-small stays the tested
-# 16 GB path.
+# 17.6 GB. Held 13.5 GiB (the preset table in docs/models.md holds the
+# speed and the requirement). What three bits cost this model on agent
+# work is not measured, so gpt-oss-20b-small stays the tested 16 GB path.
 [server]
 ctx_size = 32768
 n_predict = 16384

@@ -5,7 +5,9 @@ are build/models.ini, the preset file llama-server reads in router mode (a
 `[*]` section of shared keys and one section per loadable preset, keyed by
 the long flag names without dashes), and the agent model lists under
 build/agents (pi/models.json and omp/models.yml, both JSON text; oh-my-pi
-reads JSON as YAML). The renderer owns the keys that tie a preset to the
+reads JSON as YAML). The pi list is also what the wrapper reads back for the
+loadable presets and their slots; the router file is output only. The
+renderer owns the keys that tie a preset to the
 container layout (model paths, chat template, context, slots) and the ones
 the router sets for every child (host, port, alias); presets express
 everything else through typed keys.
@@ -14,37 +16,46 @@ everything else through typed keys.
 from __future__ import annotations
 
 import json
-import os
-import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import TokenCrateError, models
 from .agentmodels import AGENT_THINKING_LEVELS, omp_models, pi_models_json
+from .files import write_atomic
 from .names import PRESET_NAME_RE, load_catalog, read_toml
 from .names import description as read_description
 
 # The rendered router preset file; services/llama/Dockerfile boots it.
 CONFIG_FILE_NAME = "models.ini"
+# The rendered pi model list; `rendered_model_ids` and `rendered_slots` read it.
+PI_MODEL_LIST = Path("agents", "pi", "models.json")
 MODELS_ROOT_IN_CONTAINER = "/models"
 CHAT_TEMPLATES_IN_CONTAINER = "/etc/tokencrate/chat-templates"
 UI_CONFIG_IN_CONTAINER = "/etc/tokencrate/ui-config.json"
 # The [*] section, which every child server inherits: the Jinja template
-# engine (tool calls and chat_template_kwargs) and the UI defaults (the
-# router loads the same file for the UI at the root; the UI reads whichever
+# engine (tool calls and chat_template_kwargs), the Prometheus counters
+# (GET /metrics?model= on the loopback port; smoke checks them, and a
+# request for an unloaded preset is expected to load it first), no slots
+# endpoint (GET /slots reports each slot's state and may carry the prompt
+# in flight; every network the server joins could read it, and nothing
+# in TokenCrate does), and the
+# UI defaults (the router
+# loads the same file for the UI at the root; the UI reads whichever
 # /props it fetched last).
-SHARED_KEYS = (("jinja", "true"), ("ui-config-file", UI_CONFIG_IN_CONTAINER))
-SECTION_RE = re.compile(r"^\[([^\]]+)\]$", re.MULTILINE)
+SHARED_KEYS = (
+    ("jinja", "true"),
+    ("metrics", "true"),
+    ("no-slots", "true"),
+    ("ui-config-file", UI_CONFIG_IN_CONTAINER),
+)
 # The choices are the values the shipped presets use or a validation
 # record has measured; a value llama-server accepts but no preset has run
 # with is added together with the preset that runs it.
 FLASH_ATTN_VALUES = ("on", "off", "auto")
 CACHE_TYPES = ("f16", "bf16", "q8_0")
 SPEC_TYPES = ("none", "draft-mtp")
-REASONING_EFFORT_RE = re.compile(r"^[a-z]+$")
 # The typed [server] keys: integers with their minimum, booleans, choices; the
-# word, list, and table keys (reasoning_effort, reasoning_efforts, extra) are
+# effort, list, and table keys (reasoning_effort, reasoning_efforts, extra) are
 # validated in read_preset.
 INT_KEYS = {
     "ctx_size": 1024,
@@ -110,6 +121,15 @@ class Preset:
     @property
     def reasoning_efforts(self) -> list[str]:
         return list(self.server.get("reasoning_efforts", []))
+
+    def requirement_text(self) -> str:
+        """The `[requires]` table as `presets list` prints it."""
+        parts = []
+        if "vram_gib" in self.requires:
+            parts.append(f"{self.requires['vram_gib']} GiB GPU memory")
+        if "ram_gib" in self.requires:
+            parts.append(f"{self.requires['ram_gib']} GiB system memory")
+        return "needs " + " and ".join(parts) if parts else "(no [requires])"
 
 
 @dataclass
@@ -187,14 +207,9 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
         raise TokenCrateError(f"{context}: n_predict must be -1 (unlimited) or a positive integer")
     if server["ctx_size"] % server.get("parallel", 1) != 0:
         raise TokenCrateError(f"{context}: ctx_size must be divisible by parallel")
-    effort = server.get("reasoning_effort")
-    if effort is not None and (not isinstance(effort, str) or not REASONING_EFFORT_RE.fullmatch(effort)):
-        raise TokenCrateError(f"{context}: reasoning_effort must be a lowercase word")
     efforts = server.get("reasoning_efforts", [])
-    if not isinstance(efforts, list) or any(
-        not isinstance(item, str) or not REASONING_EFFORT_RE.fullmatch(item) for item in efforts
-    ):
-        raise TokenCrateError(f"{context}: reasoning_efforts must be a list of lowercase words")
+    if not isinstance(efforts, list) or any(not isinstance(item, str) for item in efforts):
+        raise TokenCrateError(f"{context}: reasoning_efforts must be a list of strings")
     if len(set(efforts)) != len(efforts):
         raise TokenCrateError(f"{context}: reasoning_efforts must not repeat values")
     unknown = [item for item in efforts if item not in AGENT_THINKING_LEVELS[1:]]
@@ -203,8 +218,16 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
             f"{context}: reasoning_efforts must use the agent thinking level names "
             f"({', '.join(AGENT_THINKING_LEVELS[1:])}); unknown: {', '.join(unknown)}"
         )
+    # The default goes into chat-template-kwargs for every request that
+    # names no effort (the chat UI, curl), so a level outside the declared
+    # ones would make the template raise on exactly those requests.
+    effort = server.get("reasoning_effort")
     if efforts and effort is None:
         raise TokenCrateError(f"{context}: reasoning_efforts needs a default reasoning_effort")
+    if effort is not None and effort not in efforts:
+        raise TokenCrateError(
+            f"{context}: reasoning_effort must be one of reasoning_efforts ({', '.join(efforts) or 'none declared'})"
+        )
     extra = server.get("extra", {})
     if not isinstance(extra, dict):
         raise TokenCrateError(f"{context}: [server.extra] must be a table of llama-server options")
@@ -315,6 +338,15 @@ def build_wait(model_set, pinned_build: int) -> str:
     return f"waits for llama.cpp build {required} (pinned: b{pinned_build})"
 
 
+def model_set_waits(model_sets: dict, pinned_build: int) -> tuple[str, ...]:
+    """One line per model set that waits for a newer llama.cpp build, for pins check."""
+    return tuple(
+        f"model set {model_set.name} {wait}"
+        for model_set in model_sets.values()
+        if (wait := build_wait(model_set, pinned_build))
+    )
+
+
 @dataclass(frozen=True)
 class Configuration:
     """The model sets, the presets, and the build that pins.env pins, read
@@ -353,7 +385,7 @@ def load(config_dir: Path, pinned_build: int) -> Configuration:
     """The model sets and presets below config_dir. Every chat template a
     model set references must exist under config_dir/chat-templates,
     because llama-server would only fail at load time otherwise."""
-    model_sets = models.available_sets(config_dir / "model-sets")
+    model_sets = models.catalog(config_dir)
     chat_templates_dir = config_dir / "chat-templates"
     for model_set in model_sets.values():
         if model_set.chat_template_file and not (chat_templates_dir / model_set.chat_template_file).is_file():
@@ -410,19 +442,6 @@ def agent_models(rendered: list[RenderedPreset]) -> list[dict]:
     return models_list
 
 
-def write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
 def evaluate(configuration: Configuration, default_preset: str, models_root: Path | None) -> tuple[list, str]:
     """Judge every preset, print one line each, and build the router preset
     file's text, which is where a value the router would truncate is
@@ -468,7 +487,7 @@ def render(
     rendered, config = evaluate(configuration, default_preset, models_root)
     models_list = agent_models(rendered)
     write_atomic(output_dir / CONFIG_FILE_NAME, config)
-    write_atomic(output_dir / "agents" / "pi" / "models.json", json.dumps(pi_models_json(models_list), indent=2) + "\n")
+    write_atomic(output_dir / PI_MODEL_LIST, json.dumps(pi_models_json(models_list), indent=2) + "\n")
     # oh-my-pi looks for models.yml; JSON is valid YAML, so the name stays.
     write_atomic(output_dir / "agents" / "omp" / "models.yml", json.dumps(omp_models(models_list), indent=2) + "\n")
     loadable = sum(1 for item in rendered if item.loadable)
@@ -476,11 +495,24 @@ def render(
     return rendered
 
 
-def rendered_model_ids(output_dir: Path) -> set[str]:
-    """The model ids (section names) in the rendered router preset file;
-    empty when nothing has been rendered into output_dir yet."""
+def rendered_models(output_dir: Path) -> list[dict]:
+    """The entries of the rendered pi model list, one per loadable preset in
+    pi's spelling (`id`, `contextWindow`); empty when nothing has been
+    rendered into output_dir yet."""
     try:
-        text = (output_dir / CONFIG_FILE_NAME).read_text(encoding="utf-8")
+        text = (output_dir / PI_MODEL_LIST).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return set()
-    return set(SECTION_RE.findall(text)) - {"*"}
+        return []
+    return json.loads(text)["providers"]["tokencrate"]["models"]
+
+
+def rendered_model_ids(output_dir: Path) -> set[str]:
+    """The model ids rendered as loadable; empty before the first render."""
+    return {entry["id"] for entry in rendered_models(output_dir)}
+
+
+def rendered_slots(output_dir: Path) -> dict[str, int]:
+    """Each rendered preset's context per slot (`ctx_size` over `parallel`,
+    which the list carries as the context window) by model id; empty before
+    the first render."""
+    return {entry["id"]: entry["contextWindow"] for entry in rendered_models(output_dir)}

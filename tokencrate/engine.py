@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -19,8 +19,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import TokenCrateError
+from . import TokenCrateError, warn
 from .env import Settings
+from .files import write_atomic
 
 ENGINES = ("podman", "docker")
 # Both Docker Compose and podman-compose apply these labels.
@@ -173,9 +174,12 @@ class Engine:
         egress: bool = False,
         capture: bool = False,
         check: bool = True,
+        stdin: int | None = None,
         **extra: str,
     ) -> subprocess.CompletedProcess:
-        """Run `engine compose` with the wrapper's file list, from the repository root."""
+        """Run `engine compose` with the wrapper's file list, from the repository
+        root. `stdin` is passed to the subprocess (`subprocess.DEVNULL` keeps a
+        terminal the wrapper may not read from away from the container)."""
         files = ["--file", "compose.yaml"]
         if self.settings.gpu:
             files += ["--file", "compose.gpu.yaml"]
@@ -202,6 +206,7 @@ class Engine:
             [self.name, "compose", *files, "--env-file", "pins.env", *args],
             env,
             cwd=self.settings.root,
+            stdin=stdin,
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None,
             text=True,
@@ -216,17 +221,48 @@ class Engine:
 
     @property
     def lock_file(self) -> Path:
-        # Hash avoids path syntax in project names; engines own separate stacks.
-        key = hashlib.sha256(self.settings.project_name.encode()).hexdigest()[:16]
-        return self.settings.build_dir / "locks" / f"{self.name}-{key}.lock"
+        # One lock per project, whichever engine runs its stack (the stack
+        # record below says which); the name is validated, so it is a safe
+        # file name.
+        return self.settings.build_dir / "locks" / f"{self.settings.project_name}.lock"
 
     @contextlib.contextmanager
-    def lock(self):
-        """Serialize model/UI startup and shutdown for this checkout's stack."""
+    def lock(self, command: str = ""):
+        """Serialize the steps that change this checkout's stack: the Compose
+        `up`, `run`, and removal calls. An image build, a readiness wait,
+        and the pre-flight of an agent start run without it: the build is
+        content-addressed, the wait polls, and every pre-flight check
+        refuses on its own when the stack moves. The holder writes its PID
+        and `command` into the lock file, so a second command can say whom
+        it waits for before it blocks."""
         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock_file.open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+        with os.fdopen(os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o644), "r+") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pid, _, held_by = handle.read().strip().partition(" ")
+                holder = (
+                    f"`{held_by}` (pid {pid})" if held_by else f"pid {pid}" if pid else "another tokencrate command"
+                )
+                warn(f"waiting for {holder} to finish")
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{os.getpid()} {command}".rstrip() + "\n")
+            handle.flush()
             yield
+
+    @property
+    def stack_record(self) -> Path:
+        return stack_record_path(self.settings)
+
+    def record_stack(self) -> None:
+        """Remember which engine runs this project's stack, for every later
+        command (`detect` reads it until `down` removes it)."""
+        write_atomic(self.stack_record, json.dumps({"engine": self.name, "project": self.settings.project_name}) + "\n")
+
+    def forget_stack(self) -> None:
+        self.stack_record.unlink(missing_ok=True)
 
     def containers(self, *, all_states: bool = True) -> list[dict]:
         result = self.command(
@@ -261,8 +297,8 @@ class Engine:
                 while True:
                     result = self.command(action, item["Id"], capture=True, check=False)
                     # Stopping a run --rm container also removes it. Docker
-                    # may still be removing it when stop returns; wait before
-                    # proceeding to network removal.
+                    # may still be removing it when stop returns, so the
+                    # `rm` is retried until that removal is done.
                     if not result.returncode or self.container_missing(result.stderr):
                         break
                     detail = (result.stderr or "").strip()
@@ -280,13 +316,8 @@ class Engine:
                 if name in (item["Config"]["Labels"].get(SERVICE_LABEL), (item.get("Name") or "").lstrip("/")):
                     return
                 raise TokenCrateError(f"host port {port} belongs to another container; choose another port")
-        with socket.socket() as listener:
-            # A recently closed connection in TIME_WAIT must not prevent restart.
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                listener.bind(("127.0.0.1", int(port)))
-            except OSError as error:
-                raise TokenCrateError(f"cannot use host port {port}: {error}") from error
+        if cause := loopback_bind_error(port):
+            raise TokenCrateError(f"cannot use host port {port}: {cause}")
 
     def container_ids(self, service: str, *, all_states: bool = False) -> list[str]:
         """The running container(s) of one service of this Compose project
@@ -333,7 +364,41 @@ class Engine:
         (Docker: `IPAM.Config[].Gateway`; Podman: `subnets[].gateway`), or
         an empty string when the network has none, which is what Docker's
         isolated gateway mode leaves, or (with missing_ok) does not exist."""
-        return network_gateway(self.network_document(network, missing_ok=missing_ok) or {})
+        document = self.network_document(network, missing_ok=missing_ok) or {}
+        subnets = (document.get("IPAM") or {}).get("Config") or document.get("subnets") or []
+        for subnet in subnets:
+            gateway = subnet.get("Gateway") or subnet.get("gateway") if isinstance(subnet, dict) else None
+            if gateway:
+                return str(gateway)
+        return ""
+
+    def bridge_forwarding(self, interface: str) -> tuple[str, str]:
+        """(flag, cause): the IPv4 `forwarding` flag ("0" or "1") of a bridge
+        in rootless Podman's network namespace, where the engine keeps its
+        bridges, and an empty cause; or an empty flag and the first line of
+        what went wrong, which is `No such file or directory` while no
+        container uses the network and the bridge does not exist yet."""
+        result = self.command(
+            "unshare",
+            "--rootless-netns",
+            "cat",
+            f"/proc/sys/net/ipv4/conf/{interface}/forwarding",
+            capture=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip(), ""
+        return "", (result.stderr or "").strip().partition("\n")[0] or f"exit status {result.returncode}"
+
+    def foreign_container(self, name: str) -> bool:
+        """Whether a container of this name exists that this Compose project
+        did not create (by its project label); false for a name the engine
+        does not know."""
+        result = self.command("inspect", "--format", "{{json .}}", name, capture=True, check=False)
+        if result.returncode != 0:
+            return False
+        labels = (json.loads(result.stdout).get("Config") or {}).get("Labels") or {}
+        return labels.get(PROJECT_LABEL) != self.settings.project_name
 
     def container_state(self, container_id: str) -> str:
         """`.State.Status` of a container, by id or name (running, exited,
@@ -342,14 +407,59 @@ class Engine:
         return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "removed"
 
 
-def network_gateway(document: dict) -> str:
-    """The gateway address in a `network inspect` document of either engine."""
-    subnets = (document.get("IPAM") or {}).get("Config") or document.get("subnets") or []
-    for subnet in subnets:
-        gateway = subnet.get("Gateway") or subnet.get("gateway") if isinstance(subnet, dict) else None
-        if gateway:
-            return str(gateway)
+def loopback_bind_error(port: str) -> str:
+    """Bind the loopback port the way a publish will, and say what prevents
+    it: an empty string when the port is free. `doctor` reports on it and
+    `require_port` refuses on it, so the two cannot disagree; a listener on
+    another address only does not block a loopback publish."""
+    with socket.socket() as listener:
+        # A recently closed connection in TIME_WAIT must not prevent restart.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind(("127.0.0.1", int(port)))
+        except OSError as error:
+            return str(error)
     return ""
+
+
+def stack_record_path(settings: Settings) -> Path:
+    return settings.build_dir / "stack.json"
+
+
+def recorded_engine(settings: Settings) -> str:
+    """The engine `up` recorded for this project's stack, or an empty
+    string when no stack record exists (or it belongs to another project)."""
+    path = stack_record_path(settings)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError) as error:
+        raise TokenCrateError(
+            f"cannot read the stack record {path}: {error}; remove it if no stack is running"
+        ) from error
+    if not isinstance(record, dict) or record.get("project") != settings.project_name:
+        return ""
+    return str(record.get("engine") or "")
+
+
+def requested_engine(settings: Settings) -> str:
+    """The engine to probe: CONTAINER_ENGINE, or the one the running
+    stack was started with when nothing is set; a setting that disagrees
+    with the record is refused, because the other engine's stack would
+    keep the GPU and the ports."""
+    requested = settings.get("CONTAINER_ENGINE")
+    recorded = recorded_engine(settings)
+    if recorded and requested and requested != recorded:
+        raise TokenCrateError(stack_runs_on(recorded, requested))
+    return requested or recorded
+
+
+def stack_runs_on(recorded: str, requested: str) -> str:
+    return (
+        f"the stack runs on {recorded}, not {requested} (build/stack.json); "
+        f"run: CONTAINER_ENGINE={recorded} bash bin/tokencrate down"
+    )
 
 
 # The wording of the engine gate, shared so that `detect`, which refuses,
@@ -395,14 +505,20 @@ def select(env: dict[str, str], requested: str) -> Selection:
     return Selection(candidates=tuple(present))
 
 
-def detect(settings: Settings, *, launching: bool = True) -> Engine:
-    env = settings.subprocess_env()
-    selection = select(env, settings.get("CONTAINER_ENGINE"))
+def detect(settings: Settings, *, launching: bool = True, selection: Selection | None = None) -> Engine:
+    """The engine every command uses; `selection` is what `doctor.gather`
+    already probed, so `up` probes once. The stack record decides when
+    CONTAINER_ENGINE is unset and refuses a setting that disagrees."""
+    recorded = recorded_engine(settings)
+    if selection is None:
+        selection = select(settings.subprocess_env(), requested_engine(settings))
     if selection.unsupported:
         raise TokenCrateError(unsupported_engine(selection.unsupported))
     facts = selection.chosen
     if facts is None:
         raise TokenCrateError(f"{NO_USABLE_ENGINE}; {RUN_DOCTOR}")
+    if recorded and facts.name != recorded:
+        raise TokenCrateError(stack_runs_on(recorded, facts.name))
     if not facts.usable:
         raise TokenCrateError(
             f"{facts.name} needs a reachable engine and a working Compose provider (Podman: rootless with crun); "

@@ -2,27 +2,35 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from . import TokenCrateError
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-# A safety limit on pagination. GHCR lists every tag of ggml-org/llama.cpp
-# (about 12,000 in September 2026, growing by about ten per build) in pages
-# of 1000; Docker Hub pages hold 100.
-MAX_API_PAGES = 200
+# Docker Hub answers an anonymous client's tag listing for ten pages of 100
+# and refuses the eleventh (HTTP 403), so a lookup must find its answer in
+# the first thousand tags, newest first.
+DOCKER_HUB_PAGE_LIMIT = 10
 USER_AGENT = "TokenCrate-pins-check"
 STABLE_TAG_RE = r"(\d+(?:\.\d+)+)"
 LLAMA_CPP_REPOSITORY = "ggml-org/llama.cpp"
-# The server image tags: `server-<family>-b<build>`; the family (cuda13) is
-# a manual choice and stays, the build number is what the check resolves.
+# llama.cpp releases are tagged b<build>; the releases API lists them newest
+# first, and the server image of a release is `server-<family>-b<build>` on
+# GHCR. The family (cuda13) is a manual choice and stays, the build number
+# is what the check resolves.
+LLAMA_CPP_RELEASES_URL = f"https://api.github.com/repos/{LLAMA_CPP_REPOSITORY}/releases?per_page=30"
+LLAMA_CPP_RELEASE_RE = re.compile(r"^b(?P<build>\d+)$")
+# Images arrive every twenty to thirty builds; the walk gives up after this many.
+LLAMA_CPP_PROBE_LIMIT = 60
 LLAMA_CPP_TAG_RE = re.compile(r"^(?P<family>server-[a-z0-9]+)-b(?P<build>\d+)$")
 # What pins.env holds beside a tag: the 64 hex characters of the manifest the
 # tag points at, which is what the build pulls.
@@ -37,16 +45,20 @@ MANIFEST_ACCEPT = ", ".join(
         "application/vnd.docker.distribution.manifest.v2+json",
     )
 )
-COMPONENTS = ("llama-cpp", "pi", "omp", "node", "bun")
-NPM_PACKAGES = {
-    "pi": ("PI_VERSION", "@earendil-works/pi-coding-agent"),
-    "omp": ("OMP_VERSION", "@oh-my-pi/pi-coding-agent"),
-}
+
+
+class LookupsFailed(TokenCrateError):
+    """The report of a `pins check` in which at least one source could not
+    be read; `report` holds every row, `failed` the component names."""
+
+    def __init__(self, report: str, failed: list[str]) -> None:
+        super().__init__(f"pins check could not read the source of: {', '.join(failed)}")
+        self.report = report
+        self.failed = failed
 
 
 @dataclass(frozen=True)
 class Resolution:
-    component: str
     key: str
     current: str
     latest: str
@@ -57,7 +69,17 @@ class Resolution:
     digest: str = ""
 
 
-def request_bytes(url: str, *, accept: str = "application/json", headers: dict[str, str] | None = None) -> bytes:
+def component_name(key: str) -> str:
+    """The name `pins check` takes for a pin: its key without the `_TAG` or
+    `_VERSION` suffix, in lower case with hyphens (LLAMA_CPP_TAG: llama-cpp)."""
+    return key.removesuffix("_TAG").removesuffix("_VERSION").lower().replace("_", "-")
+
+
+def request_bytes(
+    url: str, *, accept: str = "application/json", headers: dict[str, str] | None = None, missing_ok: bool = False
+) -> bytes | None:
+    """The response body; None for a 404 when `missing_ok` (a tag or release
+    that does not exist), an error for every other failure."""
     if urllib.parse.urlsplit(url).scheme.lower() != "https":
         raise TokenCrateError(f"pin source URL must use HTTPS: {url}")
     request_headers = {"Accept": accept, "User-Agent": USER_AGENT}
@@ -67,11 +89,11 @@ def request_bytes(url: str, *, accept: str = "application/json", headers: dict[s
         with urllib.request.urlopen(request, timeout=45) as response:
             if urllib.parse.urlsplit(response.url).scheme.lower() != "https":
                 raise TokenCrateError(f"pin source redirected away from HTTPS: {url}")
-            announced = response.headers.get("Content-Length")
-            if announced and announced.isdigit() and int(announced) > MAX_RESPONSE_BYTES:
-                raise TokenCrateError(f"pin source response is too large: {url}")
             content = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as error:
+        error.close()
+        if missing_ok and error.code == 404:
+            return None
         detail = f"HTTP {error.code}"
         response_headers = error.headers or {}
         remaining = response_headers.get("X-RateLimit-Remaining")
@@ -137,7 +159,7 @@ def required_value(values: dict[str, str], key: str) -> str:
     return value
 
 
-# --- GHCR --------------------------------------------------------------------
+# --- llama.cpp: GitHub releases and GHCR -------------------------------------
 
 
 def ghcr_token(repository: str) -> str:
@@ -150,70 +172,62 @@ def ghcr_token(repository: str) -> str:
     return token
 
 
-def ghcr_tags(repository: str) -> list[str]:
-    token = ghcr_token(repository)
-    headers = {"Authorization": f"Bearer {token}"}
-    tags: list[str] = []
-    url: str | None = f"https://ghcr.io/v2/{repository}/tags/list?n=1000"
-    pages = 0
-    while url:
-        if pages >= MAX_API_PAGES:
-            raise TokenCrateError(f"GHCR tags for {repository} exceeded the {MAX_API_PAGES}-page safety limit")
-        content = request_bytes(url, headers=headers)
-        try:
-            payload = json.loads(content)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise TokenCrateError("GHCR returned an invalid tag list") from error
-        if not isinstance(payload, dict) or not isinstance(payload.get("tags"), list):
-            raise TokenCrateError(f"GHCR returned invalid tags for {repository}")
-        tags.extend(str(tag) for tag in payload["tags"])
-        url = None
-        pages += 1
-        # GHCR paginates through the `last` query parameter; the tag list is
-        # sorted, so continue while a full page came back.
-        if len(payload["tags"]) >= 1000:
-            last = urllib.parse.quote(str(payload["tags"][-1]), safe="")
-            url = f"https://ghcr.io/v2/{repository}/tags/list?n=1000&last={last}"
-    return tags
-
-
-def ghcr_manifest_digest(repository: str, tag: str) -> str:
-    """The digest of what the tag points at. A manifest's digest is the
-    sha256 of the document the registry serves, so the body is hashed here
-    instead of trusting a header."""
-    headers = {"Authorization": f"Bearer {ghcr_token(repository)}"}
+def ghcr_manifest(repository: str, tag: str, token: str | None = None) -> bytes | None:
+    """The manifest document the tag points at, or None when GHCR has no such
+    tag. A manifest's digest is the sha256 of the document the registry
+    serves, so the caller hashes the body instead of trusting a header. A
+    caller that probes many tags passes one token."""
+    headers = {"Authorization": f"Bearer {token or ghcr_token(repository)}"}
     reference = urllib.parse.quote(tag, safe="")
-    content = request_bytes(
-        f"https://ghcr.io/v2/{repository}/manifests/{reference}", accept=MANIFEST_ACCEPT, headers=headers
-    )
-    return hashlib.sha256(content).hexdigest()
+    url = f"https://ghcr.io/v2/{repository}/manifests/{reference}"
+    return request_bytes(url, accept=MANIFEST_ACCEPT, headers=headers, missing_ok=True)
+
+
+def llama_cpp_release_builds() -> list[int]:
+    """The build numbers of the newest llama.cpp releases, newest first."""
+    payload = request_json(LLAMA_CPP_RELEASES_URL, accept="application/vnd.github+json")
+    if not isinstance(payload, list):
+        raise TokenCrateError("GitHub returned an invalid llama.cpp release list")
+    builds = [
+        int(match.group("build"))
+        for release in payload
+        if isinstance(release, dict)
+        and (match := LLAMA_CPP_RELEASE_RE.fullmatch(str(release.get("tag_name", "")))) is not None
+    ]
+    if not builds:
+        raise TokenCrateError("GitHub listed no llama.cpp release tagged b<build>")
+    return sorted(builds, reverse=True)
 
 
 def resolve_llama_cpp(values: dict[str, str]) -> Resolution:
-    component = "llama-cpp"
     key = "LLAMA_CPP_TAG"
     current = required_value(values, key)
     match = LLAMA_CPP_TAG_RE.fullmatch(current)
     if match is None:
         raise TokenCrateError(f"unsupported current {key}: {current}")
-    family = match.group("family")
-    current_build = int(match.group("build"))
-    tag_pattern = re.compile(rf"^{re.escape(family)}-b(\d+)$")
-    builds = [
-        (int(tag_match.group(1)), tag)
-        for tag in ghcr_tags(LLAMA_CPP_REPOSITORY)
-        if (tag_match := tag_pattern.fullmatch(tag)) is not None
-    ]
-    if not builds:
-        raise TokenCrateError(f"GHCR has no {family}-b* image tag for {LLAMA_CPP_REPOSITORY}")
-    latest_build, latest_image_tag = max(builds)
-    if latest_build < current_build:
-        raise TokenCrateError(f"GHCR {LLAMA_CPP_REPOSITORY} latest build is older than the current pin")
-    if latest_build == current_build:
-        return Resolution(component, key, current, current)
-    notes = (f"  llama.cpp build b{current_build} -> b{latest_build}: https://github.com/ggml-org/llama.cpp/releases",)
-    digest = ghcr_manifest_digest(LLAMA_CPP_REPOSITORY, latest_image_tag)
-    return Resolution(component, key, current, latest_image_tag, notes, digest)
+    family, current_build = match.group("family"), int(match.group("build"))
+    newest = llama_cpp_release_builds()[0]
+    if newest < current_build:
+        raise TokenCrateError(f"GitHub {LLAMA_CPP_REPOSITORY} latest release is older than the current pin")
+    # The newest build whose image of the pinned family GHCR serves. The
+    # images are published for builds of their own, not for every release
+    # (b11783 had an image and no release; the thirty releases around it
+    # had none), so the walk goes build by build below the newest release.
+    # The manifest fetched to confirm it is the digest pin beside the tag.
+    token = ghcr_token(LLAMA_CPP_REPOSITORY) if newest > current_build else None
+    for build in range(newest, max(current_build, newest - LLAMA_CPP_PROBE_LIMIT), -1):
+        tag = f"{family}-b{build}"
+        manifest = ghcr_manifest(LLAMA_CPP_REPOSITORY, tag, token)
+        if manifest is not None:
+            notes = (
+                f"  llama.cpp build b{current_build} -> b{build}: https://github.com/{LLAMA_CPP_REPOSITORY}/releases",
+            )
+            return Resolution(key, current, tag, notes, hashlib.sha256(manifest).hexdigest())
+    if newest - current_build <= LLAMA_CPP_PROBE_LIMIT:
+        return Resolution(key, current, current)
+    raise TokenCrateError(
+        f"none of the {LLAMA_CPP_PROBE_LIMIT} builds below b{newest} has a {family} image on GHCR; look it up by hand"
+    )
 
 
 # --- npm ---------------------------------------------------------------------
@@ -222,8 +236,7 @@ def resolve_llama_cpp(values: dict[str, str]) -> Resolution:
 PACKAGE_VERSION_RE = re.compile(rf"^{STABLE_TAG_RE}$")
 
 
-def resolve_npm(component: str, values: dict[str, str]) -> Resolution:
-    key, package = NPM_PACKAGES[component]
+def resolve_npm(key: str, package: str, values: dict[str, str]) -> Resolution:
     current = required_value(values, key)
     current_key = version_key(current, PACKAGE_VERSION_RE)
     if current_key is None:
@@ -235,39 +248,51 @@ def resolve_npm(component: str, values: dict[str, str]) -> Resolution:
     if latest_key is None:
         raise TokenCrateError(f"npm returned no stable {package} latest version")
     if current_is_latest(current_key, latest_key, f"npm {package}"):
-        return Resolution(component, key, current, current)
-    return Resolution(
-        component,
-        key,
-        current,
-        latest,
-        (f"  Package history: https://www.npmjs.com/package/{package}?activeTab=versions",),
-    )
+        return Resolution(key, current, current)
+    notes = (f"  Package history: https://www.npmjs.com/package/{package}?activeTab=versions",)
+    return Resolution(key, current, latest, notes)
 
 
 # --- Docker Hub --------------------------------------------------------------
 
 
-def docker_hub_tags(namespace: str, repository: str, search: str) -> dict[str, str]:
-    """The matching tags of the image, each with the `sha256:...` reference
-    of the manifest it points at; the listing carries both."""
-    query = urllib.parse.urlencode({"page_size": 100, "name": search})
+def docker_hub_tags(
+    namespace: str, repository: str, search: str, rank: Callable[[str], tuple[int, ...] | None] | None = None
+) -> dict[str, str]:
+    """The matching tags of the image, newest push first, each with the
+    `sha256:...` reference of the manifest it points at; the listing carries
+    both. Docker Hub lists at most ten pages to an anonymous client, and
+    an image such as VictoriaMetrics has over a thousand tags in one major,
+    so the listing is read newest first and stops after the first page that
+    adds no tag `rank` places above the best one seen (a release pushes its
+    tags together, so the latest is at the front)."""
+    query = urllib.parse.urlencode({"page_size": 100, "name": search, "ordering": "last_updated"})
     url: str | None = f"https://hub.docker.com/v2/namespaces/{namespace}/repositories/{repository}/tags?{query}"
     tags: dict[str, str] = {}
+    best: tuple[int, ...] | None = None
     pages = 0
     while url:
-        if pages >= MAX_API_PAGES:
+        if pages >= DOCKER_HUB_PAGE_LIMIT:
             raise TokenCrateError(
-                f"Docker Hub tags for {namespace}/{repository} exceeded the {MAX_API_PAGES}-page safety limit"
+                f"Docker Hub tags for {namespace}/{repository} exceeded the {DOCKER_HUB_PAGE_LIMIT}-page listing limit"
             )
         payload = request_json(url)
         if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
             raise TokenCrateError(f"Docker Hub returned invalid tags for {namespace}/{repository}")
-        tags.update(
-            (str(item.get("name", "")), str(item.get("digest", "")))
+        page = {
+            str(item.get("name", "")): str(item.get("digest", ""))
             for item in payload["results"]
             if isinstance(item, dict)
-        )
+        }
+        tags.update(page)
+        pages += 1
+        if rank is not None:
+            ranked = [key for tag in page if (key := rank(tag)) is not None]
+            page_best = max(ranked) if ranked else None
+            if best is not None and (page_best is None or page_best <= best):
+                break
+            if page_best is not None:
+                best = page_best if best is None else max(best, page_best)
         next_url = payload.get("next")
         if next_url:
             next_url = str(next_url)
@@ -277,27 +302,29 @@ def docker_hub_tags(namespace: str, repository: str, search: str) -> dict[str, s
             url = next_url
         else:
             url = None
-        pages += 1
     return tags
 
 
 def resolve_tag(
-    component: str,
     key: str,
-    values: dict[str, str],
     namespace: str,
     repository: str,
     pattern: re.Pattern[str],
-    search: str,
+    values: dict[str, str],
     *,
+    search: str = "",
     even_major_only: bool = False,
 ) -> Resolution:
-    """Resolve a tag-valued pin of the Docker Hub image namespace/repository."""
+    """Resolve a tag-valued pin of the Docker Hub image namespace/repository.
+    `search` narrows the listing; empty, it is the pinned major (Docker Hub
+    lists thousands of Grafana tags), so a new major is a manual choice."""
     current = required_value(values, key)
     current_key = version_key(current, pattern)
     if current_key is None:
         raise TokenCrateError(f"unsupported current {key}: {current}")
-    published = docker_hub_tags(namespace, repository, search)
+    published = docker_hub_tags(
+        namespace, repository, search or current.split(".")[0] + ".", lambda tag: version_key(tag, pattern)
+    )
     candidates = [
         tag
         for tag in published
@@ -309,77 +336,97 @@ def resolve_tag(
     latest = latest_tag(candidates, pattern, f"Docker Hub {namespace}/{repository}")
     latest_key = version_key(latest, pattern)
     if current_is_latest(current_key, latest_key, f"Docker Hub {namespace}/{repository}"):
-        return Resolution(component, key, current, current)
+        return Resolution(key, current, current)
     image_history = (
         f"https://hub.docker.com/_/{repository}"
         if namespace == "library"
         else f"https://hub.docker.com/r/{namespace}/{repository}/tags"
     )
     digest = manifest_digest(published[latest], f"Docker Hub {namespace}/{repository}")
-    return Resolution(component, key, current, latest, (f"  Image tags: {image_history}",), digest)
+    return Resolution(key, current, latest, (f"  Image tags: {image_history}",), digest)
 
 
-def resolve_component(component: str, values: dict[str, str]) -> Resolution:
-    if component == "llama-cpp":
-        return resolve_llama_cpp(values)
-    if component in NPM_PACKAGES:
-        return resolve_npm(component, values)
-    if component == "node":
-        return resolve_tag(
-            component,
-            "NODE_TAG",
-            values,
-            "library",
-            "node",
-            re.compile(r"^(\d+(?:\.\d+)*)-bookworm-slim$"),
-            "bookworm-slim",
-            even_major_only=True,
-        )
-    if component == "bun":
-        return resolve_tag(
-            component,
-            "BUN_TAG",
-            values,
-            "oven",
-            "bun",
-            re.compile(rf"^{STABLE_TAG_RE}-slim$"),
-            "slim",
-        )
-    raise TokenCrateError(f"unknown pin component: {component}")
+# One resolver per pin key the check can look up; the digest beside a tag is
+# resolved with the tag. A pin of pins.env missing here is reported as such.
+RESOLVERS: dict[str, Callable[[dict[str, str]], Resolution]] = {
+    "LLAMA_CPP_TAG": resolve_llama_cpp,
+    "PI_VERSION": functools.partial(resolve_npm, "PI_VERSION", "@earendil-works/pi-coding-agent"),
+    "OMP_VERSION": functools.partial(resolve_npm, "OMP_VERSION", "@oh-my-pi/pi-coding-agent"),
+    "NODE_TAG": functools.partial(
+        resolve_tag,
+        "NODE_TAG",
+        "library",
+        "node",
+        re.compile(r"^(\d+(?:\.\d+)*)-bookworm-slim$"),
+        search="bookworm-slim",
+        even_major_only=True,
+    ),
+    "BUN_TAG": functools.partial(
+        resolve_tag, "BUN_TAG", "oven", "bun", re.compile(rf"^{STABLE_TAG_RE}-slim$"), search="slim"
+    ),
+    "VICTORIAMETRICS_TAG": functools.partial(
+        resolve_tag, "VICTORIAMETRICS_TAG", "victoriametrics", "victoria-metrics", re.compile(rf"^v{STABLE_TAG_RE}$")
+    ),
+    "GRAFANA_TAG": functools.partial(
+        resolve_tag, "GRAFANA_TAG", "grafana", "grafana", re.compile(rf"^{STABLE_TAG_RE}$")
+    ),
+}
 
 
 def check(selection: str, values: dict[str, str], *, waits: tuple[str, ...] = ()) -> str:
-    """Resolve the selected component(s) (or all) and return the report text.
+    """Resolve the selected pin (or every pin of pins.env) and return the report text.
 
-    Every source is queried before anything is reported, so a failing source
-    raises and nothing partial is returned. The `waits` lines (model sets
-    that need a newer llama.cpp build than the pin, from the renderer) are
-    printed under the llama-cpp line, so the wait is visible on every
-    check."""
-    if selection != "all" and selection not in COMPONENTS:
-        raise TokenCrateError(f"unknown pin component {selection!r}; choose from: {', '.join(COMPONENTS)}, all")
-    selected = COMPONENTS if selection == "all" else (selection,)
-    resolutions = [resolve_component(component, values) for component in selected]
+    Every pin is a row, named by `component_name`; a pin without a resolver
+    says so, so what the check covers is in its output. A source that
+    cannot be read makes its pin's row say so and the whole report is
+    raised as `LookupsFailed`, so the other pins are still reported and
+    the exit status says a lookup failed. The `waits` lines (model sets that need a
+    newer llama.cpp build than the pin, from the renderer) are printed under
+    the llama-cpp line, so the wait is visible on every check."""
+    components = {component_name(key): key for key in values if not key.endswith("_DIGEST")}
+    if selection != "all" and selection not in components:
+        raise TokenCrateError(f"unknown pin component {selection!r}; choose from: {', '.join(components)}, all")
+    selected = components if selection == "all" else {selection: components[selection]}
+    rows: dict[str, Resolution | TokenCrateError | None] = {}
+    for name, key in selected.items():
+        if key not in RESOLVERS:
+            rows[name] = None
+            continue
+        try:
+            rows[name] = RESOLVERS[key](values)
+        except TokenCrateError as error:
+            rows[name] = error
 
     lines: list[str] = []
-    newer = [resolution for resolution in resolutions if resolution.latest != resolution.current]
-    for resolution in resolutions:
-        if resolution.latest == resolution.current:
-            lines.append(f"{resolution.component}: {resolution.current} (latest eligible)")
-            continue
-        lines.append(f"{resolution.component}: {resolution.current} -> {resolution.latest}")
-        lines.extend(resolution.notes)
+    for name, resolution in rows.items():
+        if resolution is None:
+            lines.append(f"{name}: {values[selected[name]]} (no resolver; look it up by hand)")
+        elif isinstance(resolution, TokenCrateError):
+            lines.append(f"{name}: {values[selected[name]]} (lookup failed: {resolution})")
+        elif resolution.latest == resolution.current:
+            lines.append(f"{name}: {resolution.current} (latest eligible)")
+        else:
+            lines.append(f"{name}: {resolution.current} -> {resolution.latest}")
+            lines.extend(resolution.notes)
     if "llama-cpp" in selected:
         index = next(i for i, line in enumerate(lines) if line.startswith("llama-cpp: ")) + 1
         while index < len(lines) and lines[index].startswith("  "):
             index += 1
         lines[index:index] = [f"  {wait}" for wait in waits]
-    if not newer:
-        lines.append("pins.env has the latest eligible pins.")
-    else:
+    resolved = [resolution for resolution in rows.values() if isinstance(resolution, Resolution)]
+    failed = [name for name, resolution in rows.items() if isinstance(resolution, TokenCrateError)]
+    newer = [resolution for resolution in resolved if resolution.latest != resolution.current]
+    if newer:
         lines += ["", "Paste into pins.env:"]
         for resolution in newer:
             lines.append(f"{resolution.key}={resolution.latest}")
             if resolution.digest:
                 lines.append(f"{digest_key(resolution.key)}={resolution.digest}")
-    return "\n".join(lines) + "\n"
+    elif len(resolved) == len(rows):
+        lines.append("pins.env has the latest eligible pins.")
+    elif resolved:
+        lines.append("The resolved pins are the latest eligible.")
+    report = "\n".join(lines) + "\n"
+    if failed:
+        raise LookupsFailed(report, failed)
+    return report

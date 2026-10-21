@@ -15,8 +15,6 @@ from . import TokenCrateError
 
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 SET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-# These CLI verbs cannot also name a UI set.
-UI_ACTIONS = ("stop", "logs")
 # Every manifest kind carries this schema number.
 SCHEMA = 1
 
@@ -103,8 +101,6 @@ def select_sets(catalog: dict, names: list[str], kind: str) -> list:
     selected: list = []
     seen: set[str] = set()
     for name in names:
-        if not SET_NAME_RE.fullmatch(name):
-            raise TokenCrateError(f"unsafe {kind} name: {name}")
         if name not in catalog:
             raise TokenCrateError(f"unknown {kind}: {name} (available: {', '.join(catalog)})")
         if name not in seen:

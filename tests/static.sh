@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The engine-free gate: syntax and lint for the shell files, Ruff for
+# The static gate (no container engine, no model): syntax and lint for the shell files, Ruff for
 # the package and the tests, the unit tests (the repository contracts among
 # them), the podman-compose parser, and a Compose render with every
 # installed engine.
@@ -39,17 +39,30 @@ shell_files=(
 for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
+node --check config/agent-sets/metrics/timings/index.js
 node --check config/agent-sets/web/js-debug-adapter
 node --check services/agents/ui-forward.js
+node --check services/dashboard/llama-exporter.js
+node --check tokencrate/stats/pages/live.js
+node --check tokencrate/stats/pages/stats.js
+node --check tokencrate/stats/pages/vendor/uPlot.iife.js
 
-# Each module imports on its own: the unit tests import them in one order,
-# which can hide an import cycle that another entry point runs into.
-for module in tokencrate/*.py; do
-  module=${module#tokencrate/}
-  module=${module%.py}
-  [[ "$module" == __main__ ]] || "$python_bin" -c "import tokencrate.$module"
-done
-"$python_bin" -m unittest discover -s tests -t . -p 'test_*.py'
+# Each module imports on its own, subpackages included: the unit tests
+# import them in one order, which can hide an import cycle that another
+# entry point runs into.
+while IFS= read -r file; do
+  module=${file%.py}
+  module=${module%/__init__}
+  module=${module//\//.}
+  [[ "$module" == *.__main__ ]] || "$python_bin" -c "import $module"
+done < <(find tokencrate -name '*.py' | sort)
+# unittest reports a skipped test in its summary line and still exits 0;
+# strict mode treats the skip like a missing tool.
+unittest_log=$(mktemp)
+trap 'rm -f -- "$unittest_log"' EXIT
+"$python_bin" -m unittest discover -s tests -t . -p 'test_*.py' 2>&1 | tee "$unittest_log" >&2
+unittest_summary=$(tail -n 1 "$unittest_log")
+[[ "$unittest_summary" != *skipped=* ]] || skip "unit tests: $unittest_summary"
 
 if command -v ruff >/dev/null 2>&1; then
   ruff check tokencrate tests tests/fixtures/engine-bin/docker
@@ -89,7 +102,7 @@ if command -v rg >/dev/null 2>&1; then
       printf '.\0'
     fi
   }
-  if scan_paths | xargs -0 rg -n -o '/mnt/host[s]hare|/home/[A-Za-z0-9._-]+' \
+  if scan_paths | xargs -0 rg -n -o '/mnt/host[s]hare|/home/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+' \
     | grep -v ':/home/agent$'; then
     printf 'static: machine-specific absolute host paths remain\n' >&2
     exit 1
@@ -102,10 +115,19 @@ fi
 # selection; render the empty selection so Compose can resolve the path.
 TOKENCRATE_AGENT_SETS_TAG=$("$python_bin" -c 'from tokencrate import PROJECT_ROOT, agentsets; print(agentsets.render(PROJECT_ROOT, PROJECT_ROOT / "build", agentsets.select(PROJECT_ROOT, "")))')
 export TOKENCRATE_AGENT_SETS_TAG
-# The wrapper sets the home tmpfs owner per engine and its root on every
-# call; a render needs both.
+# The Compose files require every setting and the four values the wrapper
+# derives on each call (compose.yaml, the interpolation note); the render
+# exports the documented defaults from the reference, which bin/tokencrate
+# keeps shell-literal.
+set -a
+# shellcheck source=/dev/null
+. ./.env.example
+set +a
 export TOKENCRATE_HOME_OWNER=U
 export TOKENCRATE_ROOT="$PROJECT_ROOT"
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+export HOST_UID HOST_GID
 
 # Render the Compose files with the Docker Compose parser (the Podman one
 # ran above); Compose interpolates every image tag from pins.env itself.
@@ -125,6 +147,9 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   render_compose docker --file compose.yaml --file compose.gpu.yaml --file compose.docker.yaml \
     --file compose.agent-egress.yaml --profile agent-pi --profile agent-omp
   render_compose docker --file compose.yaml --file compose.docker.yaml --profile ui
+  render_compose docker --file compose.yaml --file compose.docker.yaml --profile dashboard
+  render_compose docker --file compose.yaml --file compose.gpu.yaml --file compose.docker.yaml \
+    --profile dashboard --profile dashboard-gpu
 fi
 
 if [[ "$compose_validated" != true ]]; then

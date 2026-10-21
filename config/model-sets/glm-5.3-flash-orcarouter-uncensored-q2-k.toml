@@ -14,12 +14,12 @@ model_card = "https://huggingface.co/orcarouter/GLM-5.3-Flash-Uncensored-GGUF/bl
 # else on the host (the preset gives it a 64K slot to hand the card a
 # little more); the failure mode is swapping through the memory map, not
 # a crash, and the first run decides. The method is abliteration (the
-# card, read with a token). Switch
-# the set when a dynamic 2-bit build of the method appears. The repository is gated with
-# automatic approval: accept its terms on Hugging Face and set HF_TOKEN
-# before models fetch. No MTP: the card says these GGUFs do not include
-# the draft head (layer 45), because the converter drops it, so presets
-# of this set cannot use draft-mtp. The pin is the commit of 2026-09-17.
+# card, read with a token). Switch the set when a dynamic 2-bit build of
+# the method appears. The repository is gated with automatic approval:
+# accept its terms on Hugging Face and set HF_TOKEN before models fetch.
+# No MTP: the card says these GGUFs do not include the draft head (layer
+# 45), because the converter drops it, so presets of this set cannot use
+# draft-mtp. The pin is the commit of 2026-09-17.
 mtp = false
 
 [requires]

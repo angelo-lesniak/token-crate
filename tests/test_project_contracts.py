@@ -22,8 +22,8 @@ except ImportError:
         "(a silent skip would hollow out the gate, so the dependency is mandatory)"
     ) from None
 
-from tests.support import home_tmpfs_directories
-from tokencrate import PROJECT_ROOT, agentsets, env, presets, session, uis
+from tests.support import HOME_IN_CONTAINER, home_tmpfs_directories
+from tokencrate import PROJECT_ROOT, agenthome, agentsets, env, presets, session, uis
 from tokencrate.cli import USAGE
 from tokencrate.env import PIN_KEYS
 
@@ -33,6 +33,70 @@ BUILD_PIN_KEYS = set(PIN_KEYS) - {"CUDA_MIN_DRIVER_MAJOR"}
 AGENT_SERVICES = ("agent-pi", "agent-omp")
 # The browser-UI service is the pi image with another command; the forwarder publishes it.
 UI_SERVICES = ("agent-ui", "ui-forward")
+# The dashboard profile: the exporter on the Node image, VictoriaMetrics, Grafana,
+# and with the GPU the DCGM exporter in its own profile.
+DASHBOARD_SERVICES = ("llama-exporter", "victoriametrics", "grafana", "gpu-exporter")
+# What each service may carry, so a second key cannot undo a hardening one
+# (`privileged`, `pid`, `network_mode`, `cap_add`, `devices`), and its bind
+# targets outside the home, so no service gains a bind the tests do not
+# name; the home binds are pinned per agent in assert_agent_service.
+HARDENED_KEYS = {"init", "read_only", "cap_drop", "security_opt", "user", "pids_limit", "tmpfs", "networks"}
+AGENT_KEYS = HARDENED_KEYS | {
+    "image",
+    "build",
+    "profiles",
+    "stdin_open",
+    "tty",
+    "working_dir",
+    "environment",
+    "volumes",
+}
+SERVICE_KEYS = {
+    "llama": HARDENED_KEYS
+    | {"image", "build", "restart", "stop_grace_period", "ports", "volumes", "environment", "labels"},
+    "agent-pi": AGENT_KEYS,
+    "agent-omp": AGENT_KEYS,
+    "agent-ui": AGENT_KEYS | {"labels", "stop_grace_period", "command"},
+    "ui-forward": HARDENED_KEYS | {"image", "profiles", "labels", "ports", "environment", "volumes", "command"},
+    "llama-exporter": HARDENED_KEYS | {"image", "profiles", "environment", "volumes", "command"},
+    "victoriametrics": HARDENED_KEYS | {"image", "profiles", "volumes", "command"},
+    "grafana": HARDENED_KEYS | {"image", "profiles", "ports", "environment", "volumes"},
+    "gpu-exporter": HARDENED_KEYS | {"image", "profiles", "environment"},
+}
+AGENT_MOUNTS = {
+    "${LLM_AGENT_PROJECT_DIR:-/workspace}",
+    "/opt/tokencrate/skills",
+    "/opt/tokencrate/skills-local",
+    "/etc/tokencrate/agent",
+}
+MOUNT_TARGETS = {
+    "llama": {
+        "/models",
+        f"/etc/tokencrate/{presets.CONFIG_FILE_NAME}",
+        "/etc/tokencrate/chat-templates",
+        "/etc/tokencrate/ui-config.json",
+    },
+    "agent-pi": AGENT_MOUNTS | {"/etc/tokencrate/agent-generated/models.json"},
+    "agent-omp": AGENT_MOUNTS | {"/etc/tokencrate/agent-generated/models.yml"},
+    "agent-ui": AGENT_MOUNTS | {"/etc/tokencrate/agent-generated/models.json"},
+    "ui-forward": {"/etc/tokencrate/ui-forward.js"},
+    "llama-exporter": {"/etc/tokencrate/llama-exporter.js"},
+    "victoriametrics": {"/etc/tokencrate/scrape.yaml", "/victoria-metrics-data"},
+    "grafana": {"/etc/tokencrate/provisioning"},
+    "gpu-exporter": set(),
+}
+# Where a bind may come from: the checkout, a storage setting, or the
+# per-start project and home. The engine socket and a host directory have
+# no such source.
+MOUNT_SOURCES = (
+    "./",
+    "${TOKENCRATE_ROOT:?",
+    "${LLM_MODELS_DIR:?",
+    "${LLM_SKILLS_DIR:?",
+    "${LLM_LOCAL_SKILLS_DIR:?",
+    "${LLM_AGENT_PROJECT_DIR:-",
+    "${TOKENCRATE_AGENT_HOME:-",
+)
 # oh-my-pi reads its global context file from the home, so the repository's
 # copy is bound there read-only. Both agents take their settings from
 # /etc/tokencrate through the entrypoint, which writes them into the home.
@@ -48,13 +112,32 @@ COMPOSE_FILES = (
     "compose.agent-egress.yaml",
 )
 # The internal networks: agents and the model; the browser UI, the model, and
-# the forwarder. ui-publish carries the forwarder's published port alone.
-INTERNAL_NETWORKS = ("agents", "ui")
-HOME_TMPFS_OPTIONS = (
-    "rw,exec,nosuid,nodev,mode=0750,${TOKENCRATE_HOME_OWNER:?set per engine by bin/tokencrate},size=256m"
-)
+# the forwarder; the dashboard profile and the model. ui-publish carries the
+# forwarder's published port alone, dashboard-publish Grafana's.
+INTERNAL_NETWORKS = ("agents", "ui", "dashboard")
+# The variables one agent or UI start sets, and the label `up` sets: the
+# only ones a Compose file may give a fallback, because both parsers
+# interpolate every service on every call (compose.yaml, the interpolation
+# note). Every setting of .env.example is required instead.
+PER_START_VARIABLES = {
+    "LLM_AGENT_PROJECT_DIR",
+    "TOKENCRATE_AGENT_HOME",
+    "TOKENCRATE_PRESET",
+    "TOKENCRATE_AGENT_SETS_TAG",
+    "TOKENCRATE_CONFIG_SHA256",
+    "TOKENCRATE_UI_SET",
+    "TOKENCRATE_UI_COMMAND",
+    "TOKENCRATE_UI_PORT",
+    "TOKENCRATE_UI_STATE",
+    "TOKENCRATE_UI_HOST_PORT",
+}
+# Optional settings: commented out in .env.example, so the wrapper exports
+# them only when .env names them.
+OPTIONAL_SETTINGS = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"}
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\((?P<target>[^)]+)\)")
-COMPOSE_FALLBACK_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*):-([^}]*)\}")
+# Every `${NAME...}` reference with its operator: `:-` (fallback), `:?` or
+# `?` (required), or none.
+COMPOSE_VARIABLE_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(:-|:\?|\?|)")
 # Every base image is pulled by the pinned digest, never by the tag alone.
 PINNED_FROM_RE = re.compile(r":\$\{[A-Z_]+_TAG\}@sha256:\$\{[A-Z_]+_DIGEST\}")
 
@@ -210,8 +293,13 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(
             ports and ports[0].startswith("127.0.0.1:"), f"the llama port must publish on 127.0.0.1: {ports}"
         )
+        models = find_mount(llama, "/models")
+        self.assertIsNotNone(models, "the llama service must mount the model library at /models")
+        self.assertTrue(
+            str(models.get("source")).startswith("${LLM_MODELS_DIR"), "the library comes from LLM_MODELS_DIR"
+        )
+        self.assertIs(models.get("read_only"), True, "the llama service must mount /models read-only")
         for target, source in (
-            ("/models", "${LLM_MODELS_DIR:-./data/models}"),
             (f"/etc/tokencrate/{presets.CONFIG_FILE_NAME}", f"./build/{presets.CONFIG_FILE_NAME}"),
             ("/etc/tokencrate/chat-templates", "./config/chat-templates"),
             ("/etc/tokencrate/ui-config.json", "./config/llama/ui-config.json"),
@@ -228,47 +316,130 @@ class ProjectContractTests(unittest.TestCase):
             "1",
             "the llama service must set LLAMA_ARG_OFFLINE=1 so no model server downloads files at start",
         )
-        devices = load_yaml("compose.gpu.yaml").get("services", {}).get("llama", {}).get("devices")
-        self.assertEqual(
-            devices,
-            ["${GPU_DEVICE:-nvidia.com/gpu=all}"],
-            "compose.gpu.yaml must request the CDI device ${GPU_DEVICE:-nvidia.com/gpu=all} for llama",
-        )
+        gpu_services = load_yaml("compose.gpu.yaml").get("services", {})
+        self.assertEqual(set(gpu_services), {"llama", "gpu-exporter"}, "compose.gpu.yaml covers the GPU users")
+        for name, service in gpu_services.items():
+            devices = [str(device) for device in service.get("devices") or []]
+            self.assertEqual(len(devices), 1, f"compose.gpu.yaml must request one device for {name}")
+            self.assertTrue(devices[0].startswith("${GPU_DEVICE"), f"the device of {name} is the GPU_DEVICE setting")
+        exporter = self.service(compose, "gpu-exporter")
+        self.assertNotIn("devices", exporter, "the GPU exporter's device request belongs in compose.gpu.yaml")
+        self.assertEqual(exporter["environment"].get("NVIDIA_VISIBLE_DEVICES"), "void")
 
-    def test_the_networks_are_internal_and_the_services_are_exactly_the_documented_ones(self) -> None:
+    def test_the_network_layout_contains_agents_and_publishes_on_loopback_alone(self) -> None:
+        # The placement the privacy model rests on, as invariants over who
+        # shares a network with whom (tests/podman-compose.sh proves the same
+        # from the rendered `run` arguments): the model is the only service
+        # with a route out that is not a publisher; a publisher sits alone on
+        # its publish network and holds no agent; a terminal agent reaches the
+        # model and the other offline sessions; a browser UI reaches the model and its
+        # forwarder; the dashboard reaches the model and itself; every
+        # published port binds the loopback address.
         compose = load_yaml("compose.yaml")
         networks = compose.get("networks") or {}
+        internal = {name for name, network in networks.items() if (network or {}).get("internal")}
+        self.assertEqual(internal, set(INTERNAL_NETWORKS), "the internal networks are agents, ui, and dashboard")
+        publish = {name for name in networks if name.endswith("-publish")}
         self.assertEqual(
-            set(networks),
-            {"default", *INTERNAL_NETWORKS, "ui-publish"},
-            "compose.yaml must define exactly the default, agents, ui, and ui-publish networks",
+            set(networks) - internal, {"default", *publish}, "every other network is default or a publisher's"
         )
-        for name in INTERNAL_NETWORKS:
-            self.assertIs((networks.get(name) or {}).get("internal"), True, f"the {name} network must be internal")
-        self.assertFalse(
-            (networks.get("ui-publish") or {}).get("internal"),
-            "the ui-publish network must not be internal; it carries the forwarder's published port",
+        services = compose.get("services") or {}
+        self.assertEqual(
+            set(services),
+            {"llama", *AGENT_SERVICES, *UI_SERVICES, *DASHBOARD_SERVICES},
+            "compose.yaml must define exactly the llama, agent, UI, and dashboard services; helpers run in-process",
         )
+        placement = {name: set(service.get("networks") or ["default"]) for name, service in services.items()}
+        for name, joined in placement.items():
+            self.assertTrue(joined <= set(networks), f"{name} names an undefined network: {joined - set(networks)}")
+
+        def neighbours(name: str) -> set[str]:
+            return {other for other, joined in placement.items() if other != name and joined & placement[name]}
+
+        self.assertEqual({name for name, joined in placement.items() if "default" in joined}, {"llama"})
+        publishers = {name for name, service in services.items() if service.get("ports")}
+        for network in publish:
+            members = {name for name, joined in placement.items() if network in joined}
+            self.assertEqual(len(members), 1, f"{network} must carry exactly one service: {sorted(members)}")
+            (member,) = members
+            self.assertIn(member, publishers, f"{member} sits on {network} and publishes nothing")
+            self.assertNotIn(member, (*AGENT_SERVICES, "agent-ui"), f"an agent ({member}) must not sit on {network}")
+            self.assertNotIn("agents", placement[member], f"{member} has a route out and sits with terminal agents")
+        self.assertEqual(
+            publishers,
+            {"llama", *(name for name in publishers if placement[name] & publish)},
+            "only publishers publish",
+        )
+        for name in publishers:
+            for port in services[name]["ports"]:
+                self.assertTrue(str(port).startswith("127.0.0.1:"), f"{name} must publish on 127.0.0.1 alone: {port}")
+        for name in AGENT_SERVICES:
+            self.assertEqual(
+                neighbours(name),
+                {"llama", *AGENT_SERVICES} - {name},
+                f"a terminal agent ({name}) reaches the model and the other offline sessions, nothing else",
+            )
+        self.assertEqual(
+            neighbours("agent-ui"), {"llama", "ui-forward"}, "a browser UI reaches the model and its forwarder"
+        )
+        for name in DASHBOARD_SERVICES:
+            self.assertLessEqual(
+                neighbours(name), {"llama", *DASHBOARD_SERVICES}, f"{name} reaches the model and the dashboard"
+            )
+        # Docker keeps a host address on an internal bridge unless told
+        # otherwise; the overlay isolates exactly the internal networks.
         docker = load_yaml("compose.docker.yaml")
         self.assertEqual(
             {key for key in docker if not key.startswith("x-")},
             {"networks"},
             "compose.docker.yaml must set network options and nothing else",
         )
-        self.assertEqual(
-            set(docker["networks"]), set(INTERNAL_NETWORKS), "compose.docker.yaml must cover the internal networks"
-        )
+        self.assertEqual(set(docker["networks"]), internal, "compose.docker.yaml must cover the internal networks")
         for name, network in docker["networks"].items():
             options = (network or {}).get("driver_opts") or {}
             for key in ("com.docker.network.bridge.gateway_mode_ipv4", "com.docker.network.bridge.gateway_mode_ipv6"):
                 self.assertEqual(
                     options.get(key), "isolated", f"compose.docker.yaml must set {key}: isolated on the {name} network"
                 )
-        self.assertEqual(
-            set(compose.get("services") or {}),
-            {"llama", *AGENT_SERVICES, *UI_SERVICES},
-            "compose.yaml must define exactly the llama, agent, and UI services; helpers run in-process",
-        )
+
+    def test_no_service_carries_a_key_or_a_bind_the_contracts_do_not_name(self) -> None:
+        # The other tests pin what must be present; this one pins what must
+        # be absent, since one more key or bind (`privileged`, the engine
+        # socket, a host directory) widens a boundary without failing a
+        # presence check. Each overlay carries its one concern and nothing else.
+        compose = load_yaml("compose.yaml")
+        self.assertEqual({key for key in compose if not key.startswith("x-")}, {"name", "services", "networks"})
+        for name, service in compose["services"].items():
+            with self.subTest(service=name):
+                self.assertEqual(set(service), SERVICE_KEYS[name], f"{name} carries a key the contracts do not name")
+                targets = set()
+                for mount in service.get("volumes") or []:
+                    self.assertIsInstance(mount, dict, f"{name}: every mount is a long-form bind: {mount}")
+                    self.assertEqual(mount.get("type"), "bind", f"{name}: every mount is a bind: {mount}")
+                    source = str(mount.get("source"))
+                    self.assertTrue(source.startswith(MOUNT_SOURCES), f"{name} binds {source}, not a named source")
+                    targets.add(mount["target"])
+                outside_home = {target for target in targets if not target.startswith(HOME_IN_CONTAINER)}
+                self.assertEqual(outside_home, MOUNT_TARGETS[name], f"{name} binds a target the contracts do not name")
+        overlays = {
+            "compose.gpu.yaml": {"llama": {"devices"}, "gpu-exporter": {"devices"}},
+            "compose.podman.yaml": {name: {"userns_mode"} for name in compose["services"]},
+            "compose.agent-egress.yaml": {
+                "agent-pi": {"networks"},
+                "agent-omp": {"networks"},
+                "agent-ui": {"networks", "labels"},
+            },
+        }
+        for relative, expected in overlays.items():
+            overlay = load_yaml(relative)
+            self.assertEqual(
+                {key for key in overlay if not key.startswith("x-")}, {"services"}, f"{relative} changes services alone"
+            )
+            self.assertEqual(
+                {name: set(service) for name, service in overlay["services"].items()},
+                expected,
+                f"{relative} must set exactly the keys of its one concern",
+            )
 
     def test_agent_services_run_hardened_on_the_internal_network_with_a_tmpfs_home(self) -> None:
         compose = load_yaml("compose.yaml")
@@ -304,11 +475,11 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(generated["read_only"])
         self.assertTrue(generated["source"].endswith(f"/build/agents/{agent}/{filename}"))
         self.assertIsNone(find_mount(service, "/etc/tokencrate/agent-generated"))
-        self.assertIn(agent, session.AGENTS, f"{name} is not an agent of session.AGENTS")
+        self.assertIn(agent, agenthome.AGENTS, f"{name} is not an agent of agenthome.AGENTS")
         # The home is a per-container tmpfs. The retained directories and the
         # configuration files are its only binds, and every ancestor of a
         # bind has an owned tmpfs of its own.
-        home = session.HOME_IN_CONTAINER
+        home = HOME_IN_CONTAINER
         # The UI state directory is the set's own; compose.yaml carries the
         # variable, whose fallback only lets a render without the wrapper resolve.
         state = "${TOKENCRATE_UI_STATE:-.ui-state}" if name == "agent-ui" else None
@@ -340,7 +511,14 @@ class ProjectContractTests(unittest.TestCase):
             f"{name} must provide a tmpfs for the home and every ancestor of a home bind, nothing else",
         )
         for target, options in home_tmpfs.items():
-            self.assertEqual(options, HOME_TMPFS_OPTIONS, f"{name} must mount the tmpfs {target} owned and executable")
+            self.assertIn(
+                "exec", options.split(","), f"{name}: the tmpfs {target} must be executable (Docker says noexec)"
+            )
+            self.assertIn(
+                "${TOKENCRATE_HOME_OWNER:?", options, f"{name}: the tmpfs {target} must be owned by the host user"
+            )
+            # The size docs/configuration.md states for the home.
+            self.assertIn("size=256m", options.split(","), f"{name}: the tmpfs {target} must be 256 MiB")
         for target in home_mounts:
             for parent in Path(target).parents:
                 if parent.is_relative_to(home):
@@ -357,22 +535,69 @@ class ProjectContractTests(unittest.TestCase):
         # executes a ~/.profile written into the home during the session.
         self.assertEqual(str(environment.get("PI_BASH_NO_LOGIN")), "1", f"{name} must set PI_BASH_NO_LOGIN=1")
 
-    def test_every_service_sits_on_exactly_its_networks(self) -> None:
-        # The placement the privacy model rests on: terminal agents on the
-        # internal agents network alone, a browser UI on the internal ui
-        # network alone, the forwarder on ui and its published ui-publish,
-        # llama on all three of default, agents, and ui. tests/podman-compose.sh
-        # proves the same from the rendered `run` arguments.
+    def test_the_dashboard_profile_is_hardened_pinned_and_read_only(self) -> None:
+        # The profile's services are hardened like the rest, pull pinned
+        # images, and publish Grafana alone, on the dashboard port setting.
         compose = load_yaml("compose.yaml")
-        expected = {
-            "llama": ["default", "agents", "ui"],
-            "agent-pi": ["agents"],
-            "agent-omp": ["agents"],
-            "agent-ui": ["ui"],
-            "ui-forward": ["ui-publish", "ui"],
-        }
-        for name, networks in expected.items():
-            self.assertEqual(self.service(compose, name).get("networks"), networks, f"{name} must sit on {networks}")
+        for name in DASHBOARD_SERVICES:
+            service = self.service(compose, name)
+            self.assert_hardened(name, service)
+            profile = "dashboard-gpu" if name == "gpu-exporter" else "dashboard"
+            self.assertEqual(service.get("profiles"), [profile], f"{name} must be in the {profile} profile")
+            self.assertRegex(str(service.get("image")), r"@sha256:\$\{[A-Z_]+_DIGEST:\?", f"{name} must pin a digest")
+            ports = [str(port) for port in service.get("ports") or []]
+            if name == "grafana":
+                self.assertEqual(len(ports), 1, "grafana publishes one port")
+                self.assertTrue(
+                    ports[0].startswith("127.0.0.1:${LLM_DASHBOARD_PORT"), f"grafana's port is the setting: {ports}"
+                )
+            else:
+                self.assertEqual(ports, [], f"{name} publishes nothing")
+        grafana = self.service(compose, "grafana")
+        self.assertEqual(grafana["environment"].get("GF_AUTH_ANONYMOUS_ORG_ROLE"), "Viewer")
+        for switch in (
+            "GF_ANALYTICS_REPORTING_ENABLED",
+            "GF_ANALYTICS_CHECK_FOR_UPDATES",
+            "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES",
+            "GF_ANALYTICS_FEEDBACK_LINKS_ENABLED",
+            "GF_NEWS_NEWS_FEED_ENABLED",
+            "GF_SNAPSHOTS_EXTERNAL_ENABLED",
+        ):
+            self.assertEqual(grafana["environment"].get(switch), "false", f"grafana must switch {switch} off")
+        for switch in (
+            "GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED",
+            "GF_PLUGINS_PREINSTALL_DISABLED",
+            "GF_SECURITY_DISABLE_GRAVATAR",
+            "GF_SERVER_ENFORCE_DOMAIN",
+        ):
+            self.assertEqual(grafana["environment"].get(switch), "true", f"grafana must set {switch}")
+        # The Host check redirects every other name to the address the
+        # wrapper prints, on the published port.
+        self.assertEqual(grafana["environment"].get("GF_SERVER_DOMAIN"), "127.0.0.1")
+        self.assertRegex(
+            str(grafana["environment"].get("GF_SERVER_ROOT_URL")),
+            r"^http://127\.0\.0\.1:\$\{LLM_DASHBOARD_PORT[:?].*\}/$",
+        )
+        self.assert_mount(
+            "grafana", grafana, "/etc/tokencrate/provisioning", "./config/dashboard/grafana", read_only=True
+        )
+        # The provisioned dashboard: valid JSON, read-only, every panel on
+        # the provisioned datasource, and no soft axis maximum (Grafana
+        # ignores it on a stat panel).
+        dashboard = json.loads(
+            (PROJECT_ROOT / "config/dashboard/grafana/dashboards/model-server.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual((dashboard["uid"], dashboard["editable"]), ("tokencrate-model-server", False))
+        for panel in dashboard["panels"]:
+            self.assertEqual(panel["datasource"]["uid"], "tokencrate-victoriametrics", panel["title"])
+            self.assertNotIn("axisSoftMax", json.dumps(panel), panel["title"])
+        self.assert_mount(
+            "victoriametrics",
+            self.service(compose, "victoriametrics"),
+            "/etc/tokencrate/scrape.yaml",
+            "./config/dashboard/scrape.yaml",
+            read_only=True,
+        )
 
     def test_only_the_egress_overlay_moves_a_session_to_the_default_network(self) -> None:
         # The overlay replaces the network list (`!override`, which the
@@ -439,7 +664,15 @@ class ProjectContractTests(unittest.TestCase):
             read_only=True,
         )
         self.assertNotIn("depends_on", forward, "the template must not start a generic UI dependency")
-        self.assertEqual(forward.get("command", [None])[0], "node", "the ui-forward service must run node")
+        command = forward.get("command") or []
+        self.assertEqual(command[:1], ["node"], "the ui-forward service must run node")
+        # The forwarder's target is the UI container, by the name the
+        # wrapper gives it; a rename on one side would time out every UI start.
+        self.assertEqual(
+            command[2:3],
+            [uis.container_names("${TOKENCRATE_UI_SET:-}")[0]],
+            "ui-forward must target the UI container by the name uis.container_names spells",
+        )
 
     def test_every_service_runs_as_the_host_user(self) -> None:
         # Podman additionally keeps the id mapping.
@@ -484,56 +717,40 @@ class ProjectContractTests(unittest.TestCase):
         # forwarder; a launcher that writes the number itself could drift
         # from the manifest, and the mismatch would show only as the `ui`
         # start timeout.
-        for entry in agentsets.catalog(PROJECT_ROOT).values():
+        for manifest in sorted((PROJECT_ROOT / "config" / "agent-sets").glob(f"*/{agentsets.MANIFEST}")):
+            entry = agentsets.read_manifest(manifest.parent, f"config/agent-sets/{manifest.parent.name}")
             if entry.ui is None:
                 continue
-            launcher = entry.directory / entry.ui["command"]
-            self.assertTrue(launcher.is_file(), f"{entry.name} must ship its launcher {entry.ui['command']}")
+            launcher = entry.directory / entry.ui.command
+            self.assertTrue(launcher.is_file(), f"{entry.name} must ship its launcher {entry.ui.command}")
             self.assertNotIn(
-                str(entry.ui["port"]),
+                str(entry.ui.port),
                 launcher.read_text(encoding="utf-8"),
                 f"{launcher.relative_to(PROJECT_ROOT)} writes the port that {entry.name}'s manifest declares",
             )
 
-    def test_compose_fallbacks_agree_with_the_documented_defaults(self) -> None:
-        # The wrapper exports every key it defaults with its effective value,
-        # so a Compose `${KEY:-fallback}` for such a key is never used; a
-        # fallback that differs from the wrapper's default would still
-        # mislead a reader and a direct Compose call.
-        defaults = env.parse_env_file(PROJECT_ROOT / ".env.example")
+    def test_only_the_per_start_variables_have_a_compose_fallback(self) -> None:
+        # Every setting of .env.example, and the identity and root the
+        # wrapper derives, is exported on every Compose call, so each is
+        # required (`:?`, or `?` where an empty value is a documented
+        # setting); a fallback would be a second copy of the default. Only
+        # the variables one start sets keep one, since both parsers
+        # interpolate every service on every call, selected profile or not.
+        settings = set(env.parse_env_file(PROJECT_ROOT / ".env.example"))
+        references: dict[str, set[str]] = {}
         for relative in COMPOSE_FILES:
-            for key, fallback in COMPOSE_FALLBACK_RE.findall(read_text(relative)):
-                if key in defaults and fallback:
-                    self.assertEqual(
-                        fallback, defaults[key], f"{relative} falls back to {key}={fallback!r}; .env.example differs"
-                    )
-
-    def test_the_ui_forward_fallback_port_is_the_pi_web_host_port(self) -> None:
-        # TOKENCRATE_UI_HOST_PORT is set per launch, so it has no line in
-        # .env.example and the fallback test above cannot reach it; the
-        # fallback still copies the pi-web manifest's host_port and would
-        # mislead a reader if it differed.
-        expected = str(agentsets.load_set(PROJECT_ROOT, "pi-web").ui["host_port"])
-        fallbacks = {
-            fallback
-            for key, fallback in COMPOSE_FALLBACK_RE.findall(read_text("compose.yaml"))
-            if key == "TOKENCRATE_UI_HOST_PORT"
-        }
+            for key, operator in COMPOSE_VARIABLE_RE.findall(read_text(relative)):
+                references.setdefault(key, set()).add(operator)
+        with_fallback = {key for key, operators in references.items() if ":-" in operators}
         self.assertEqual(
-            fallbacks,
-            {expected},
-            "compose.yaml must fall back to the pi-web manifest's host_port for the forwarder port",
+            with_fallback,
+            PER_START_VARIABLES | OPTIONAL_SETTINGS,
+            "a Compose fallback exists for exactly the per-start variables and the optional settings",
         )
-
-    def test_the_shipped_ui_ports_are_documented_as_the_setting_pattern(self) -> None:
-        # The setting is one key per UI set; .env.example shows the two
-        # shipped ones, commented out, with the manifest's host_port.
-        documented = env.documented_keys(PROJECT_ROOT / ".env.example")
-        for name in ("pi-web", "paseo"):
-            key = env.ui_port_key(name)
-            self.assertIn(key, documented, f".env.example must show {key}")
-            self.assertIn(
-                f"# {key}={agentsets.load_set(PROJECT_ROOT, name).ui['host_port']}\n", read_text(".env.example")
+        self.assertTrue(PER_START_VARIABLES.isdisjoint(settings), "a per-start variable is not a setting")
+        for key in (*settings, "HOST_UID", "HOST_GID", "TOKENCRATE_ROOT", "TOKENCRATE_HOME_OWNER", *PIN_KEYS):
+            self.assertLessEqual(
+                references.get(key, set()), {":?", "?"}, f"{key} is exported on every call, so Compose must require it"
             )
 
     def test_every_npm_agent_set_gets_security_updates(self) -> None:
@@ -575,14 +792,6 @@ class ProjectContractTests(unittest.TestCase):
         names = re.findall(r"^# ([A-Z][A-Z0-9_]*)=", read_text("cloud-keys.env.example"), re.MULTILINE)
         self.assertIn("ANTHROPIC_API_KEY", names)
 
-    def test_the_validation_environment_names_the_pinned_versions(self) -> None:
-        # The records are measurements of the pins under test; a raised pin
-        # without a new record would otherwise keep the old line.
-        text = read_text("docs/validation.md")
-        for key, value in env.load_pins(PROJECT_ROOT / "pins.env").items():
-            if key not in env.DIGEST_KEYS:
-                self.assertIn(f"`{key}={value}`", text, f"docs/validation.md#environment must name {key}={value}")
-
     def test_the_documentation_links_resolve_and_index_every_page_and_usage_line(self) -> None:
         pages = {path: path.read_text(encoding="utf-8") for path in markdown_pages()}
         for path, text in pages.items():
@@ -601,6 +810,7 @@ class ProjectContractTests(unittest.TestCase):
                         fragment, anchors, f"broken heading anchor in {path.relative_to(PROJECT_ROOT)}: {raw_target}"
                     )
         readme = pages[PROJECT_ROOT / "README.md"]
+        self.assertIn("## Choose what to do next", readme, "README lost the table that indexes every page")
         index = readme.split("## Choose what to do next", 1)[1].split("\n## ", 1)[0]
         docs = PROJECT_ROOT / "docs"
         for page in [*sorted(docs.glob("*.md")), PROJECT_ROOT / "CONTRIBUTING.md", PROJECT_ROOT / "SECURITY.md"]:

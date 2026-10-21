@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import TokenCrateError
-from .names import SET_NAME_RE, SHA256_RE, UI_ACTIONS, parse_list, read_toml, relative_path
+from .names import SET_NAME_RE, SHA256_RE, parse_list, read_toml, relative_path
 from .names import description as read_description
 
 MANIFEST = "set.toml"
@@ -73,16 +73,46 @@ KNOWN_KEYS = {
 }
 ASSET_KEYS = {"url", "sha256", "sha512", "into", "strip", "mode"}
 UI_KEYS = {"command", "port", "state"}
-UI_OPTIONAL_KEYS = {"identity", "host_port"}
+UI_OPTIONAL_KEYS = {"host_port"}
 # A UI set's name ends the names of its two containers, `tokencrate-ui-<set>`
 # and `tokencrate-ui-forward-<set>`: a DNS label (63 characters), and no
 # set may name another set's forwarder.
 UI_SET_NAME_RE = re.compile(r"^(?!forward-)[a-z0-9][a-z0-9-]{0,40}$")
+# These CLI verbs cannot also name a UI set.
+UI_ACTIONS = ("stop", "logs")
 # The home directories an agent's own state occupies; a UI's state directory
 # is a sibling of them, never one of them.
 RESERVED_HOME_DIRECTORIES = {".", "..", ".pi", ".omp", ".agents", ".config", ".local", ".cache"}
 COMMAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 STATE_RE = re.compile(r"^\.?[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+@dataclass(frozen=True)
+class Asset:
+    """One `[[asset]]` entry: a download the build verifies and installs."""
+
+    url: str
+    sha256: str | None
+    sha512: str | None
+    into: str
+    strip: int
+    mode: str
+    # How it is installed: extracted (`tar`, `zip`) or copied as one file.
+    kind: str
+
+
+@dataclass(frozen=True)
+class UiSpec:
+    """A set's `[ui]` table: the program `ui <set>` runs instead of `pi` (a
+    name on the image's PATH, no arguments), the container port it listens
+    on, the home directory that holds its state (the one UI path bound
+    from the host per project), and the host port it publishes by default
+    (None: `--port`)."""
+
+    command: str
+    port: int
+    state: str
+    host_port: int | None
 
 
 @dataclass(frozen=True)
@@ -93,7 +123,7 @@ class AgentSet:
     source: str
     description: str
     apt: list[str] = field(default_factory=list)
-    assets: list[dict] = field(default_factory=list)
+    assets: list[Asset] = field(default_factory=list)
     npm: dict | None = None
     env: dict[str, str] = field(default_factory=dict)
     build: list[str] = field(default_factory=list)
@@ -104,12 +134,8 @@ class AgentSet:
     note: str = ""
     pi_packages: list[str] = field(default_factory=list)
     pi_lens: dict = field(default_factory=dict)
-    # A set that provides a browser UI: the program `ui <set>` runs instead
-    # of `pi` (a name on the image's PATH, no arguments), the container port
-    # it listens on, the home directory that holds its state (the one UI
-    # path bound from the host), the identity files kept per set, and the
-    # host port it publishes by default (None: `--port` or the setting).
-    ui: dict | None = None
+    # Set when the set provides a browser UI.
+    ui: UiSpec | None = None
 
     @property
     def target(self) -> str:
@@ -142,7 +168,7 @@ def asset_kind(url: str) -> str:
     return "file"
 
 
-def read_asset(entry: dict, context: str) -> dict:
+def read_asset(entry: dict, context: str) -> Asset:
     unknown = sorted(set(entry) - ASSET_KEYS)
     if unknown:
         raise fail(context, f"asset has unknown key(s): {', '.join(unknown)}")
@@ -166,7 +192,47 @@ def read_asset(entry: dict, context: str) -> dict:
     mode = entry.get("mode", "0644")
     if not isinstance(mode, str) or not MODE_RE.fullmatch(mode) or ("mode" in entry and kind != "file"):
         raise fail(context, f"asset {url}: mode is an octal mode such as 0755 and applies to plain files only")
-    return {"url": url, "sha256": sha256, "sha512": sha512, "into": into, "strip": strip, "mode": mode, "kind": kind}
+    return Asset(url, sha256, sha512, into, strip, mode, kind)
+
+
+def read_npm(table: dict, directory: Path, context: str) -> dict | None:
+    npm = table.get("npm")
+    if npm is None:
+        return None
+    if not isinstance(npm, dict) or set(npm) - {"omit_peer"} or not isinstance(npm.get("omit_peer", False), bool):
+        raise fail(context, "npm accepts only omit_peer (a boolean)")
+    for required in ("package.json", "package-lock.json"):
+        if not (directory / required).is_file():
+            raise fail(context, f"npm needs {required} next to the manifest")
+    return {"omit_peer": npm.get("omit_peer", False)}
+
+
+def read_ui(table: dict, name: str, context: str) -> UiSpec | None:
+    ui = table.get("ui")
+    if ui is None:
+        return None
+    if name in UI_ACTIONS:
+        raise fail(context, f"UI set name {name!r} is reserved for a ui command")
+    # The name goes into the containers' names, one of which resolves on
+    # the ui network: a DNS label, and never a sibling's forwarder.
+    if not UI_SET_NAME_RE.fullmatch(name):
+        raise fail(
+            context,
+            f"UI set name {name!r} must be lowercase letters, digits, and hyphens, at most 41 characters, "
+            "and not start with forward-",
+        )
+    if not isinstance(ui, dict) or not UI_KEYS <= set(ui) <= UI_KEYS | UI_OPTIONAL_KEYS:
+        raise fail(context, "ui must be a table with command, port, and state, and at most host_port")
+    if not isinstance(ui["command"], str) or not COMMAND_RE.fullmatch(ui["command"]):
+        raise fail(context, f"ui command must be a program name without a path or arguments: {ui['command']!r}")
+    for key in ("port", "host_port"):
+        value = ui.get(key, 1024)
+        if not isinstance(value, int) or isinstance(value, bool) or not 1024 <= value <= 65535:
+            raise fail(context, f"ui {key} must be an integer between 1024 and 65535")
+    state = ui["state"]
+    if not isinstance(state, str) or not STATE_RE.fullmatch(state) or state in RESERVED_HOME_DIRECTORIES:
+        raise fail(context, f"ui state must name one directory below the agent home, not the agent's own: {state!r}")
+    return UiSpec(ui["command"], ui["port"], state, ui.get("host_port"))
 
 
 def read_manifest(directory: Path, source: str) -> AgentSet:
@@ -187,15 +253,6 @@ def read_manifest(directory: Path, source: str) -> AgentSet:
     if not isinstance(assets_raw, list) or not all(isinstance(item, dict) for item in assets_raw):
         raise fail(context, "asset must be an array of tables")
     assets = [read_asset(entry, context) for entry in assets_raw]
-
-    npm = table.get("npm")
-    if npm is not None:
-        if not isinstance(npm, dict) or set(npm) - {"omit_peer"} or not isinstance(npm.get("omit_peer", False), bool):
-            raise fail(context, "npm accepts only omit_peer (a boolean)")
-        for required in ("package.json", "package-lock.json"):
-            if not (directory / required).is_file():
-                raise fail(context, f"npm needs {required} next to the manifest")
-        npm = {"omit_peer": bool(npm.get("omit_peer", False))}
 
     env = table.get("env", {})
     if not isinstance(env, dict):
@@ -225,48 +282,10 @@ def read_manifest(directory: Path, source: str) -> AgentSet:
     pi_lens = table.get("pi_lens", {})
     if not isinstance(pi_lens, dict):
         raise fail(context, "pi_lens must be a table")
-
-    ui = table.get("ui")
-    if ui is not None:
-        if name in UI_ACTIONS:
-            raise fail(context, f"UI set name {name!r} is reserved for a ui command")
-        # The name goes into the containers' names, one of which resolves
-        # on the ui network: a DNS label, and never a sibling's forwarder.
-        if not UI_SET_NAME_RE.fullmatch(name):
-            raise fail(
-                context,
-                f"UI set name {name!r} must be lowercase letters, digits, and hyphens, at most 41 characters, "
-                "and not start with forward-",
-            )
-        if not isinstance(ui, dict) or not UI_KEYS <= set(ui) <= UI_KEYS | UI_OPTIONAL_KEYS:
-            raise fail(context, "ui must be a table with command, port, and state, and at most identity and host_port")
-        if not isinstance(ui["command"], str) or not COMMAND_RE.fullmatch(ui["command"]):
-            raise fail(context, f"ui command must be a program name without a path or arguments: {ui['command']!r}")
-        for key in ("port", "host_port"):
-            value = ui.get(key, 1024)
-            if not isinstance(value, int) or isinstance(value, bool) or not 1024 <= value <= 65535:
-                raise fail(context, f"ui {key} must be an integer between 1024 and 65535")
-        state = ui["state"]
-        if not isinstance(state, str) or not STATE_RE.fullmatch(state) or state in RESERVED_HOME_DIRECTORIES:
-            raise fail(
-                context, f"ui state must name one directory below the agent home, not the agent's own: {state!r}"
-            )
-        identity = ui.get("identity", [])
-        if not isinstance(identity, list) or not all(isinstance(item, str) for item in identity):
-            raise fail(context, "ui identity must be a list of file paths relative to the agent home")
-        for item in identity:
-            parts = item.split("/")
-            if len(parts) != 2 or parts[0] != state or parts[1] in ("", ".", ".."):
-                raise fail(
-                    context, f"ui identity path must name a file directly below the state directory {state}: {item!r}"
-                )
-        ui = {
-            "command": ui["command"],
-            "port": ui["port"],
-            "state": state,
-            "identity": list(identity),
-            "host_port": ui.get("host_port"),
-        }
+    try:
+        json.dumps(pi_lens)
+    except TypeError:
+        raise fail(context, "pi_lens is written as JSON and may not contain TOML dates or times") from None
 
     return AgentSet(
         name,
@@ -275,14 +294,14 @@ def read_manifest(directory: Path, source: str) -> AgentSet:
         description,
         apt,
         assets,
-        npm,
+        read_npm(table, directory, context),
         dict(env),
         build,
         check,
         note.strip(),
         pi_packages,
         pi_lens,
-        ui,
+        read_ui(table, name, context),
     )
 
 
@@ -334,19 +353,19 @@ def run_lines(lines: list[str]) -> str:
     return "RUN " + " \\\n    && ".join(lines) + "\n"
 
 
-def asset_lines(asset: dict) -> list[str]:
+def asset_lines(asset: Asset) -> list[str]:
     """Download to a fixed name, verify, install; the URL is only ever quoted."""
-    algorithm, checksum = ("sha256", asset["sha256"]) if asset["sha256"] else ("sha512", asset["sha512"])
-    download = {"tar": "/tmp/asset.tar.gz", "zip": "/tmp/asset.zip", "file": "/tmp/asset"}[asset["kind"]]
-    lines = [f'curl -fsSL -o {download} "{asset["url"]}"', f'echo "{checksum}  {download}" | {algorithm}sum -c -']
-    into = asset["into"]
-    if asset["kind"] == "tar":
-        strip = f" --strip-components={asset['strip']}" if asset["strip"] else ""
+    algorithm, checksum = ("sha256", asset.sha256) if asset.sha256 else ("sha512", asset.sha512)
+    download = {"tar": "/tmp/asset.tar.gz", "zip": "/tmp/asset.zip", "file": "/tmp/asset"}[asset.kind]
+    lines = [f'curl -fsSL -o {download} "{asset.url}"', f'echo "{checksum}  {download}" | {algorithm}sum -c -']
+    into = asset.into
+    if asset.kind == "tar":
+        strip = f" --strip-components={asset.strip}" if asset.strip else ""
         lines += [f"mkdir -p {into}", f"tar -xzf {download} -C {into}{strip}"]
-    elif asset["kind"] == "zip":
+    elif asset.kind == "zip":
         lines += [f"mkdir -p {into}", f"unzip -q {download} -d {into}"]
     else:
-        lines.append(f"install -D -m {asset['mode']} {download} {into}")
+        lines.append(f"install -D -m {asset.mode} {download} {into}")
     lines.append(f"rm -f {download}")
     return lines
 
@@ -487,9 +506,15 @@ def render(root: Path, build_dir: Path, selected: list[AgentSet]) -> str:
     parent = build_dir / "agents" / "pi"
     output = parent / rendered.tag
     # The rename is atomic, so the Dockerfile's presence means the whole
-    # directory; a directory without it is repaired.
+    # directory. One without it was edited by hand: the rename replaces it
+    # only when it is empty, and nothing here deletes a user's files. The
+    # Dockerfile is checked last because a parallel start may rename its
+    # render into place between the two looks.
+    incomplete = TokenCrateError(f"build/agents/pi/{rendered.tag} has no Dockerfile; remove the directory and retry")
     if (output / "Dockerfile").is_file():
         return rendered.tag
+    if output.is_dir() and any(output.iterdir()) and not (output / "Dockerfile").is_file():
+        raise incomplete
     parent.mkdir(parents=True, exist_ok=True)
     # Named for .dockerignore: a staging directory a crash left behind must
     # not enter the build context.
@@ -506,13 +531,11 @@ def render(root: Path, build_dir: Path, selected: list[AgentSet]) -> str:
         for name, script in rendered.checks.items():
             (staging / "checks" / name).write_text(script, encoding="utf-8")
         try:
-            if output.is_dir() and not any(output.iterdir()):
-                output.rmdir()
             staging.rename(output)
         except OSError:
             # Another start renamed its own render into place first.
             if not (output / "Dockerfile").is_file():
-                raise
+                raise incomplete from None
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return rendered.tag

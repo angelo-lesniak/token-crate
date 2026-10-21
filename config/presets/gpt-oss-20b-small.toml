@@ -3,7 +3,8 @@ description = "gpt-oss-20b MXFP4, one 32K slot: the smallest preset, for a 16 GB
 model_set = "gpt-oss-20b-mxfp4"
 
 # The smallest shipped preset: the file gpt-oss-20b-fast loads, in its native
-# MXFP4, with a smaller cache. Held 12.7 GiB (docs/validation.md).
+# MXFP4, with a smaller cache. Held 12.7 GiB (the preset table in
+# docs/models.md holds the speed and the requirement).
 [server]
 # One 32K slot, not two: with an extension set and high reasoning a 32K slot
 # is the smallest that takes the largest agent request.

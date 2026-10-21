@@ -1,0 +1,13 @@
+# Provisioned once at start: the VictoriaMetrics of the dashboard profile,
+# read through the exporter's query gate, which forwards the Prometheus
+# read paths only, so Grafana's datasource proxy (open to the anonymous
+# viewer) cannot import, delete, or snapshot the samples.
+apiVersion: 1
+datasources:
+  - name: VictoriaMetrics
+    uid: tokencrate-victoriametrics
+    type: prometheus
+    access: proxy
+    url: http://llama-exporter:9101
+    isDefault: true
+    editable: false

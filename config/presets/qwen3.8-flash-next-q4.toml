@@ -2,7 +2,8 @@ schema = 1
 description = "Qwen3.8-Flash-Next (125B, 6B active) Q4, experts in system memory: the 96 GB RAM tier"
 model_set = "qwen3.8-flash-next-ud-q4-k-xl"
 
-# Measured on an RTX 5090 with 96 GB of RAM (docs/validation.md): 26.2 GiB
+# Measured on an RTX 5090 with 96 GB of RAM (the preset table in
+# docs/models.md holds the speed and the requirement): 26.2 GiB
 # held on the card at these settings, 33 to 34 tokens per second of
 # generation, 120 (a short prompt) to 740 (6K and 12K prompts) of prompt
 # processing, every smoke check passed. The

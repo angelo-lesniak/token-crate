@@ -37,8 +37,11 @@ class AgentCheckTests(unittest.TestCase):
             ("timeout", STUB_TIMEOUT),
             # The model answers; nothing else does.
             ("curl", '#!/bin/sh\ncase "$*" in *llama:8080/health*) exit 0 ;; esac\nexit 7\n'),
-            # Name resolution answers only for example.com, and only when asked.
-            ("getent", '#!/bin/sh\ncase "$*" in *example.com*) [ -n "$FAKE_DNS" ] && exit 0 ;; esac\nexit 2\n'),
+            (
+                "getent",
+                '#!/bin/sh\ncase "$*" in *example.com*|*tokencrate-ui-x*) '
+                '[ -n "$FAKE_DNS" ] && exit 0 ;; esac\nexit 2\n',
+            ),
         ):
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
@@ -98,21 +101,20 @@ class AgentCheckTests(unittest.TestCase):
         )
         self.assertIn("[ok] no name resolution (example.com does not resolve)", plain)
 
-    def test_a_ui_started_with_egress_is_reached_by_design_from_an_egress_session_only(self) -> None:
-        # The wrapper marks the name and the default-network address of such
-        # a UI; an egress check reports reaching them as information, an
-        # offline check still as the failure it is. Unmarked targets of the
-        # same run stay failures either way.
+    def test_an_egress_ui_may_resolve_but_must_never_accept_a_terminal_connection(self) -> None:
         targets = "egress:tokencrate-ui-x:8504 egress:10.89.1.7:8504 10.89.0.5:8504"
         reached = "the container reached browser UI"
-        by_design = "; that UI was started with --egress or --cloud"
+        note = "; that UI was started with --egress or --cloud"
         egress = self.run_check(TOKENCRATE_EGRESS="1", FAKE_GATEWAY="open", FAKE_DNS="1", TOKENCRATE_UI_TARGETS=targets)
-        self.assertIn(f"[info] {reached} tokencrate-ui-x:8504{by_design}", egress)
-        self.assertIn(f"[info] {reached} 10.89.1.7:8504{by_design}", egress)
+        self.assertIn(f"[info] the container resolves tokencrate-ui-x{note}", egress)
+        self.assertIn(f"[fail] {reached} tokencrate-ui-x:8504{note}", egress)
+        self.assertIn(f"[fail] {reached} 10.89.1.7:8504{note}", egress)
         self.assertIn(f"[fail] {reached} 10.89.0.5:8504", egress)
-        self.assertNotIn(f"[fail] {reached} tokencrate-ui-x", egress)
+        self.assertNotIn(f"[info] {reached}", egress)
+        closed = self.run_check(TOKENCRATE_EGRESS="1", FAKE_DNS="1", TOKENCRATE_UI_TARGETS=targets)
+        self.assertIn("[ok] browser UI tokencrate-ui-x:8504 is not reachable", closed)
         offline = self.run_check(FAKE_GATEWAY="open", TOKENCRATE_UI_TARGETS=targets)
-        self.assertIn(f"[fail] {reached} tokencrate-ui-x:8504{by_design}", offline)
+        self.assertIn(f"[fail] {reached} tokencrate-ui-x:8504{note}", offline)
         self.assertNotIn(f"[info] {reached}", offline)
 
     def test_name_resolution_is_a_failure_offline_and_expected_with_egress(self) -> None:
@@ -120,6 +122,18 @@ class AgentCheckTests(unittest.TestCase):
         self.assertIn("[fail] the container resolved example.com; DNS egress is NOT blocked", plain)
         egress = self.run_check(FAKE_DNS="1", TOKENCRATE_EGRESS="1")
         self.assertIn("[ok] example.com resolves (expected with --egress)", egress)
+
+    def test_the_project_mount_must_be_writable(self) -> None:
+        # The identity line proves nothing by itself; the project line
+        # proves the read-write mount the agent edits through.
+        lines = self.run_check()
+        self.assertIn(f"[info] running as {os.getuid()}:{os.getgid()} with HOME={self.home}", lines)
+        self.assertIn(f"[ok] project directory is mounted read-write: {self.tmp}", lines)
+        read_only = self.tmp / "read-only"
+        read_only.mkdir(mode=0o500)
+        self.addCleanup(read_only.chmod, 0o700)
+        lines = self.run_check(TOKENCRATE_PROJECT_DIR=str(read_only))
+        self.assertIn(f"[fail] project directory is missing or not writable: {read_only}", lines)
 
     def test_the_interface_count_is_reported(self) -> None:
         # The host has whatever it has; the line names the count it judged.
