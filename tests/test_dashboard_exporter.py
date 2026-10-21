@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -122,7 +123,7 @@ class ExporterTests(unittest.TestCase):
         self.process = subprocess.Popen(
             ["node", str(EXPORTER)],
             env={
-                "PATH": "/usr/bin:/bin",
+                "PATH": os.environ["PATH"],
                 "LLAMA_URL": f"http://127.0.0.1:{self.router.server_address[1]}",
                 "STORE_URL": f"http://127.0.0.1:{self.store.server_address[1]}",
                 "POLL_MS": "1000",

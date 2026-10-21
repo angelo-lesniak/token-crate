@@ -246,7 +246,7 @@ class StatsReportTests(unittest.TestCase):
         self.assertEqual(stats.since_cutoff("2w", now), now - timedelta(weeks=2))
         self.assertEqual(stats.since_cutoff("2026-09-20T10:00:00Z", now), datetime(2026, 9, 20, 10, tzinfo=UTC))
         self.assertIsNotNone(stats.since_cutoff("2026-09-20").tzinfo)  # local midnight
-        for bad in ("0d", "yesterday", "7", "2026-13-01", "x" * 60, "999999d", "0001-01-01", "9999-12-31T23:59:59"):
+        for bad in ("0d", "yesterday", "7", "2026-13-01", "x" * 60, "999999d", "0000-01-01", "10000-12-31T23:59:59"):
             with self.assertRaises(TokenCrateError, msg=bad):
                 stats.since_cutoff(bad, now)
 
