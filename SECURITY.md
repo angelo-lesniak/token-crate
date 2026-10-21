@@ -11,7 +11,8 @@ private GitHub security advisory. If that action is unavailable, open a
 bug report containing no vulnerability details and ask a maintainer to
 establish a private channel.
 
-Keep cloud provider keys in the file `LLM_CLOUD_KEYS_FILE` names, owned by
-your user and readable by your user only. Keep the Hugging Face token in
-`.env`. Never place credentials in presets, model-set or skill-set
-manifests, agent-set directories, image build arguments, logs, or reports.
+Keep cloud provider keys in the file
+[Cloud providers](docs/agents.md#cloud-providers) describes. Keep the
+Hugging Face token in `.env`. Never place credentials in presets,
+model-set or skill-set manifests, agent-set directories, image build
+arguments, logs, or reports.

@@ -33,7 +33,7 @@ as set in `ruff.toml`. The images' shell and JavaScript live under
 
 | Modules | Responsibility |
 | --- | --- |
-| `cli` | The command table, from which `USAGE` and the misplaced-flag refusals are generated, and dispatch |
+| `cli` | The command table, from which `USAGE` and the misplaced-flag refusals are generated, dispatch, and the handlers that compose the modules |
 | `env`, `names` | Settings, pins, the storage list, and name validation |
 | `agenthome`, `files` | Leaves: the agent-home constants every module shares, and atomic file writes |
 | `engine`, `runtime`, `localhttp` | Engine commands, stack lifecycle, and direct local HTTP requests |
@@ -41,7 +41,7 @@ as set in `ruff.toml`. The images' shell and JavaScript live under
 | `presets`, `agentmodels` | Preset validation and rendering, and agent model lists |
 | `session` | One agent container start: the pre-flight and the `Launch` |
 | `agents`, `uis`, `agentsets`, `skills` | Terminal sessions and their check, browser UIs, set selections, skill sets |
-| `doctor`, `probe`, `checkpins` | Host checks, API probes and benchmarks with their history, upstream pin lookups |
+| `doctor`, `probe`, `checkpins` | Host checks, API probes and benchmarks, upstream pin lookups |
 | `stats`: `transcripts`, `tables`, `report` | Transcript reading, the one aggregation, the Markdown report |
 | `stats`: `page`, `live`, `server` | The HTML page (assets under `stats/pages/`), the live sampler, `--serve` |
 
@@ -77,15 +77,17 @@ the result in about a minute instead of a push and a wait. It runs:
   repository contracts and the documentation checks and needs PyYAML);
 - Ruff;
 - `tests/podman-compose.sh`, which renders every Compose file combination
-  and checks each service's network placement;
+  the wrapper can pass (an engine overlay is always among the files) and
+  checks each service's network placement;
 - a scan for machine-specific host paths;
-- a Compose render with every installed engine.
+- a Compose render with Docker Compose when installed.
 
-A missing optional tool, Node.js included, prints a `SKIPPED:` line
-and the gate still passes; `TOKENCRATE_STATIC_STRICT=1`, as in CI, makes
-any skip a failure. The
-gate runs on the tracked files alone, so a check must not depend on local
-build artifacts. CI also lints both Dockerfiles with hadolint.
+A missing optional tool prints a `SKIPPED:` line and the gate still
+passes; `TOKENCRATE_STATIC_STRICT=1`, as in CI, makes any skip a
+failure, a skipped unit test included. The gate runs on the tracked
+files alone, so a check must not depend on local build artifacts. CI
+also lints the two Dockerfiles and the pi Dockerfile the gate renders
+with hadolint.
 
 ```bash
 python3 tests/integration.py
@@ -97,9 +99,9 @@ and network access (images, 0.4 GB of fixture models on the first run,
 GitHub skill sets), and take several minutes. They take over this
 checkout's Compose project: `up` replaces a running stack and cleanup
 stops it with `down`. The docstring of `tests/integration.py` lists the checks;
-`-k <pattern>` selects by name. CI runs them weekly and for pull requests
-that touch the paths in `.github/workflows/integration.yml`, one job per
-`CI_JOBS` entry.
+`-k <pattern>` selects by name. CI runs them weekly, for pull requests,
+and for pushes to `main` that touch the paths in
+`.github/workflows/integration.yml`, one job per `CI_JOBS` entry.
 
 ## Documentation changes
 
@@ -170,24 +172,57 @@ entry. A preset change attaches the `bench` report from `reports/` and
 the `smoke` result for the affected preset.
 
 Skill-set entries must use a public credential-free HTTPS repository on an
-allowlisted host, a full commit, and the tree digest that
-`skills.digest_command` in `tokencrate/skills.py` computes for the pinned
-directory. From the repository root:
-
-```bash
-python3 - <<'PY'
-from pathlib import Path
-from tokencrate import skills
-hosts = skills.load_allowed_hosts(Path("config/skill-sets/allowed-git-hosts.txt"))
-print(skills.digest_command("https://github.com/<owner>/<repo>", "<commit>", "<path>", hosts))
-PY
-```
+allowlisted host, a full commit, and the tree digest of the pinned
+directory. To obtain the digest: pin a placeholder of 64 zeros as
+`sha256`, run `skills fetch <set>`, paste the digest the refusal prints
+(`tree digest <digest> does not match the pinned ...`), and run `skills
+fetch <set>` again.
 
 Read each `SKILL.md` and every file under its `scripts/` directory before
 pinning it. Commit pinning is not a code review.
 
 Do not commit models, tokens, `.env`, `build/`, `data/`, `local/`, or
 `reports/`.
+
+## Router behavior the wrapper relies on
+
+`runtime`, `probe`, and the preset renderer rest on these observations of
+llama-server's router mode.
+
+The observations were read on llama.cpp build b10920's official image
+in router mode (`--models-preset`, `--models-max 1`) with CPU fixture
+models. On the pinned b11028 the CPU integration check confirms
+readiness polling, preset switching, and preset-file behavior, not the
+failure codes.
+Repeat these observations after a `LLAMA_CPP_TAG` change.
+
+- Readiness: `GET /health` answers `{"status":"ok"}` while the default
+  preset is still `loading` in `GET /models`, so `up` polls `/models` for
+  `loaded` (`runtime.wait_until_ready`).
+- Swap: a request whose `model` names another preset waits until the
+  running request has finished; then the router unloads the loaded model
+  and loads the other one. `POST /models/load` answers 400 for the model
+  that is loading or loaded and 500 `model limit reached` for another
+  model while one is loaded, so `up` asks for a load only when nothing is
+  loaded.
+- Failure: a preset whose model server exits leaves the router running,
+  `/models` reports it `unloaded`, and a request for it answers 500; `up`
+  fails when the default preset turns `unloaded` after `loading`.
+- Requests without `model` answer 400 `model name is missing from the
+  request`; `GET /props`, `POST /tokenize`, and `GET /metrics` need
+  `?model=` or a `model` field, which the probe sends. A request routes
+  to its preset, so asking `/metrics` for an unloaded preset is expected
+  to load it first (the swap above; not observed for `/metrics`): scrape
+  only presets `GET /models` reports loaded.
+- Preset file: keys are llama-server option names without dashes
+  (`jinja = true` becomes `--jinja`, `ui-config-file`
+  `--webui-config-file`, `gpu-layers` `--n-gpu-layers`); a key given twice
+  keeps the last value silently; keys in `[*]` reach every child; an
+  unknown key stops the router at start with `option '<key>' not
+  recognized in preset '<name>'`. The renderer therefore keeps a typed
+  vocabulary and passes only `override-kv`, `load-mode`,
+  `log-prompts-dir`, and `verbose` through `[server.extra]`, refusing
+  every other key there.
 
 ## Settled decisions
 
@@ -209,7 +244,7 @@ against its stated reason.
   embeds pi. A separate forwarder publishes its port because Docker
   cannot publish a container attached only to internal networks; both
   engines get the same containment
-  ([Privacy and containment](docs/privacy.md#defaults-and-their-limits)).
+  ([Forwarder](docs/privacy.md#forwarder)).
   Reconsider if Docker publishes ports from internal networks or a UI
   authenticates and checks origins itself.
 - **Shared networks and targeted hardening, not per-session networks.**
@@ -239,7 +274,8 @@ against its stated reason.
   and the bundle on the same coding tasks with a shipped 27B preset:
   completion, wrong edits, tokens, turns, and wall time.
 - **`pocock-core,skill-crate` are the default skill sets.** They keep
-  eighteen skill descriptions available (seventeen and one). An empty
+  eighteen skill descriptions available (seventeen and one; with the
+  default `coding` set the model sees twenty-two). An empty
   default would remove `skills fetch` from initial setup. Reconsider if
   those descriptions cost more context on a 27B model than their skills
   return.
@@ -247,8 +283,7 @@ against its stated reason.
   session has the full route out of `--egress`. A Node client honors
   proxy variables only when it opts in, so a filter must work at the
   network level; a filter that does not filter is worse than stating
-  what the session can reach
-  ([Privacy and containment](docs/privacy.md#defaults-and-their-limits)).
+  what the session can reach ([Egress](docs/privacy.md#egress)).
   Reconsider when a network-level allowlist is proven on both engines.
 - **Cloud keys in a file the wrapper never reads.** The wrapper checks
   the file, never its contents, and keeps no provider table itself,
@@ -283,7 +318,8 @@ against its stated reason.
   Reconsider if a setting gains a second reader that can disagree with
   Compose about its default.
 - **The dashboard is an opt-in profile, and two scrapers carry one
-  rule.** The profile is off by default because it adds four containers;
+  rule.** The profile is off by default because it adds three or four
+  containers;
   the exporter and the live panel share the two-poll rule
   ([Dashboard](docs/configuration.md#dashboard)) and
   `tests/test_statspage.py` pins that line in both copies. Reconsider the

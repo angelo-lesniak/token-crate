@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.support import SOURCE_ROOT, Scratch
-from tokencrate import TokenCrateError, agents, env, presets, runtime, session
+from tokencrate import TokenCrateError, agenthome, agents, env, presets, runtime, session
 
 
 class ProjectDirectoryTests(unittest.TestCase):
@@ -126,6 +126,12 @@ class ProjectDirectoryTests(unittest.TestCase):
         (marker / "commondir").write_text(str(external))
         with self.assertRaisesRegex(TokenCrateError, "Git metadata lies outside"):
             session.resolve_project_directory(self.settings(), str(self.scratch.project))
+        # A `.git` link points outside the mount too; the container would
+        # see a dangling link.
+        shutil.rmtree(marker)
+        marker.symlink_to(external)
+        with self.assertRaisesRegex(TokenCrateError, "Git metadata lies outside"):
+            session.resolve_project_directory(self.settings(), str(self.scratch.project))
 
     def test_the_git_walk_ends_at_the_home_directory_and_at_a_project_root(self) -> None:
         # A repository that manages the home (dotfiles) or a root owns no
@@ -176,7 +182,7 @@ class ProjectDirectoryTests(unittest.TestCase):
         self.assertFalse((home / ".pi-web").exists(), "only the started UI's state directory is created")
         omp_home = self.scratch.storage / "agents" / "omp" / "project-x"
         session.prepare_mountpoints(omp_home, "omp")
-        for relative in session.PERSISTENT_DIRECTORIES["omp"]:
+        for relative in agenthome.PERSISTENT_DIRECTORIES["omp"]:
             self.assertTrue((omp_home / relative).is_dir(), relative)
         # A link anywhere on the way would send the mount elsewhere.
         os.rename(home / ".pi/agent/sessions", home / "sessions-aside")
@@ -270,13 +276,15 @@ class CloudKeysFileTests(unittest.TestCase):
 
     def test_the_file_is_refused_inside_a_directory_a_container_reads(self) -> None:
         # Every offline session mounts the storage directories and the
-        # project; the build context carries the set directories.
+        # project; the build context is the .dockerignore allowlist.
         for label, directory in (
             ("the project", self.scratch.project),
             ("the private skills directory", self.scratch.storage / "local-skills"),
             ("the agents directory", self.scratch.storage / "agents"),
             ("the shipped configuration", self.scratch.root / "config"),
             ("the private agent sets", self.scratch.root / "local" / "agent-sets"),
+            ("the services directory", self.scratch.root / "services"),
+            ("the rendered pi images", self.scratch.root / "build" / "agents" / "pi"),
         ):
             with self.subTest(label=label):
                 directory.mkdir(parents=True, exist_ok=True)
@@ -321,7 +329,16 @@ class LaunchTests(unittest.TestCase):
     def test_an_interrupted_session_stops_its_named_container(self) -> None:
         self.engine.compose.side_effect = [mock.Mock(), KeyboardInterrupt()]
         with self.assertRaises(KeyboardInterrupt), mock.patch.object(agents, "terminal_is_ours", return_value=True):
-            agents.run_agent(self.settings, self.engine, None, "pi", "", str(self.scratch.project), False, ["-p", "hi"])
+            agents.run_agent(
+                self.settings,
+                self.engine,
+                None,
+                "pi",
+                preset="",
+                project_dir=str(self.scratch.project),
+                egress=False,
+                arguments=["-p", "hi"],
+            )
         build, run = self.engine.compose.call_args_list
         self.assertEqual(build.args, ("build", "agent-pi"))
         name = run.args[run.args.index("--name") + 1]
@@ -332,8 +349,8 @@ class LaunchTests(unittest.TestCase):
             {"profiles": ("agent-pi",), "egress": False, "check": False, "stdin": None, "TOKENCRATE_PRESET": "p"},
         )
         self.engine.command.assert_called_once_with("stop", "--time", "5", name, capture=True, check=False)
-        # The pre-flight ran under the stack lock; the session did not.
-        self.engine.lock.assert_called_once_with("agent")
+        # Neither the pre-flight nor the session holds the stack lock.
+        self.engine.lock.assert_not_called()
 
     def test_the_check_names_its_container_and_removes_its_scratch_after_the_stop(self) -> None:
         order: list[str] = []

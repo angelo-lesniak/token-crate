@@ -33,7 +33,9 @@ plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
 | `paseo` | Paseo, a daemon with a browser UI that runs several pi sessions, started with `ui paseo`; about 0.5 GB more image | Any |
 
 The manifests hold the pinned versions, and `agent-sets list` prints each
-set's description. The `debug` and `browser` sets are separate from
+set's description. The `dotnet` set pins its SDK tarball by SHA-512;
+csharp-ls and the warmed NuGet packages come from nuget.org by version
+only, without a hash. The `debug` and `browser` sets are separate from
 `coding` because every tool schema is sent with every request; select
 them where an adapter or a browser exists.
 
@@ -103,7 +105,7 @@ shipped set needs beyond that. Manifest keys:
 | `build` (list) | Lines of one Bash script, run with `errexit` and `pipefail` in the set directory as one layer after its files are copied into the image. Shell variables carry across lines; a line can end with a comment but cannot be one. Files of the set directory are installed from here (`install -m 0755 wrapper /usr/local/bin/wrapper`), and so is a Git checkout at a commit (see the `debug` set) |
 | `check` (list) | Lines of one Bash script, in the shape of `build`, that `smoke --agent` runs inside the container as the container user, with no route out (an `--egress` check skips them), in a scratch directory (`$CHECK_DIR`, also the working directory); the last line it prints is the report line. The gate requires the key of every shipped set, an empty list when nothing of it can be probed |
 | `pi_packages` (list) | Directories below the set directory that pi loads as packages (an extension with its `package.json`) |
-| `pi_lens` (table) | Merged into pi-lens's configuration, for example a language server under `lsp.servers` |
+| `pi_lens` (table) | Merged into pi-lens's configuration and written as JSON, so TOML dates and times are refused; for example a language server under `lsp.servers` |
 | `note` (string) | Lines for the tools note pi loads as global context |
 | `ui` (table) | Makes the set a browser UI for `ui <set>`; see [UI sets](#ui-sets) |
 

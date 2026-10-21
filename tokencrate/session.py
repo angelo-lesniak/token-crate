@@ -25,15 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import TokenCrateError, agentsets, presets, runtime, skills, warn
-from .agenthome import AGENTS as AGENTS
-from .agenthome import HOME_IN_CONTAINER as HOME_IN_CONTAINER
-from .agenthome import PERSISTENT_DIRECTORIES as PERSISTENT_DIRECTORIES
 from .agenthome import persistent_directories
 from .engine import Engine
 from .env import Settings, require_private
 from .names import parse_list
 
-# Refused in cli.dispatch before the pre-flight.
+# Refused by the `agent` and `smoke --agent` handlers before the pre-flight.
 SETS_ARE_PI_ONLY = "--sets applies to pi only; oh-my-pi has no agent sets"
 # oh-my-pi fills unset variables from the project's `.env` files, base URLs
 # included, so a project could send a key elsewhere; pi reads no such file.
@@ -143,17 +140,22 @@ def resolve_project_directory(settings: Settings, requested: str) -> Path:
     if not any(resolved.is_relative_to(root) for root in roots):
         raise TokenCrateError(f"project directory is outside your home directory and LLM_PROJECT_ROOTS: {resolved}")
     # Git metadata outside the mount: a `.git` file (a linked worktree or a
-    # submodule), a `commondir` (a worktree's main repository), or a
-    # repository above the project. The file's contents are not parsed;
-    # what it points at lies outside the mount by construction. The walk
-    # ends at the home directory or a project root, whichever comes
-    # first: a repository that manages the home (dotfiles) owns no
-    # project below it.
+    # submodule), a `.git` link, a `commondir` (a worktree's main
+    # repository), or a repository above the project. The file's contents
+    # are not parsed; what it points at lies outside the mount by
+    # construction. The walk ends at the home directory or a project root,
+    # whichever comes first: a repository that manages the home (dotfiles)
+    # owns no project below it.
     for directory in (resolved, *resolved.parents):
         if directory in roots:
             break
         git_dir = directory / ".git"
-        if git_dir.is_file() or (git_dir / "commondir").is_file() or (directory != resolved and git_dir.is_dir()):
+        if (
+            git_dir.is_symlink()
+            or git_dir.is_file()
+            or (git_dir / "commondir").is_file()
+            or (directory != resolved and git_dir.is_dir())
+        ):
             raise TokenCrateError(
                 f"Git metadata lies outside the project mount ({git_dir}); choose the repository root "
                 "or a standalone clone instead of a linked worktree or submodule"
@@ -185,7 +187,7 @@ def require_skill_sets(settings: Settings) -> list[str]:
     catalog = skills.catalog(settings.config_dir)
     for name in names:
         if name not in catalog:
-            raise TokenCrateError(f"unknown skill-set: {name} (run: bash bin/tokencrate skills list)")
+            raise TokenCrateError(f"unknown skill set: {name} (run: bash bin/tokencrate skills list)")
         if not (settings.skills_dir / name).is_dir():
             raise TokenCrateError(f"skill set {name} is not fetched; run: bash bin/tokencrate skills fetch {name}")
         missing = skills.missing_skills(catalog[name], settings.skills_dir)

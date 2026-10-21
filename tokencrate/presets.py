@@ -16,7 +16,6 @@ everything else through typed keys.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -55,9 +54,8 @@ SHARED_KEYS = (
 FLASH_ATTN_VALUES = ("on", "off", "auto")
 CACHE_TYPES = ("f16", "bf16", "q8_0")
 SPEC_TYPES = ("none", "draft-mtp")
-REASONING_EFFORT_RE = re.compile(r"^[a-z]+$")
 # The typed [server] keys: integers with their minimum, booleans, choices; the
-# word, list, and table keys (reasoning_effort, reasoning_efforts, extra) are
+# effort, list, and table keys (reasoning_effort, reasoning_efforts, extra) are
 # validated in read_preset.
 INT_KEYS = {
     "ctx_size": 1024,
@@ -123,6 +121,15 @@ class Preset:
     @property
     def reasoning_efforts(self) -> list[str]:
         return list(self.server.get("reasoning_efforts", []))
+
+    def requirement_text(self) -> str:
+        """The `[requires]` table as `presets list` prints it."""
+        parts = []
+        if "vram_gib" in self.requires:
+            parts.append(f"{self.requires['vram_gib']} GiB GPU memory")
+        if "ram_gib" in self.requires:
+            parts.append(f"{self.requires['ram_gib']} GiB system memory")
+        return "needs " + " and ".join(parts) if parts else "(no [requires])"
 
 
 @dataclass
@@ -200,14 +207,9 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
         raise TokenCrateError(f"{context}: n_predict must be -1 (unlimited) or a positive integer")
     if server["ctx_size"] % server.get("parallel", 1) != 0:
         raise TokenCrateError(f"{context}: ctx_size must be divisible by parallel")
-    effort = server.get("reasoning_effort")
-    if effort is not None and (not isinstance(effort, str) or not REASONING_EFFORT_RE.fullmatch(effort)):
-        raise TokenCrateError(f"{context}: reasoning_effort must be a lowercase word")
     efforts = server.get("reasoning_efforts", [])
-    if not isinstance(efforts, list) or any(
-        not isinstance(item, str) or not REASONING_EFFORT_RE.fullmatch(item) for item in efforts
-    ):
-        raise TokenCrateError(f"{context}: reasoning_efforts must be a list of lowercase words")
+    if not isinstance(efforts, list) or any(not isinstance(item, str) for item in efforts):
+        raise TokenCrateError(f"{context}: reasoning_efforts must be a list of strings")
     if len(set(efforts)) != len(efforts):
         raise TokenCrateError(f"{context}: reasoning_efforts must not repeat values")
     unknown = [item for item in efforts if item not in AGENT_THINKING_LEVELS[1:]]
@@ -216,8 +218,16 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
             f"{context}: reasoning_efforts must use the agent thinking level names "
             f"({', '.join(AGENT_THINKING_LEVELS[1:])}); unknown: {', '.join(unknown)}"
         )
+    # The default goes into chat-template-kwargs for every request that
+    # names no effort (the chat UI, curl), so a level outside the declared
+    # ones would make the template raise on exactly those requests.
+    effort = server.get("reasoning_effort")
     if efforts and effort is None:
         raise TokenCrateError(f"{context}: reasoning_efforts needs a default reasoning_effort")
+    if effort is not None and effort not in efforts:
+        raise TokenCrateError(
+            f"{context}: reasoning_effort must be one of reasoning_efforts ({', '.join(efforts) or 'none declared'})"
+        )
     extra = server.get("extra", {})
     if not isinstance(extra, dict):
         raise TokenCrateError(f"{context}: [server.extra] must be a table of llama-server options")
@@ -328,6 +338,15 @@ def build_wait(model_set, pinned_build: int) -> str:
     return f"waits for llama.cpp build {required} (pinned: b{pinned_build})"
 
 
+def model_set_waits(model_sets: dict, pinned_build: int) -> tuple[str, ...]:
+    """One line per model set that waits for a newer llama.cpp build, for pins check."""
+    return tuple(
+        f"model set {model_set.name} {wait}"
+        for model_set in model_sets.values()
+        if (wait := build_wait(model_set, pinned_build))
+    )
+
+
 @dataclass(frozen=True)
 class Configuration:
     """The model sets, the presets, and the build that pins.env pins, read
@@ -366,7 +385,7 @@ def load(config_dir: Path, pinned_build: int) -> Configuration:
     """The model sets and presets below config_dir. Every chat template a
     model set references must exist under config_dir/chat-templates,
     because llama-server would only fail at load time otherwise."""
-    model_sets = models.available_sets(config_dir / "model-sets")
+    model_sets = models.catalog(config_dir)
     chat_templates_dir = config_dir / "chat-templates"
     for model_set in model_sets.values():
         if model_set.chat_template_file and not (chat_templates_dir / model_set.chat_template_file).is_file():

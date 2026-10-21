@@ -15,8 +15,6 @@ from . import TokenCrateError
 
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 SET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-# These CLI verbs cannot also name a UI set.
-UI_ACTIONS = ("stop", "logs")
 # Every manifest kind carries this schema number.
 SCHEMA = 1
 

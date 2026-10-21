@@ -3,14 +3,16 @@
   // The live panel of the served stats page: built here, so a saved page
   // (which has no live script) carries none of it. The panel polls the
   // server's /live endpoint, whose samples hold numbers and the loaded
-  // preset's name only, and draws two charts over the last ten minutes.
+  // preset's name only, and draws two charts over the window the ring
+  // holds; the server passes its pace and that window on the script tag.
   var script = document.currentScript;
   var meta = document.querySelector("p.meta");
   if (!script || !meta || typeof uPlot === "undefined") { return; }
   var api = script.getAttribute("data-api") || "";
-  var interval = Math.max(1000, Number(script.getAttribute("data-interval")) || 2000);
+  var interval = Math.max(1000, Number(script.getAttribute("data-interval")));
   var gpu = script.getAttribute("data-gpu") === "1";
-  var WINDOW = 600;
+  var WINDOW = Number(script.getAttribute("data-window"));
+  var WINDOW_TEXT = "last " + Math.round(WINDOW / 60) + " minutes";
   var HEIGHT = 140;
   var SPARK = 12;
   var AXIS_FONT = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
@@ -70,8 +72,8 @@
     charts.appendChild(wrapper);
     return mount;
   }
-  var throughputMount = figure("Throughput — tokens per second as the server counts them (at each request's end), last ten minutes");
-  var occupancyMount = figure("Occupancy — requests processing and queued, last ten minutes");
+  var throughputMount = figure("Throughput — tokens per second as the server counts them (at each request's end), " + WINDOW_TEXT);
+  var occupancyMount = figure("Occupancy — requests processing and queued, " + WINDOW_TEXT);
   section.appendChild(charts);
   // After the verdict, which leads the page, and before the report's tiles.
   var lead = document.querySelector(".verdict") || meta;

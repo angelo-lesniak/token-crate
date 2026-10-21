@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -14,6 +15,22 @@ from unittest.mock import patch
 
 from tests.support import Scratch
 from tokencrate import TokenCrateError, engine, env
+
+
+class FailingWrite:
+    """An opened file whose write fails, as it does on a full disk."""
+
+    def __init__(self, handle) -> None:
+        self.handle = handle
+
+    def write(self, text: str) -> int:
+        raise OSError("disk full")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.handle.close()
 
 
 class EngineTests(unittest.TestCase):
@@ -135,6 +152,18 @@ class EngineTests(unittest.TestCase):
         (self.scratch.root / "build" / "stack.json").write_text("{")
         with self.assertRaisesRegex(TokenCrateError, "cannot read the stack record .*stack.json: .*; remove it"):
             engine.detect(self.settings(CONTAINER_ENGINE=""))
+
+    def test_the_stack_record_is_written_whole_or_not_at_all(self) -> None:
+        # The remedy for an unreadable record deletes it, so a write that
+        # fails midway (a full disk) must leave the previous record intact.
+        settings = self.settings()
+        docker = engine.Engine("docker", settings)
+        docker.record_stack()
+        failing = patch.object(io, "open", lambda *args, **kwargs: FailingWrite(open(*args, **kwargs)))
+        with failing, self.assertRaisesRegex(OSError, "disk full"):
+            engine.Engine("podman", settings).record_stack()
+        self.assertEqual(engine.recorded_engine(settings), "docker")
+        self.assertEqual([path.name for path in docker.stack_record.parent.iterdir()], ["stack.json"])
 
     def test_the_lock_is_per_project_and_names_its_holder_while_it_waits(self) -> None:
         settings = self.settings()

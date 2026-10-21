@@ -133,13 +133,28 @@ class LlamaCppTests(unittest.TestCase):
         self.assertTrue(request.call_args.kwargs["accept"].startswith("application/vnd.oci.image.index.v1+json"))
 
     def test_a_404_is_none_only_when_the_caller_allows_a_missing_source(self) -> None:
+        bodies = []
+
         def not_found(request, timeout):
-            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO())
+            bodies.append(io.BytesIO())
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, bodies[-1])
 
         with mock.patch.object(urllib.request, "urlopen", side_effect=not_found):
             self.assertIsNone(checkpins.request_bytes("https://ghcr.io/v2/x/manifests/y", missing_ok=True))
             with self.assertRaisesRegex(TokenCrateError, "could not read pin source .*: HTTP 404"):
                 checkpins.request_bytes("https://ghcr.io/v2/x/manifests/y")
+        # The refused response is closed on both paths, not left to the GC.
+        self.assertEqual([body.closed for body in bodies], [True, True])
+
+    def test_a_refusal_names_the_rate_limit_headers(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "Retry-After": "42"}
+
+        def refused(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", headers, io.BytesIO())
+
+        with mock.patch.object(urllib.request, "urlopen", side_effect=refused):
+            with self.assertRaisesRegex(TokenCrateError, "HTTP 403, rate limit remaining 0, retry after 42 seconds$"):
+                checkpins.request_bytes("https://api.github.com/repos/x/releases")
 
 
 class RegistryResolverTests(unittest.TestCase):
@@ -238,6 +253,21 @@ class RegistryResolverTests(unittest.TestCase):
         ):
             checkpins.request_bytes("http://registry.example/pkg")
         urlopen.assert_not_called()
+
+    def test_request_refuses_a_redirect_off_https_and_a_body_over_the_cap(self) -> None:
+        def served(url: str, body: bytes) -> mock._patch:
+            response = mock.Mock(url=url, read=lambda size: body[:size])
+            return mock.patch.object(urllib.request, "urlopen", return_value=contextlib.nullcontext(response))
+
+        with served("http://registry.example/pkg", b"{}"), self.assertRaisesRegex(TokenCrateError, "away from HTTPS"):
+            checkpins.request_bytes("https://registry.example/pkg")
+        # The body is read one byte past the cap, so a longer one is refused
+        # without trusting a Content-Length header.
+        too_long = b"x" * (checkpins.MAX_RESPONSE_BYTES + 1)
+        with served("https://registry.example/pkg", too_long), self.assertRaisesRegex(TokenCrateError, "too large"):
+            checkpins.request_bytes("https://registry.example/pkg")
+        with served("https://registry.example/pkg", too_long[1:]):
+            self.assertEqual(len(checkpins.request_bytes("https://registry.example/pkg")), checkpins.MAX_RESPONSE_BYTES)
 
     def test_docker_hub_rejects_unsafe_pagination_link(self) -> None:
         payload = {"results": [], "next": "http://hub.docker.com/next"}

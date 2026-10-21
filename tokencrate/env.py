@@ -55,6 +55,9 @@ PIN_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 DOCUMENTED_KEY_RE = re.compile(r"^#?\s*([A-Za-z_][A-Za-z0-9_]*)=")
 # The published address is fixed in compose.yaml; nothing can widen it.
 SERVICE_HOST = "127.0.0.1"
+# A port as Compose publishes it and the forwarder's allowed hosts spell it:
+# no leading zero, so the value is used as written and never normalised.
+PORT_RE = re.compile(r"^[1-9][0-9]{0,4}$")
 
 # pins.env is self-describing by its key names: `<NAME>_TAG` is an image tag
 # and pairs with `<NAME>_DIGEST`, the bare sha256 hex of the manifest list the
@@ -190,16 +193,6 @@ def pinned_llama_build(pinned: dict[str, str]) -> int:
     return int(match.group(1))
 
 
-def pinned_lines(path: Path) -> str:
-    """The non-comment lines of pins.env, as `bin/tokencrate pins` prints them."""
-    lines = [
-        line
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    return "\n".join(lines) + "\n"
-
-
 @dataclass(frozen=True)
 class HostPath:
     """One host path the wrapper owns or mounts, and the rules that apply
@@ -306,8 +299,13 @@ class Settings:
             HostPath("the agents directory", self.agents_dir, "LLM_AGENTS_DIR", writable=True, **shared),
             HostPath("the skills directory", self.skills_dir, "LLM_SKILLS_DIR", writable=True, **shared),
             HostPath("the private skills directory", self.local_skills_dir, "LLM_LOCAL_SKILLS_DIR", **shared),
+            # Agent containers mount config/agents; the image build's context
+            # is the .dockerignore allowlist: services, config/agent-sets,
+            # local/agent-sets, build/agents/pi.
             HostPath("the shipped configuration", root / "config", refuses_keys=True),
             HostPath("the private agent sets", root / "local" / "agent-sets", refuses_keys=True),
+            HostPath("the services directory", root / "services", refuses_keys=True),
+            HostPath("the rendered pi images", root / "build" / "agents" / "pi", refuses_keys=True),
             HostPath("the cloud keys file", self.cloud_keys_file, "LLM_CLOUD_KEYS_FILE", refuses_projects=True),
             HostPath("the reports directory", root / "reports", created_by_init=True),
             HostPath("the dashboard's samples", root / "data" / "dashboard" / "victoria", created_by_init=True),
@@ -379,7 +377,9 @@ def load(root: Path, environ: dict[str, str] | None = None) -> Settings:
     # Relative paths are relative to the repository root, whichever
     # directory the wrapper runs from (for example a project, with `agent`).
     for key in PATH_KEYS:
-        value = values.get(key) or defaults[key]
+        value = values[key]
+        if not value:
+            raise TokenCrateError(f"{key} must not be empty; omit the line to take the default ({defaults[key]})")
         values[key] = os.path.realpath(value if value.startswith("/") else root / value.removeprefix("./"))
     for key in BOOLEAN_KEYS:
         is_true(values[key], key)
@@ -395,6 +395,6 @@ def load(root: Path, environ: dict[str, str] | None = None) -> Settings:
 
 
 def validate_port(value: str, label: str) -> str:
-    if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= 65535:
+    if not PORT_RE.fullmatch(value) or int(value) > 65535:
         raise TokenCrateError(f"{label} requires a port from 1 to 65535")
-    return str(int(value))
+    return value

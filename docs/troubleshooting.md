@@ -22,7 +22,7 @@ again.
 ## CUDA fails to initialize although `nvidia-smi` works
 
 The log shows `no CUDA-capable device is detected` or a driver version
-mismatch, or llama-server loads every layer on the CPU. The likely cause
+mismatch, or the model server loads every layer on the CPU. The likely cause
 is a CDI specification left stale by a driver upgrade; under Podman,
 `doctor` warns when the specification names another driver version.
 Regenerate it:
@@ -70,14 +70,14 @@ or `dashboard` network is not in the shape the Compose files declare:
 
 `down` removes the project's networks and `up` recreates them; a network
 without the project's labels is removed with the command the message
-names. [Privacy and containment](privacy.md#defaults-and-their-limits)
-states the network rules.
+names. [Internal networks](privacy.md#internal-networks) states the
+rule.
 
 ## The agent starts but every request fails
 
-The model is still loading, llama-server exited after the agent started,
-or the request does not fit the preset's slot, and llama-server answers
-`400 ... exceeds the available context size`. Check `bash bin/tokencrate
+The model is still loading, the model server exited after the agent
+started, or the request does not fit the preset's slot, and the model
+server answers `400 ... exceeds the available context size`. Check `bash bin/tokencrate
 status` and `bash bin/tokencrate logs`; for a larger slot, pick a preset
 with a `-long` suffix from
 [Included presets](models.md#included-presets).
@@ -87,16 +87,21 @@ with a `-long` suffix from
 The forwarder in front of a browser UI refused the request's `Host`,
 `Origin`, or `Sec-Fetch-Site` header; the response names the value. Open
 the address that `ui <set>` prints directly, not through a page of
-another site. [Privacy and containment](privacy.md#defaults-and-their-limits)
-states the rule and what a reverse proxy must pass on.
+another site. [Forwarder](privacy.md#forwarder) states the rule and
+what a reverse proxy must pass on.
 
 ## Paseo asks to pair again or shows the previous project
 
 After a relaunch for another project, reload the page. Paseo remembers
-the daemon identity of each address; the identity lives in
-`LLM_AGENTS_DIR/pi/paseo-state/`, and deleting it or changing
-`LLM_AGENTS_DIR` makes the browser pair again
-([Browser UIs](agents.md#browser-uis)).
+the daemon identity of each address. The identity, `daemon-keypair.json`
+and `server-id`, lives in each project's `.paseo` directory under its
+agent home and is shared through the per-set store
+`LLM_AGENTS_DIR/pi/paseo-state/` ([Browser UIs](agents.md#browser-uis)
+says how the launcher copies it). For a fresh identity, stop the UI
+(`bash bin/tokencrate ui stop paseo`) and delete the two files from the
+store and from every project's `.paseo`; the browser then pairs again.
+Deleting the store alone changes nothing, because the next start copies
+the project's identity back into it.
 
 ## pi reports `Summarization failed` and refuses the next prompt
 
@@ -118,15 +123,11 @@ the client's token limit. In `smoke` the same ending fails the `reply
 terminates` check, where it can also mean a reasoning loop
 ([`smoke`](cli.md#smoke)).
 
-## `ui stop` on Docker prints that the `ui` network is still in use
-
-Docker reports `tokencrate_ui` as in use when `ui stop` removes the last
-UI pair while the model runs, because the model container stays on that
-network. Nothing failed; `down` removes the network with the model.
-
 ## Asking for help
 
-Open a
+Ask a question in
+[Discussions](https://github.com/angelo-lesniak/token-crate/discussions/categories/q-a);
+the issue chooser links the categories. Report a failure with a
 [bug report](https://github.com/angelo-lesniak/token-crate/issues/new?template=bug-report.yml).
 Remove host paths, prompts, project content, and other private
 information from logs and reports first. For security problems, follow

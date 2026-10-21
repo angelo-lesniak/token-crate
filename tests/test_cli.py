@@ -4,8 +4,11 @@ engine, routed through the fake engine in tests/fixtures/engine-bin."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
+import subprocess
+import sys
 import tomllib
 import unittest
 
@@ -37,7 +40,11 @@ class CliTests(unittest.TestCase):
         self.expect_failure("--sets applies to smoke --agent", "smoke", "--sets", "missing", PATH="/usr/bin:/bin")
         self.assertIn("Usage:", self.succeed("--help"))
         self.assertIn("Usage:", self.succeed())
-        self.assertIn("LLAMA_CPP_TAG=", self.succeed("pins", PATH="/usr/bin:/bin"))
+        # `pins` prints pins.env without its comments and blank lines, nothing else.
+        pinned = [
+            line for line in (SOURCE_ROOT / "pins.env").read_text().splitlines() if line and not line.startswith("#")
+        ]
+        self.assertEqual(self.succeed("pins", PATH="/usr/bin:/bin").splitlines(), pinned)
         model_sets = self.succeed("models", "list", PATH="/usr/bin:/bin")
         self.assertIn("qwen3.8-27b-ud-q4-k-xl", model_sets)
         self.assertIn("gpt-oss-20b-mxfp4", model_sets)
@@ -53,6 +60,26 @@ class CliTests(unittest.TestCase):
         skill_sets = self.succeed("skills", "list", PATH="/usr/bin:/bin")
         self.assertIn("pocock-core", skill_sets)
         self.assertIn("skill-crate", skill_sets)
+
+    def test_a_closed_pipe_ends_a_listing_without_a_traceback(self) -> None:
+        # A listing fits the pipe buffer, so a reader that is gone (`| head`)
+        # is first seen by the final flush; left to interpreter shutdown it
+        # is an "Exception ignored" line and exit status 120.
+        for command in (["pins"], ["help"]):
+            with self.subTest(command=command):
+                read_end, write_end = os.pipe()
+                os.close(read_end)
+                result = subprocess.run(
+                    [sys.executable, "-m", "tokencrate", *command],
+                    cwd=self.scratch.root,
+                    env=self.scratch.environment(PATH="/usr/bin:/bin"),
+                    stdout=write_end,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                os.close(write_end)
+                self.assertEqual((result.returncode, result.stderr), (1, ""))
 
     def test_shim_runs_the_package_from_a_project_directory(self) -> None:
         result = self.scratch.run_shim("pins")
@@ -91,15 +118,15 @@ class CliTests(unittest.TestCase):
             listing, rf"gpt-oss-20b-fast \[gpt-oss-20b-mxfp4\] needs [0-9]+ GiB GPU memory; {re.escape(wait)} - "
         )
         self.assertRegex(listing, r"qwen3.8-27b-q4 \[qwen3.8-27b-ud-q4-k-xl\] needs [0-9]+ GiB GPU memory - ")
-        rendered = self.succeed("presets", "render", PATH="/usr/bin:/bin")
-        self.assertIn(f"gpt-oss-20b-fast: {wait}\n", rendered)
-        self.assertIn(VALIDATED, rendered)
+        validated = self.succeed("presets", "check", PATH="/usr/bin:/bin")
+        self.assertIn(f"gpt-oss-20b-fast: {wait}\n", validated)
+        self.assertIn(VALIDATED, validated)
         checked = self.succeed("doctor", "--preset", "gpt-oss-20b-fast", CONTAINER_ENGINE="podman", LLM_GPU="false")
         self.assertIn(f"[warn] preset gpt-oss-20b-fast {wait}; up leaves it out of the router", checked)
         self.assertIn("Doctor completed with 0 failure(s) and 2 warning(s).", checked)
         # up refuses the gated default before the stack starts, and before
         # the download a model-set argument asks for.
-        for arguments in (("up",), ("up", "--model-set", "gpt-oss-20b-mxfp4")):
+        for arguments in (("up",), ("up", "--model-sets", "gpt-oss-20b-mxfp4")):
             refused = self.scratch.run(*arguments, LLM_DEFAULT_PRESET="gpt-oss-20b-fast", LLM_GPU="false")
             self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
             self.assertIn(f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list", refused.stderr)
@@ -109,14 +136,14 @@ class CliTests(unittest.TestCase):
         named = f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list shows the loadable ones"
         running = {"FAKE_ENGINE_LLAMA_RUNNING": "true"}
         self.expect_failure(named, "smoke", "--preset", "gpt-oss-20b-fast", **running)
-        self.expect_failure(named, "bench", "--preset", "gpt-oss-20b-fast", **running)
+        self.expect_failure(named, "bench", "--presets", "gpt-oss-20b-fast", **running)
         self.expect_failure(named, "smoke", "--agent", "pi", "--preset", "gpt-oss-20b-fast", **running)
 
-    def test_render_validates_without_an_engine_and_writes_nothing(self) -> None:
-        output = self.succeed("presets", "render", PATH="/usr/bin:/bin")
+    def test_presets_check_validates_without_an_engine_and_writes_nothing(self) -> None:
+        output = self.succeed("presets", "check", PATH="/usr/bin:/bin")
         self.assertIn(VALIDATED, output)
         self.assertFalse((self.scratch.root / "build").exists())
-        self.expect_failure("unknown option for presets render: --check", "presets", "render", "--check")
+        self.expect_failure("unknown option for presets check: --check", "presets", "check", "--check")
 
     def test_up_starts_the_dashboard_profile_after_the_model_is_ready(self) -> None:
         # A loopback listener answers GET /models the way a router with
@@ -539,7 +566,9 @@ class CliTests(unittest.TestCase):
         self.succeed("ui", "stop", **common)
         self.assertIn("logs --follow tokencrate-ui-pi-web", self.succeed("ui", "logs", **common))
         self.succeed("down", **common)
-        self.expect_failure("usage: bin/tokencrate ui stop", "ui", "stop", "../now", **common)
+        # The set name reaches no path and no command: the engine's labels
+        # are filtered by it, so any spelling is at most "not found".
+        self.expect_failure("no UI container found: ../now", "ui", "stop", "../now", **common)
         self.expect_failure("usage: bin/tokencrate ui <set>", "ui", **common)
         self.expect_failure("--egress is only valid with smoke --agent, agent, or ui", "bench", "--egress")
 
@@ -637,26 +666,29 @@ class CliTests(unittest.TestCase):
         self.expect_failure("--timeout is only valid with up", "smoke", "--timeout", "1")
         self.expect_failure("unknown command: wait", "wait")
         self.expect_failure("unknown option for up: --refresh", "up", "--refresh")
-        self.expect_failure("all is available through models fetch", "up", "--model-set", "all")
-        self.expect_failure("unknown model set: missing-set (available: ", "up", "--model-set", "missing-set")
+        self.expect_failure("all is available through models fetch", "up", "--model-sets", "all")
+        self.expect_failure(
+            "unknown model set: missing-set (available: ", "up", "--model-sets", "qwen3.8-27b-ud-q4-k-xl,missing-set"
+        )
+        self.expect_failure("unsafe model set name: '../x'", "up", "--model-sets", "../x")
+        self.expect_failure("--model-sets requires a comma-separated list of model set names", "up", "--model-sets", "")
+        self.expect_failure("unsafe preset name: '--long'", "bench", "--presets", "--long")
+        # A value that is the next flag, or empty, is not a value.
+        self.expect_failure("--preset requires a preset id", "smoke", "--preset", "--basic")
+        self.expect_failure("--dir requires a directory", "agent", "pi", "--dir", "")
+        self.expect_failure("--port requires a port from 1 to 65535", "stats", "--serve", "--port", "04210")
         self.expect_failure(
             "unknown option for models status: --refresh", "models", "status", "--refresh", "qwen3.8-27b-ud-q4-k-xl"
         )
         self.expect_failure(
             "--verify applies to models status", "models", "fetch", "--verify", "qwen3.8-27b-ud-q4-k-xl"
         )
-        self.expect_failure("--preset is only valid with", "presets", "render", "--preset", "missing")
+        self.expect_failure("--preset is only valid with", "presets", "check", "--preset", "missing")
         self.expect_failure("--basic is only valid with smoke", "bench", "--basic")
-        self.expect_failure("--history is only valid with bench", "stats", "--history")
-        self.expect_failure("--long is not valid with --history", "bench", "--history", "--long")
-        # The history needs no engine and no stack.
-        printed = self.succeed("bench", "--history", PATH="/usr/bin:/bin")
-        self.assertIn("# TokenCrate bench history", printed)
-        self.assertIn("No bench history", printed)
         self.expect_failure("usage: bin/tokencrate pins check", "pins", "check", "node", "extra")
         self.expect_failure("unknown pin component 'rust'", "pins", "check", "rust")
         self.expect_failure("no preset selected", "smoke", FAKE_ENGINE_LLAMA_RUNNING="true")
-        self.expect_failure("model draft needs", "models", "draft", "not-a-spec")
+        self.expect_failure("draft needs hf:<owner>/<repository>:<file.gguf>", "models", "draft", "not-a-spec")
         self.expect_failure("unknown command", "frobnicate")
         # doctor keeps the host checks and warns about a preset it cannot find.
         self.assertIn(
@@ -678,7 +710,8 @@ class CommandTableTests(unittest.TestCase):
     # One accepted value per flag that carries one.
     VALUES = {
         "--preset": "x",
-        "--model-set": "x",
+        "--presets": "x",
+        "--model-sets": "x",
         "--timeout": "5",
         "--iterations": "2",
         "--sets": "",
@@ -705,7 +738,6 @@ class CommandTableTests(unittest.TestCase):
         for argv, expected in (
             (["smoke", "--preset", "x", "--agent", "pi"], "smoke --agent"),
             (["smoke"], "smoke"),
-            (["bench", "--history"], "bench --history"),
             (["stats", "--since", "7d", "--serve"], "stats --serve"),
             (["ui", "stop"], "ui stop"),
             (["ui", "pi-web"], "ui"),
@@ -737,10 +769,10 @@ class CommandTableTests(unittest.TestCase):
         for name, flag, expected in (
             ("bench", "--egress", "--egress is only valid with smoke --agent, agent, or ui"),
             ("bench", "--cloud", "--cloud is only valid with agent or ui"),
-            ("stats", "--preset", "--preset is only valid with doctor, smoke, bench, agent, or ui"),
+            ("stats", "--preset", "--preset is only valid with doctor, smoke, agent, or ui"),
+            ("stats", "--presets", "--presets is only valid with bench"),
             ("bench", "--serve", "--serve is only valid with stats"),
             ("bench", "--since", "--since is only valid with stats"),
-            ("stats", "--history", "--history is only valid with bench"),
             ("up", "--verify", "--verify is only valid with models status"),
             ("stats", "--port", "--port applies to stats --serve"),
             ("smoke", "--sets", "--sets applies to smoke --agent"),
@@ -753,9 +785,6 @@ class CommandTableTests(unittest.TestCase):
         with self.assertRaises(TokenCrateError) as refused:
             cli.parse(by_name["agent"], ["pi", "--preset", "a", "--preset", "b"])
         self.assertEqual(str(refused.exception), "--preset may be given once with agent")
-        with self.assertRaises(TokenCrateError) as refused:
-            cli.parse(by_name["bench"], ["--preset", "a", "--preset", "a"])
-        self.assertEqual(str(refused.exception), "--preset names a twice")
         with self.assertRaises(TokenCrateError) as refused:
             cli.parse(by_name["stats"], ["extra"])
         self.assertEqual(str(refused.exception), "unexpected argument for stats: extra")

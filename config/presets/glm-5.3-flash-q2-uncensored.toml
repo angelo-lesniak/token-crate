@@ -10,7 +10,7 @@ model_set = "glm-5.3-flash-orcarouter-uncensored-q2-k"
 # step 3 of the ladder moot here. Its first run waits for that preset's
 # measured speed and passing smoke. With the gate opened by hand on a
 # build without the architecture, the load fails at once with "unknown
-# model architecture: 'glm5next'" (the load attempt in docs/validation.md).
+# model architecture: 'glm5next'".
 [server]
 ctx_size = 65536
 n_predict = 16384

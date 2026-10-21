@@ -28,10 +28,13 @@ from string import Template
 
 from .. import TokenCrateError
 from ..agenthome import AGENTS
-from .live import LIVE_INTERVAL
+from .live import LIVE_INTERVAL, LIVE_SAMPLES
 from .report import meta_text
 from .tables import DEFINITIONS, build_tables, fit_verdict, percentile, share
 from .transcripts import Filter, Request, Session
+
+# How often the served page asks the browser to reload it.
+REFRESH_SECONDS = 60
 
 
 @functools.cache
@@ -214,21 +217,21 @@ def verdict(sessions: list[Session], slots: dict[str, int], loaded: str | None, 
 
 def live_panel(api: str, gpu: bool) -> str:
     """The served page's live panel: one script that builds the panel and
-    polls `/live`; `api` (host:port of the model server, as
-    `server.stats_server` derives it) names what is polled when it cannot
-    be reached, and `gpu` says whether the server runs a GPU query at all
-    (without one the panel shows no GPU tiles)."""
+    polls `/live` at the sampler's pace and charts the window its ring
+    holds; `api` (host:port of the model server, as `server.stats_server`
+    derives it) names what is polled when it cannot be reached, and `gpu`
+    says whether the server runs a GPU query at all (without one the panel
+    shows no GPU tiles)."""
     return (
         '<script id="live-script" '
         f'data-api="{html_text.escape(api)}" data-interval="{int(LIVE_INTERVAL * 1000)}" '
-        f'data-gpu="{int(gpu)}">\n'
+        f'data-window="{LIVE_SAMPLES * LIVE_INTERVAL:.0f}" data-gpu="{int(gpu)}">\n'
         f"{asset('live.js')}</script>"
     )
 
 
 def html(
     sessions: list[Session],
-    refresh: int | None = None,
     live: str | None = None,
     selection: Filter | None = None,
     slots: dict[str, int] | None = None,
@@ -237,23 +240,25 @@ def html(
     down: bool = False,
 ) -> str:
     """The stats report as one self-contained HTML page; `live` (the model
-    server's host:port) adds the served page's live panel and its verdict
-    on `loaded`, the preset the server saw loaded; `selection` names the
-    filters the meta line reports; `slots` are the rendered presets'
-    contexts per slot."""
+    server's host:port) makes it the served page: it reloads itself every
+    REFRESH_SECONDS and carries the live panel and the verdict on `loaded`,
+    the preset the server saw loaded; `selection` names the filters the
+    meta line reports; `slots` are the rendered presets' contexts per
+    slot."""
     slots = slots or {}
-    requests = [request for session in sessions for request in session.requests]
-    contexts = [request.context for request in requests]
-    prompt = sum(request.input + request.cache_read for request in requests)
+    tables = build_tables(sessions, slots)
+    requests = next(table for table in tables if table.title == "Requests")
+    # Its last row is the `all` row, or the one present agent's.
+    totals = dict(zip(requests.header, requests.rows[-1], strict=True))
     tiles = (
         ("Sessions", f"{len(sessions):,}"),
-        ("Requests", f"{len(requests):,}"),
-        ("Cache-read share", share(sum(request.cache_read for request in requests), prompt)),
-        ("Requests over 32K", share(sum(context > 32768 for context in contexts), len(contexts))),
+        ("Requests", f"{int(totals['Requests']):,}"),
+        ("Cache-read share", totals["Cache-read share"]),
+        ("Requests over 32K", totals["over 32K"]),
     )
     sections = []
     links = [("Context", "context"), ("Preset fit", "preset-fit")]
-    for table in build_tables(sessions, slots):
+    for table in tables:
         anchor = slug(table.title)
         if table.title != "Preset fit":
             links.append((table.title.split(" ")[0], anchor))
@@ -275,9 +280,9 @@ def html(
     links.append(("Definitions", "definitions"))
     nav = "<nav>" + "".join(f'<a href="#{anchor}">{label}</a>' for label, anchor in links) + "</nav>"
     rendered = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-    footer = f"Rendered {rendered}" + (f"; the page refreshes every {refresh} s." if refresh else ".")
+    footer = f"Rendered {rendered}" + (f"; the page refreshes every {REFRESH_SECONDS} s." if live else ".")
     return Template(asset("stats.html")).substitute(
-        refresh=f'<meta http-equiv="refresh" content="{refresh}">\n' if refresh else "",
+        refresh=f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">\n' if live else "",
         vendorstyle=asset("vendor/uPlot.min.css"),
         vendorscript=asset("vendor/uPlot.iife.js"),
         style=asset("stats.css"),

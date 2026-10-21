@@ -21,8 +21,8 @@ body:
     id: pins
     attributes:
       label: Pins and preset
-      description: Paste the output of `bash bin/tokencrate pins` and name the preset.
-      placeholder: qwen3.8-27b-q4
+      description: Paste the output of `bash bin/tokencrate pins` and `git rev-parse --short HEAD`, and name the preset.
+      placeholder: qwen3.8-27b-q4-mtp
     validations:
       required: true
   - type: dropdown

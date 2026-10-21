@@ -3,7 +3,9 @@
 Run commands as `bash bin/tokencrate <command> ...`; `bash bin/tokencrate
 help` prints the usage. The syntax blocks below show every command and
 flag. Use the wrapper rather than direct Compose calls, which skip
-TokenCrate's checks and generated configuration.
+TokenCrate's checks and generated configuration. "The model server" on
+this page is llama-server in router mode: it loads the presets and routes
+each request by its `model` field.
 
 General rules:
 
@@ -11,34 +13,27 @@ General rules:
   [README](../README.md#start-here) lists host tools and engine
   requirements. [Privacy and containment](privacy.md#what-leaves-the-machine)
   lists commands that use the network.
-- A setting comes from the shell environment, then `.env`, then the
-  defaults in `.env.example`; the pins in `pins.env` cannot be
-  overridden. [Configuration](configuration.md) says when a change takes
-  effect.
-- `CONTAINER_ENGINE=docker` or `CONTAINER_ENGINE=podman` overrides engine
-  detection. While a stack runs, every command uses the engine `up`
-  recorded in `build/stack.json`. A `CONTAINER_ENGINE` that disagrees is
-  refused until `down`, naming the engine to use.
-- `LLM_GPU=false` starts llama-server without a GPU device and skips the
-  GPU checks of `doctor`; it is for CPU-only checks.
-- `--preset <id>` selects a preset instead of `LLM_DEFAULT_PRESET`.
-  `doctor`, `smoke`, `agent`, and `ui` accept it once; `bench` accepts it
-  several times, but not the same preset twice. `smoke`, `bench`, `agent`,
-  and `ui` need one or the other and refuse otherwise: `no preset
-  selected; set LLM_DEFAULT_PRESET in .env or pass --preset`.
-- Every other flag that takes a value (`--timeout`, `--iterations`,
-  `--sets`, `--port`, `--dir`, `--agent`, `--since`) is refused when
-  given twice. `--model-set` can repeat.
+- Precedence is the shell environment, then `.env`, then `.env.example`;
+  [Configuration](configuration.md) says when a change takes effect.
+- While a stack runs, every command uses the engine `up` recorded;
+  [When a change takes effect](configuration.md#when-a-change-takes-effect)
+  states the `CONTAINER_ENGINE` rule.
+- `LLM_GPU=false` starts the model server without a GPU device and skips
+  the GPU checks of `doctor`; it is for CPU-only checks.
+- `--preset <id>` selects a preset instead of `LLM_DEFAULT_PRESET` for
+  `doctor`, `smoke`, `agent`, and `ui`; `bench --presets <ids>` takes a
+  comma-separated list. `smoke`, `bench`, `agent`, and `ui` need one or
+  the other and refuse otherwise: `no preset selected; set
+  LLM_DEFAULT_PRESET in .env or pass --preset`.
+- Every flag that takes a value is refused when given twice. A list
+  (`--sets`, `--model-sets`, `--presets`) is comma-separated and ignores
+  spaces, empty entries, and repeats.
 
-**Lock:** commands that change the stack take one lock per checkout
-(`build/locks/<project>.lock`). `up` holds it while it starts the llama
-container and records the engine, and again while it starts the
-dashboard profile. `down` holds it throughout, `ui` while it re-checks
-the port and replaces or removes a UI's containers, and `smoke --agent`
-for its run. A terminal `agent` session waits for the lock before its
-pre-flight and holds nothing while it runs. Image builds and readiness
-waits run without the lock. A command that has to wait says for whom:
-`TokenCrate: waiting for `up` (pid N) to finish`.
+**Lock:** commands that change the stack take one lock per checkout; a
+waiting command names the holder (``TokenCrate: waiting for `up` (pid N)
+to finish``); do not delete `build/locks/`. A terminal `agent` session
+never takes it: its pre-flight checks refuse on their own when the stack
+moves.
 
 ## init
 
@@ -91,7 +86,7 @@ System memory is compared against the preset's `[requires] ram_gib` with
 machine reports about 93 GiB). `LLM_PORT` must be bindable on loopback,
 a `[fail]` unless TokenCrate's own llama container publishes that port.
 
-For an unknown preset name, `doctor` prints a warning and runs every
+For an unknown preset id, `doctor` prints a warning and runs every
 other check. The commands that use a preset are stricter: `smoke`,
 `bench`, `agent`, and `ui` refuse a preset that is unknown or that the
 pinned llama.cpp build cannot load. `up` refuses such an
@@ -104,22 +99,20 @@ bash bin/tokencrate doctor --preset qwen3.8-27b-q4-mtp
 ## up
 
 ```text
-bin/tokencrate up [--model-set name]... [--timeout seconds]
+bin/tokencrate up [--model-sets names] [--timeout seconds]
 ```
 
 In order:
 
 1. Runs the checks of [`doctor`](#doctor) for `LLM_DEFAULT_PRESET` and
    stops on a `[fail]` line.
-2. Checks the `agents`, `ui`, and `dashboard` networks when they exist:
-   each must be internal and created by this project, on Docker without
-   a gateway address, and on rootless Podman with a bridge that does not
-   forward IPv4 traffic
-   ([Privacy and containment](privacy.md#defaults-and-their-limits)).
-   Otherwise `up` refuses before downloading, for example with `the
-   agents network's bridge podman1 forwards IPv4 traffic, so a session on
+2. Checks that the `agents`, `ui`, and `dashboard` networks, when they
+   exist, are the ones the Compose files declare ([Internal
+   networks](privacy.md#internal-networks) states the rule). Otherwise
+   `up` refuses before downloading, for example with `the agents
+   network's bridge podman1 forwards IPv4 traffic, so a session on
    another network can reach it. Run: bash bin/tokencrate down, then up`.
-3. Downloads and verifies only the model sets named with `--model-set`.
+3. Downloads and verifies only the model sets named with `--model-sets`.
 4. Renders every preset whose files are present into `build/`: the
    router preset file `models.ini` and the agent model lists. A preset
    whose model set needs a newer llama.cpp build is listed as waiting and
@@ -130,12 +123,12 @@ In order:
    container when the rendered preset file or service configuration
    changed; otherwise it keeps the running container.
 7. Waits for the router to answer `GET /models` on the published port.
-   A new router loads `LLM_DEFAULT_PRESET` at start, and `up` waits for
-   that preset to be ready. On an existing router, `up` requests a
-   load if nothing is loaded and allows three polls for the model server
-   to appear. If another preset already occupies the slot, `up` reports
-   it and leaves the default to load on first request. With no default
-   set, the router's response is enough.
+   A new model server loads `LLM_DEFAULT_PRESET` at start, and `up`
+   waits for that preset to be ready. On a model server that was already
+   running, `up` requests a load if nothing is loaded and allows three
+   polls for the preset to leave `unloaded`. If another preset already
+   occupies the slot, `up` reports it and leaves the default to load on
+   first request. With no default set, the router's response is enough.
 8. Prints the address of the API and the built-in chat UI.
 9. With `LLM_DASHBOARD=true`, starts the
    [dashboard](configuration.md#dashboard) profile beside the model
@@ -146,16 +139,17 @@ Plain `up` downloads no model files; after rendering, the default
 preset's files must be present or startup fails. The build and the
 readiness wait run without the lock, so a `down` meanwhile goes first or
 removes the container, and the wait reports that. During startup, `up`
-fails if the container exits or disappears, the model server exits while
-loading (reported as `unloaded`), or the timeout expires.
+fails if the container exits or disappears, the preset's llama-server
+process exits while loading (reported as `unloaded`), or the timeout
+expires.
 
 | Flag | Meaning |
 | --- | --- |
-| `--model-set <name>` | Download and verify this model set first; repeat for more sets |
-| `--timeout <seconds>` | Maximum time to wait for readiness, as a positive integer; default `600` |
+| `--model-sets <names>` | Download and verify these model sets first, as a comma-separated list |
+| `--timeout <seconds>` | Maximum time to wait for readiness, as a positive integer; default `600`. On expiry the container keeps loading; `status` shows the preset once it is loaded, and a second `up` keeps the container |
 
 ```bash
-bash bin/tokencrate up --model-set qwen3.8-27b-ud-q4-k-xl
+bash bin/tokencrate up --model-sets qwen3.8-27b-ud-q4-k-xl
 bash bin/tokencrate up
 ```
 
@@ -186,9 +180,9 @@ Shows all containers labelled for the selected Compose project. Each
 `UI <set>:` line adds the forwarder's state, published loopback address,
 and mounted project, so a UI reassigned to another project is visible.
 The line ends with `egress` or `cloud` for a UI started with that flag.
-When llama runs, it also shows one line per rendered preset with the state
-the router reports on `GET /models`: `unloaded`, `loading`, `loaded`, or
-`sleeping`. `status` works without valid pins or rendered files and does
+When the model server runs, it also shows one line per rendered preset
+with the state the router reports on `GET /models`: `unloaded`,
+`loading`, `loaded`, or `sleeping`. `status` works without valid pins or rendered files and does
 not wait for a start or stop in progress.
 
 ## logs
@@ -197,9 +191,9 @@ not wait for a start or stop in progress.
 bin/tokencrate logs
 ```
 
-Follows the llama container logs, including the output of every model
-server the router starts (prefixed with the server's port), until
-interrupted.
+Follows the llama container logs, including the output of every
+llama-server process the router starts for a preset (prefixed with the
+process's port), until interrupted.
 
 ## smoke
 
@@ -215,8 +209,8 @@ preset and unloads the previous one; loading a large model can take
 minutes. The probes cover the model listing, two chat completions, a
 streamed tool call, the chat template, tokenization, and the Prometheus
 counters (`GET /metrics?model=`). The completions ask for the preset's
-lowest reasoning effort and are judged on the answer. They must end on
-their own: a reply that exhausts its token budget ends with
+lowest reasoning effort and must return a non-empty answer that ends on
+its own: a reply that exhausts its token budget ends with
 `finish_reason` `length`, which can indicate a reasoning loop. The
 template must render the preset's first two efforts to different
 prompts; a preset that declares fewer than two passes with `nothing to
@@ -266,36 +260,23 @@ bash bin/tokencrate smoke --agent pi --egress
 ## bench
 
 ```text
-bin/tokencrate bench [--preset id]... [--iterations n] [--long]
-bin/tokencrate bench --history
+bin/tokencrate bench [--presets ids] [--iterations n] [--long]
 ```
 
 Measures prompt-processing and generation tokens per second per preset
 from llama-server's `timings`, averaged over `--iterations` requests
 (default 3). `--long` adds a run with a long prompt; the report's
 prompt-tokens column shows the measured length of every run. Without
-`--preset`, the default preset is measured. The report is written to
+`--presets`, the default preset is measured. The report is written to
 `reports/bench-<timestamp>.md`. `reports/bench-<timestamp>.json` holds
 the same measurements (`schema` 2): six `timings` values per iteration
-and, on every row, the measured preset's context size (`n_ctx`), server
-build, and model path, read right after that preset's warm-up. Presets
+and, on every row, the measured preset's context per slot (`n_ctx`,
+`ctx_size` over `parallel`), server build, and model path, read right
+after that preset's warm-up. Presets
 are loaded in turn, so measuring several presets swaps models.
 
-`--history` prints those JSON files as one table, one row per measured
-run, grouped by preset and run and oldest first within a group. The
-columns are preset, run, date, `n_ctx`, build, prompt tokens, the two
-speeds, the change in generation speed against the row above (only when
-both ran at the same `n_ctx`), and the iterations. A file of an earlier
-`bench` (`schema` 1) recorded one build and `n_ctx` for the whole file,
-and the history shows those on each of its rows. It reads the host's
-`reports/` directory and needs no engine or stack, so a llama.cpp
-[upgrade](configuration.md#upgrading) or a preset change shows next to
-the runs before it. The history is this machine's, because `reports/` is
-not tracked.
-
 ```bash
-bash bin/tokencrate bench --preset qwen3.8-27b-q4 --preset qwen3.8-27b-q4-mtp
-bash bin/tokencrate bench --history
+bash bin/tokencrate bench --presets qwen3.8-27b-q4,qwen3.8-27b-q4-mtp
 ```
 
 ## stats
@@ -306,8 +287,10 @@ bin/tokencrate stats --serve [--port port] [--since when] [--agent <pi|omp>]
 ```
 
 Summarizes the retained transcripts below `LLM_AGENTS_DIR` ([storage
-layout](configuration.md#storage-layout)): every terminal and browser-UI
-session that received at least one answer counts. The command reads only
+layout](configuration.md#storage-layout)): every conversation the agent
+retained as a transcript (a pi session; a terminal or browser-UI session
+can hold several) that received at least one answer counts. The command
+reads only
 the host directories, so it works with the stack down. It reads usage
 numbers and metadata only, never message content; the report carries no
 conversation text, session names, or project paths
@@ -429,14 +412,15 @@ symbolic links are resolved. The project directory must:
 The container sees only the project directory, so Git works there only
 when the repository's `.git` data lies inside it. The wrapper walks from
 the project up to your home directory or the `LLM_PROJECT_ROOTS` entry
-above it. It refuses when it meets a `.git` file (a linked worktree or
-a submodule), a worktree's `commondir`, or a repository above the
-project, naming that `.git`: `Git metadata lies outside the project
-mount (<path>/.git); choose the repository root or a standalone clone
-instead of a linked worktree or submodule`. A repository that manages
-the home directory itself lies outside the walk.
+above it. When the walk meets a `.git` file or symbolic link (a linked
+worktree or a submodule), a worktree's `commondir`, or a repository
+above the project, the start is refused. The refusal names that `.git`:
+`Git metadata lies outside the project mount (<path>/.git); choose the
+repository root or a standalone clone instead of a linked worktree or
+submodule`. A repository that manages the home directory itself lies
+outside the walk.
 
-The agent talks to the running llama service over an internal network with
+The agent talks to the running model server over an internal network with
 no internet access. `--egress` puts the session on the default network
 instead, for example to install packages, and the wrapper prints a
 warning. `--egress` and `--cloud` are the only ways to give a session
@@ -455,8 +439,9 @@ in the session can read the keys. `--cloud` refuses to start when:
 - the file does not exist or is not a regular file;
 - the file is not your user's or is readable by others (`<path> must be
   readable by your user only; run: chmod 600 <path>`);
-- the file lies inside the project, a storage directory, `config/`, or
-  `local/agent-sets/`, which containers or image builds read;
+- the file lies inside the project, a storage directory, `config/`,
+  `local/agent-sets/`, `services/`, or `build/agents/pi/`, which
+  containers mount or image builds read;
 - its path carries `:` or `,`, which a mount cannot express.
 
 The container refuses to start when a line of the file is not
@@ -473,15 +458,13 @@ The command refuses to start unless:
 - the last `up` added the preset to the router, which it does when the
   preset's model files are downloaded and the pinned llama.cpp build can
   load them;
-- the llama service is running with the configuration the last `up`
+- the model server is running with the configuration the last `up`
   rendered; after a failed `up`, fix its error and run `up` again;
 - every skill set named in `LLM_SKILL_SETS` is known, fetched, and
   complete;
-- the `agents`, `ui`, and `dashboard` networks pass the check
-  [`up`](#up) makes: internal, created by this project, on Docker
-  without a gateway address, on rootless Podman with a bridge that does
-  not forward IPv4 traffic
-  ([Privacy and containment](privacy.md#defaults-and-their-limits)).
+- the `agents`, `ui`, and `dashboard` networks are the ones the Compose
+  files declare ([Internal networks](privacy.md#internal-networks)
+  states the rule).
 
 Arguments after `--` are passed to the agent binary; with pi's `-p`, the
 agent answers one prompt, prints the reply, and exits. Compose attaches
@@ -541,23 +524,24 @@ the named UI set ([Agent sets](agent-sets.md#shipped-sets) names each
 set's download). The project directory, `--preset`, and pre-flight
 checks are those of [`agent`](#agent). A launch does not remember
 options from an earlier launch. Only the named UI is replaced; the other
-UI and llama keep running unchanged.
+UI and the model server keep running unchanged.
 
 The UI container is named `tokencrate-ui-<set>` and its forwarder
 `tokencrate-ui-forward-<set>`, so two Compose projects on one engine
-cannot run the same UI set at once. The second launch fails on the
-name; `ui stop <set>` in the other checkout frees it. The command
-waits up to 90 seconds for both containers to run and the forwarder to
-answer. A failed build leaves the previous UI intact. A failed start or
+cannot run the same UI set at once. The second launch is refused before
+it removes or starts a container (`the container tokencrate-ui-<set> belongs to
+another checkout's UI; free it there with: bash bin/tokencrate ui stop
+<set>`). The command waits up to 90 seconds for both containers to run
+and the forwarder to answer. A failed build leaves the previous UI intact. A failed start or
 readiness check leaves that UI in place for `ui logs <set>`, a retry, or
 `ui stop <set>`; it does not stop the other UI. Readiness is an HTTP
 check, not proof of a completed assistant response.
 
 `ui stop <set>` removes that UI and its forwarder, and fails when the
 set has no container. Plain `ui stop` removes every UI and says so when
-none is running. Neither removes llama, the networks, or saved sessions
-and UI state. The UI daemon gets the engine's stop timeout, 20 seconds
-on Docker and 10 on Podman. `ui logs <set>` follows the UI daemon output
+none is running. Neither removes the model server, the networks, or
+saved sessions and UI state. The UI daemon gets the engine's stop
+timeout, 20 seconds on Docker and 10 on Podman. `ui logs <set>` follows the UI daemon output
 until interrupted; plain `ui logs` selects the only UI present and asks
 for a set name when there are several. Both find stopped or failed
 containers without the launch options or a custom manifest.
@@ -576,8 +560,7 @@ runs pi. The forwarder, which publishes the UI's port on the host, gets
 neither the route out nor the keys. The UI holds them until `ui stop
 <set>`, `down`, or a launch of the set without the flag. [Cloud
 providers](agents.md#cloud-providers) says who can use them meanwhile,
-and [Privacy and containment](privacy.md#defaults-and-their-limits)
-states the network boundaries.
+and [Egress](privacy.md#egress) states the network boundaries.
 
 ```bash
 bash bin/tokencrate ui pi-web --dir ~/src/my-project
@@ -606,7 +589,7 @@ model](models.md#adding-a-model)).
 one state per file (`ready`, `missing`, `wrong size`, `wrong checksum`,
 and the like). A file is read in full once; its checksum match is
 recorded in a `<file>.tokencrate-verified` stamp beside it. Later
-runs of `status`, `fetch`, and `up --model-set` trust the stamp while the
+runs of `status`, `fetch`, and `up --model-sets` trust the stamp while the
 file's size, modification time, and inode are unchanged. A run that has
 to read files says so first (`verifying: N file(s) (X.X GB) by checksum;
 later runs trust the record written beside each verified file`).
@@ -625,29 +608,29 @@ bash bin/tokencrate models draft hf:unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q6_K
 ```
 
 See [Models and presets](models.md) for licenses, token handling, and
-the download and storage mechanics; the [manifest field
-rule](../CONTRIBUTING.md#model-sets-presets-and-skill-sets) says what a
-model-set entry must contain.
+the download and storage mechanics; [Manifest
+keys](models.md#manifest-keys) lists the keys a model-set entry must
+contain.
 
 ## presets
 
 ```text
 bin/tokencrate presets list
-bin/tokencrate presets render
+bin/tokencrate presets check
 ```
 
 `list` prints each preset's model set, memory requirements, description,
 and any newer llama.cpp build it needs; see the [build
 gate](models.md#adding-a-model).
 
-`render` validates every preset and model-set manifest. It writes
+`check` validates every preset and model-set manifest. It writes
 nothing and does not inspect downloaded model files. Each preset is
 listed as `valid` or as waiting for a newer llama.cpp build. Run it
 after editing a preset. [`up`](#up) writes the rendered files ([storage
 layout](configuration.md#storage-layout)).
 
 ```bash
-bash bin/tokencrate presets render
+bash bin/tokencrate presets check
 ```
 
 ## skills
@@ -665,8 +648,8 @@ fetched sets that `LLM_SKILL_SETS` names.
 `fetch` downloads each skill of the named sets into
 `LLM_SKILLS_DIR/<set>/<skill>`: it clones the pinned commit, copies the
 skill's directory, and checks its tree digest and the frontmatter of its
-`SKILL.md`. It then deletes every other directory in the set's folder,
-so a skill you put there yourself is lost on the next fetch. Keep your
+`SKILL.md`. It then deletes every other skill directory in the set's
+folder, so a skill you put there yourself is lost on the next fetch. Keep your
 own skills in `LLM_LOCAL_SKILLS_DIR`, which `fetch` never touches.
 
 `status` checks, without network access, that the fetched files still

@@ -43,7 +43,7 @@ class SkillSetTests(unittest.TestCase):
         return skills.Skill(name, REPOSITORY, commit, f"skills/{name}", digest, "MIT")
 
     def use_checkout(self, function) -> None:
-        """Replace the Git checkout that fetch() and digest_command() call."""
+        """Replace the Git checkout that fetch() calls."""
         self.addCleanup(setattr, skills, "checkout_subtree", skills.checkout_subtree)
         skills.checkout_subtree = function
 
@@ -73,10 +73,9 @@ class SkillSetTests(unittest.TestCase):
         self.assertEqual(select_sets(catalog, ["demo", "demo"], "skill set"), [catalog["demo"]])
 
     def test_shipped_manifests_parse_with_the_allowlist(self):
-        hosts = skills.load_allowed_hosts(ALLOWED_HOSTS)
-        self.assertIn("github.com", hosts)
+        self.assertIn("github.com", skills.load_allowed_hosts(ALLOWED_HOSTS))
 
-        catalog = skills.available_sets(SKILL_SETS, hosts)
+        catalog = skills.catalog(PROJECT_ROOT / "config")
 
         self.assertEqual(set(catalog), SHIPPED_SETS)
         for skill_set in catalog.values():
@@ -238,28 +237,6 @@ class SkillSetTests(unittest.TestCase):
         (target / "fixture" / "other").unlink()
         (target / "fixture" / "other").mkdir()
         self.assertEqual(skills.missing_skills(skill_set, target), [])
-
-    def test_digest_command_returns_the_tree_digest(self):
-        root = self.workdir / "demo"
-        root.mkdir()
-        (root / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\n\nBody\n", encoding="utf-8")
-        seen: list[tuple[str, str, str]] = []
-
-        def local_checkout(repository, commit, subpath, workdir):
-            seen.append((repository, commit, subpath))
-            return root
-
-        self.use_checkout(local_checkout)
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            digest = skills.digest_command(REPOSITORY + ".git", "c" * 40, "skills/demo", {"github.com"})
-
-        self.assertEqual(digest, skills.tree_digest(root))
-        self.assertEqual(output.getvalue(), "")
-        self.assertEqual(seen, [(REPOSITORY, "c" * 40, "skills/demo")])
-        with self.assertRaisesRegex(TokenCrateError, "full lowercase Git commit"):
-            skills.digest_command(REPOSITORY, "main", "skills/demo", {"github.com"})
-        with self.assertRaisesRegex(TokenCrateError, "allowed-git-hosts"):
-            skills.digest_command("https://example.com/a/b", "c" * 40, "skills/demo", {"github.com"})
 
     def test_frontmatter_name_must_match_directory(self):
         root = self.workdir / "wrong"

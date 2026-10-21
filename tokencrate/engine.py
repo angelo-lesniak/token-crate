@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import TokenCrateError, warn
 from .env import Settings
+from .files import write_atomic
 
 ENGINES = ("podman", "docker")
 # Both Docker Compose and podman-compose apply these labels.
@@ -228,9 +229,12 @@ class Engine:
     @contextlib.contextmanager
     def lock(self, command: str = ""):
         """Serialize the steps that change this checkout's stack: the Compose
-        `up`, `run`, and removal calls, not an image build or a readiness
-        wait. The holder writes its PID and `command` into the lock file,
-        so a second command can say whom it waits for before it blocks."""
+        `up`, `run`, and removal calls. An image build, a readiness wait,
+        and the pre-flight of an agent start run without it: the build is
+        content-addressed, the wait polls, and every pre-flight check
+        refuses on its own when the stack moves. The holder writes its PID
+        and `command` into the lock file, so a second command can say whom
+        it waits for before it blocks."""
         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
         with os.fdopen(os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o644), "r+") as handle:
             try:
@@ -255,10 +259,7 @@ class Engine:
     def record_stack(self) -> None:
         """Remember which engine runs this project's stack, for every later
         command (`detect` reads it until `down` removes it)."""
-        self.stack_record.parent.mkdir(parents=True, exist_ok=True)
-        self.stack_record.write_text(
-            json.dumps({"engine": self.name, "project": self.settings.project_name}) + "\n", encoding="utf-8"
-        )
+        write_atomic(self.stack_record, json.dumps({"engine": self.name, "project": self.settings.project_name}) + "\n")
 
     def forget_stack(self) -> None:
         self.stack_record.unlink(missing_ok=True)
@@ -296,8 +297,8 @@ class Engine:
                 while True:
                     result = self.command(action, item["Id"], capture=True, check=False)
                     # Stopping a run --rm container also removes it. Docker
-                    # may still be removing it when stop returns; wait before
-                    # proceeding to network removal.
+                    # may still be removing it when stop returns, so the
+                    # `rm` is retried until that removal is done.
                     if not result.returncode or self.container_missing(result.stderr):
                         break
                     detail = (result.stderr or "").strip()
@@ -388,6 +389,16 @@ class Engine:
         if result.returncode == 0:
             return result.stdout.strip(), ""
         return "", (result.stderr or "").strip().partition("\n")[0] or f"exit status {result.returncode}"
+
+    def foreign_container(self, name: str) -> bool:
+        """Whether a container of this name exists that this Compose project
+        did not create (by its project label); false for a name the engine
+        does not know."""
+        result = self.command("inspect", "--format", "{{json .}}", name, capture=True, check=False)
+        if result.returncode != 0:
+            return False
+        labels = (json.loads(result.stdout).get("Config") or {}).get("Labels") or {}
+        return labels.get(PROJECT_LABEL) != self.settings.project_name
 
     def container_state(self, container_id: str) -> str:
         """`.State.Status` of a container, by id or name (running, exited,

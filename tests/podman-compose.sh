@@ -61,9 +61,8 @@ render() {
 }
 
 # The file combinations bin/tokencrate can pass, in its order: base, GPU
-# overlay, Podman overlay, and the egress overlay with both agent profiles.
-render --file compose.yaml
-render --file compose.yaml --file compose.gpu.yaml
+# overlay, Podman overlay, and the egress overlay with both agent profiles;
+# the wrapper always adds an engine overlay (engine.compose).
 render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml
 render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml \
   --file compose.agent-egress.yaml --profile agent-pi --profile agent-omp

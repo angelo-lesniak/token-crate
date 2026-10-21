@@ -130,6 +130,26 @@ class SettingsTests(unittest.TestCase):
                     self.assertEqual(env.load(self.tmp, {"COMPOSE_PROJECT_NAME": ""}).project_name, "tokencrate")
         self.assertEqual(env.load(self.tmp, {"COMPOSE_PROJECT_NAME": "crate_2-b"}).project_name, "crate_2-b")
 
+    def test_an_empty_path_setting_is_refused_not_defaulted(self) -> None:
+        # Every Compose setting is required; the wrapper reads these five
+        # itself, so it is the one that names the variable and the remedy.
+        for key in env.PATH_KEYS:
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(TokenCrateError, f"^{key} must not be empty; omit the line to take"):
+                    env.load(self.tmp, {key: ""})
+        self.write_env("LLM_MODELS_DIR=\n")
+        with self.assertRaisesRegex(TokenCrateError, r"^LLM_MODELS_DIR must not be empty; .*\(\./data/models\)$"):
+            env.load(self.tmp, {})
+
+    def test_a_port_is_used_as_written_so_it_has_no_leading_zero(self) -> None:
+        # Compose publishes the value as written and the forwarder's allowed
+        # hosts compare it as text, so "04210" is refused, not normalised.
+        for value in ("0", "04210", "65536", "4210 ", "x"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TokenCrateError, "^LLM_PORT requires a port from 1 to 65535$"):
+                    env.validate_port(value, "LLM_PORT")
+        self.assertEqual(env.load(self.tmp, {"LLM_PORT": "65535"}).port, "65535")
+
     def test_storage_paths_are_real_paths_that_do_not_contain_the_checkout(self) -> None:
         # A storage directory that is or contains the checkout would mount
         # .env into every agent container; a linked one is resolved once
@@ -240,7 +260,12 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(by_label["the TokenCrate checkout"].refuses_keys, "the default keys file lies below local/")
         self.assertEqual(by_label["the cloud keys file"].path, Path("/keys/cloud.env"))
         self.assertTrue(by_label["the cloud keys file"].refuses_projects)
-        for label in ("the shipped configuration", "the private agent sets"):
+        for label in (
+            "the shipped configuration",
+            "the private agent sets",
+            "the services directory",
+            "the rendered pi images",
+        ):
             self.assertTrue(by_label[label].refuses_keys and not by_label[label].mounted, label)
         self.assertEqual(
             {
@@ -248,7 +273,15 @@ class SettingsTests(unittest.TestCase):
                 for place in settings.storage
                 if not place.mounted and not place.key
             },
-            {Path(), Path("config"), Path("local/agent-sets"), Path("reports"), Path("data/dashboard/victoria")},
+            {
+                Path(),
+                Path("config"),
+                Path("local/agent-sets"),
+                Path("services"),
+                Path("build/agents/pi"),
+                Path("reports"),
+                Path("data/dashboard/victoria"),
+            },
         )
 
     def test_symlinked_env_file_is_refused(self) -> None:

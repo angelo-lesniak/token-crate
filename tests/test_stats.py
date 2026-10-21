@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 from tests.support import Scratch
 from tokencrate import TokenCrateError, stats
 from tokencrate.stats import tables, transcripts
-from tokencrate.stats.report import meta_text, recent_clause, summary_line
+from tokencrate.stats.report import meta_text, recent_clause
 
 CWD_DIRECTORY = "--srv-PROJECTSECRET--"
 
@@ -142,7 +142,7 @@ class StatsReportTests(unittest.TestCase):
     def test_the_report_aggregates_sessions_requests_models_and_timings(self) -> None:
         text = stats.report(stats.read_sessions(self.agents_dir))
         self.assertTrue(text.startswith("# TokenCrate stats report\n\n- Date: "), text)
-        self.assertIn("- Transcripts: 3 session(s), 6 request(s) below LLM_AGENTS_DIR; none in the last 24 h\n", text)
+        self.assertIn("- Scope: 3 sessions, 6 requests, all agents, all time; none in the last 24 h\n", text)
         # Sessions: count, requests, turns p50, duration p50/p90 (first to
         # last message; the cloud session has one message, so the pi p90 is
         # the timed session's four minutes), first-request p50, peak context
@@ -194,7 +194,6 @@ class StatsReportTests(unittest.TestCase):
             meta_text(sessions, now=pi_last + 3600),
             "3 sessions, 6 requests, all agents, all time; 3 sessions and 6 requests in the last 24 h",
         )
-        self.assertTrue(summary_line(sessions, now=pi_last + 3600).endswith("in the last 24 h"))
 
     def test_the_preset_fit_table_judges_every_rendered_slot(self) -> None:
         # The fixture's contexts reach 19,160 tokens: a 16K slot would have
@@ -229,7 +228,7 @@ class StatsReportTests(unittest.TestCase):
         self.assertEqual([session.agent for session in kept], ["pi", "omp"])
         self.assertEqual(sum(len(session.requests) for session in kept), 3)
         text = stats.report(kept, stats.Filter(since=cutoff))
-        self.assertIn("2 session(s), 3 request(s) below LLM_AGENTS_DIR (since 2026-09-21T17:30:00+00:00)", text)
+        self.assertIn("- Scope: 2 sessions, 3 requests, all agents, since 2026-09-21T17:30:00+00:00", text)
         only_pi = stats.read_sessions(self.agents_dir, stats.Filter(agent="pi"))
         self.assertEqual({session.agent for session in only_pi}, {"pi"})
         self.assertEqual(len(stats.read_sessions(self.agents_dir, stats.Filter(since=cutoff, agent="pi"))), 1)
@@ -297,7 +296,7 @@ class StatsReportTests(unittest.TestCase):
         with transcripts.open_transcript(sessions / "2026-09-21T16-00-00-000Z_a.jsonl", root) as handle:
             self.assertIn('"type": "session"', handle.readline())
         text = stats.report(stats.read_sessions(self.agents_dir))
-        self.assertIn("3 session(s), 6 request(s)", text)
+        self.assertIn("3 sessions, 6 requests", text)
 
     def test_an_integer_past_the_digit_limit_is_skipped(self) -> None:
         # json.loads raises a plain ValueError for it, not a JSONDecodeError.
@@ -323,16 +322,16 @@ class StatsReportTests(unittest.TestCase):
         self.assertIn("big-model", models)
 
     def test_numbers_are_read_defensively(self) -> None:
-        self.assertEqual(stats.integer(500.0), 500)
-        self.assertEqual(stats.integer(500.5), 0)
-        self.assertEqual(stats.integer(True), 0)
-        self.assertEqual(stats.integer("500"), 0)
-        self.assertEqual(stats.integer(-5), 0)
-        self.assertEqual(stats.integer(2**60), 2**53)
-        self.assertEqual(stats.duration(5), 5.0)
-        self.assertIsNone(stats.duration(float("nan")))
-        self.assertIsNone(stats.duration(float("inf")))
-        self.assertIsNone(stats.duration(True))
+        self.assertEqual(transcripts.integer(500.0), 500)
+        self.assertEqual(transcripts.integer(500.5), 0)
+        self.assertEqual(transcripts.integer(True), 0)
+        self.assertEqual(transcripts.integer("500"), 0)
+        self.assertEqual(transcripts.integer(-5), 0)
+        self.assertEqual(transcripts.integer(2**60), 2**53)
+        self.assertEqual(transcripts.number(5), 5.0)
+        self.assertIsNone(transcripts.number(float("nan")))
+        self.assertIsNone(transcripts.number(float("inf")))
+        self.assertIsNone(transcripts.number(True))
 
     def test_percentiles_are_nearest_rank_observations(self) -> None:
         self.assertEqual(tables.percentile([5], 0.9), 5)
@@ -368,7 +367,7 @@ class StatsCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("no agent transcripts below", result.stderr)
         result = self.scratch.run("stats", "--preset", "x")
-        self.assertIn("--preset is only valid with doctor, smoke, bench, agent, or ui", result.stderr)
+        self.assertIn("--preset is only valid with doctor, smoke, agent, or ui", result.stderr)
         result = self.scratch.run("stats", "extra")
         self.assertIn("unexpected argument for stats: extra", result.stderr)
         result = self.scratch.run("stats", "--port", "4210")
@@ -389,7 +388,7 @@ class StatsCommandTests(unittest.TestCase):
         result = self.scratch.run("stats", "--since", "2026-09-21T17:30:00Z", "--agent", "omp", PATH="/usr/bin:/bin")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
-            "1 session(s), 2 request(s) below LLM_AGENTS_DIR (agent omp, since 2026-09-21T17:30:00+00:00)",
+            "- Scope: 1 session, 2 requests, agent omp, since 2026-09-21T17:30:00+00:00",
             result.stdout,
         )
         self.assertNotIn("| pi |", result.stdout)

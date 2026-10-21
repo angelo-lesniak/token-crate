@@ -29,6 +29,9 @@ COPIED = (
     "pins.env",
     ".env.example",
 )
+# Where compose.yaml mounts the agent home; the contract test and the
+# integration checks read the container against it.
+HOME_IN_CONTAINER = "/home/agent"
 
 
 def home_tmpfs_directories(agent: str) -> set[str]:
@@ -36,7 +39,7 @@ def home_tmpfs_directories(agent: str) -> set[str]:
     its own (the home root among them, as "."); the engines otherwise
     create root-owned ancestors for nested mounts. What the tests check
     compose.yaml and a running container against."""
-    from tokencrate.session import PERSISTENT_DIRECTORIES
+    from tokencrate.agenthome import PERSISTENT_DIRECTORIES
 
     return {str(parent) for relative in PERSISTENT_DIRECTORIES[agent] for parent in Path(relative).parents}
 

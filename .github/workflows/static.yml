@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.13"
+          python-version: "3.11"
 
       - name: Install static tools
         run: |
@@ -36,8 +36,10 @@ jobs:
         run: bash tests/static.sh
 
       - name: Lint Dockerfiles
+        # The pi Dockerfile the gate rendered above (the empty agent-set
+        # selection) is the artifact the pi image builds from.
         run: |
-          for dockerfile in services/llama/Dockerfile services/agents/Dockerfile; do
+          for dockerfile in services/llama/Dockerfile services/agents/Dockerfile build/agents/pi/*/Dockerfile; do
             docker run --rm --interactive hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e \
               hadolint --failure-threshold warning - < "$dockerfile"
           done

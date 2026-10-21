@@ -20,7 +20,7 @@ from tokencrate import PROJECT_ROOT, TokenCrateError, models
 from tokencrate.models import download, drafts, hub, library
 from tokencrate.names import select_sets
 
-MANIFESTS = PROJECT_ROOT / "config" / "model-sets"
+CONFIG = PROJECT_ROOT / "config"
 REAL_DISK_USAGE = shutil.disk_usage
 
 MANIFEST_HEAD = """schema = 1
@@ -32,8 +32,8 @@ url = "https://huggingface.co/example/model/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 """
 
 
-def file_row(role: str, source: str, destination: str | None = None) -> str:
-    row = f"""[[file]]
+def file_row(role: str, source: str) -> str:
+    return f"""[[file]]
 role = "{role}"
 repository = "example/model"
 revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -41,9 +41,6 @@ source = "{source}"
 size = 1
 sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 """
-    if destination is not None:
-        row += f'destination = "{destination}"\n'
-    return row
 
 
 def quiet():
@@ -139,7 +136,7 @@ class ModelSetTests(unittest.TestCase):
             models.fetch([model_set], models_root, token)
 
     def test_shipped_catalog_is_strict_and_complete(self):
-        catalog = models.available_sets(MANIFESTS)
+        catalog = models.catalog(CONFIG)
 
         self.assertEqual(sorted(catalog), sorted(shipped("model-sets")))
         for model_set in catalog.values():
@@ -148,10 +145,12 @@ class ModelSetTests(unittest.TestCase):
             if model_set.chat_template_file:
                 self.assertTrue((PROJECT_ROOT / "config" / "chat-templates" / model_set.chat_template_file).is_file())
 
-    def test_default_destination_follows_the_repository_layout(self):
+    def test_destination_follows_the_repository_layout(self):
         model_set = self.read(MANIFEST_HEAD + file_row("weights", "sub/model.gguf"))
 
         self.assertEqual(model_set.weights.destination, "example/model/sub/model.gguf")
+        with self.assertRaisesRegex(TokenCrateError, "unknown field.*file 1: destination"):
+            self.read(MANIFEST_HEAD + file_row("weights", "sub/model.gguf") + 'destination = "elsewhere.gguf"\n')
 
     def test_exactly_one_weights_role_is_required(self):
         with self.assertRaisesRegex(TokenCrateError, "exactly one"):
@@ -175,6 +174,8 @@ class ModelSetTests(unittest.TestCase):
             + file_row("split", "m-00003-of-00003.gguf")
         )
         self.assertEqual(len(self.read(complete).splits), 2)
+        # convert_hf_to_gguf --split-max-size names a model that fits one file 00001-of-00001.
+        self.assertEqual(self.read(MANIFEST_HEAD + file_row("weights", "m-00001-of-00001.gguf")).splits, ())
 
     def test_manifest_rejects_mutable_model_card_and_unknown_keys(self):
         mutable = MANIFEST_HEAD.replace("blob/" + "a" * 40 + "/README.md", "blob/main/README.md")
@@ -211,7 +212,7 @@ class ModelSetTests(unittest.TestCase):
             self.read(MANIFEST_HEAD + file_row("weights", "../secret"))
 
     def test_selection_rules(self):
-        catalog = models.available_sets(MANIFESTS)
+        catalog = models.catalog(CONFIG)
         first = next(iter(catalog))
         with self.assertRaisesRegex(TokenCrateError, "provide one or more"):
             select_sets(catalog, [], "model set")
@@ -444,9 +445,22 @@ class ModelSetTests(unittest.TestCase):
         self.use_hub(self.serve(lambda handler: requests.append(handler.path)))
         self.use_free_space(0)
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(TokenCrateError, "are free"):
+            with self.assertRaisesRegex(TokenCrateError, "are free below .*; make room or fetch fewer sets"):
                 self.fetch(model_set, Path(directory), None)
+            # A refusal leaves the library as it found it: no owner/repository directories.
+            self.assertEqual(list(Path(directory).iterdir()), [])
         self.assertEqual(requests, [])
+
+    def test_a_second_fetch_into_the_same_library_is_refused(self):
+        # flock is per open file description, so a second entry in-process conflicts like a second process.
+        with tempfile.TemporaryDirectory() as directory:
+            models_root = Path(directory)
+            with models.model_download_lock(models_root):
+                refusal = "another model-set download is using this models directory"
+                with self.assertRaisesRegex(TokenCrateError, refusal), models.model_download_lock(models_root):
+                    pass
+            with models.model_download_lock(models_root):
+                pass
 
     def test_free_space_counts_a_resumable_part_file_as_downloaded(self):
         # Scaled down: a 17.6 GB file with 17 GB in its .part needs 0.6 GB, not 17.6 GB.

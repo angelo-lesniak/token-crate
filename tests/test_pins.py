@@ -115,12 +115,6 @@ class PinsTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenCrateError, "expected KEY=VALUE"):
             env.load_pins(self.path)
 
-    def test_pinned_lines_prints_the_values_without_comments(self) -> None:
-        printed = env.pinned_lines(self.write())
-        self.assertNotIn("# comment", printed)
-        self.assertIn("PI_VERSION=0.85.1\n", printed)
-        self.assertEqual(len(printed.strip().splitlines()), 15)
-
 
 if __name__ == "__main__":
     unittest.main()

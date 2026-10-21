@@ -42,8 +42,9 @@ Install these host tools:
   [podman-compose](https://github.com/containers/podman-compose), which
   `podman compose` must resolve to;
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-  (Arch package: `nvidia-container-toolkit`) with a driver of major version
-  580 or newer (CUDA 13).
+  (Arch package: `nvidia-container-toolkit`) with a driver whose major
+  version is at least `CUDA_MIN_DRIVER_MAJOR` in [`pins.env`](pins.env)
+  (580, for CUDA 13); `doctor` checks it.
 
 Generate the NVIDIA CDI configuration, and regenerate it after every driver
 upgrade:
@@ -67,15 +68,17 @@ with its default. Set `LLM_MODELS_DIR` to store models on another disk.
 If both Docker and Podman are installed, TokenCrate uses Podman;
 `CONTAINER_ENGINE=docker` in `.env` selects Docker.
 
-`up --model-set` prints the model's license and starts the download
+`up --model-sets` prints the model's license and starts the download
 without asking. Stop it with Ctrl+C if you do not accept the license.
+On a 16 GB card, set `LLM_DEFAULT_PRESET=qwen3.8-27b-q3-small` in `.env`
+and pass `--model-sets qwen3.8-27b-ud-q3-k-xl` instead.
 
 Check the host, download the model, start the model server, and test
 its API:
 
 ```bash
 bash bin/tokencrate doctor
-bash bin/tokencrate up --model-set qwen3.8-27b-ud-q4-k-xl
+bash bin/tokencrate up --model-sets qwen3.8-27b-ud-q4-k-xl
 bash bin/tokencrate smoke
 ```
 

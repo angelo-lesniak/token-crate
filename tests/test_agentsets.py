@@ -67,10 +67,12 @@ class AgentSetTests(unittest.TestCase):
         return directory
 
     def test_the_shipped_sets_validate_and_render(self) -> None:
-        catalog = agentsets.catalog(PROJECT_ROOT)
-        self.assertEqual(
-            set(catalog), {path.parent.name for path in (PROJECT_ROOT / "config" / "agent-sets").glob("*/set.toml")}
-        )
+        # The tracked manifests only: a private set under local/ is not the
+        # gate's business.
+        catalog = {
+            path.parent.name: agentsets.read_manifest(path.parent, f"config/agent-sets/{path.parent.name}")
+            for path in sorted((PROJECT_ROOT / "config" / "agent-sets").glob(f"*/{agentsets.MANIFEST}"))
+        }
         self.assertEqual(catalog["pi-web"].ui, agentsets.UiSpec("tokencrate-ui-pi-web", 8504, ".pi-web", 4224))
         self.assertEqual(catalog["paseo"].ui, agentsets.UiSpec("tokencrate-ui-paseo", 6767, ".paseo", 4250))
         self.assertIsNone(catalog["coding"].ui)
@@ -197,6 +199,16 @@ class AgentSetTests(unittest.TestCase):
         (output / "Dockerfile").write_text("kept\n")
         self.assertEqual(agentsets.render(self.root, build, selected), tag)
         self.assertEqual((output / "Dockerfile").read_text(), "kept\n")
+        # Without its Dockerfile the directory is someone's edit: the start
+        # names it and deletes nothing; an empty one is rendered over.
+        (output / "Dockerfile").unlink()
+        with self.assertRaisesRegex(TokenCrateError, f"build/agents/pi/{tag} has no Dockerfile; remove the directory"):
+            agentsets.render(self.root, build, selected)
+        self.assertEqual((output / "AGENTS.md").read_text(), agentsets.NOTE_HEADER + "\n")
+        shutil.rmtree(output)
+        output.mkdir()
+        self.assertEqual(agentsets.render(self.root, build, selected), tag)
+        self.assertIn("FROM pi AS agent\n", (output / "Dockerfile").read_text())
 
     def test_every_shipped_set_declares_its_check_lines(self) -> None:
         # `check` is what smoke --agent runs for the set; a shipped set says
@@ -266,6 +278,8 @@ class AgentSetTests(unittest.TestCase):
             head + zipped + "strip = 1\n": "tar.gz assets only",
             head + tgz + 'mode = "0755"\n': "plain files only",
             head + 'pi_packages = ["../escape"]\n': "pi_packages entry must be a relative path",
+            head + "pi_lens = 1\n": "pi_lens must be a table",
+            head + "[pi_lens]\nsince = 2026-10-20\n": "may not contain TOML dates or times",
             head + '[env]\npath = "/x"\n': "not a variable name",
             head + '[env]\nX = "a b"\n': "may not contain whitespace",
             # An empty value renders `ENV PATH=${PATH}:`, and that trailing

@@ -23,7 +23,7 @@ def http_get(url: str, timeout: float = 5) -> str | None:
     try:
         with OPENER.open(url, timeout=timeout) as response:
             return response.read().decode("utf-8", errors="replace")
-    except (OSError, urllib.error.URLError, ValueError):
+    except (OSError, ValueError):
         return None
 
 
@@ -39,7 +39,7 @@ def http_post(url: str, payload: dict, timeout: float = 5) -> str:
             return ""
     except urllib.error.HTTPError as error:
         return f"HTTP {error.code}"
-    except (OSError, urllib.error.URLError, ValueError) as error:
+    except (OSError, ValueError) as error:
         return str(error)
 
 
@@ -59,7 +59,7 @@ def request(url: str, payload: dict | None = None, *, timeout: int = LOAD_TIMEOU
         with error:
             body = error.read().decode("utf-8", errors="replace")[:500]
         raise TokenCrateError(f"HTTP {error.code} from {url}: {body}") from error
-    except (OSError, urllib.error.URLError) as error:
+    except OSError as error:
         raise TokenCrateError(f"could not reach {url}: {error}") from error
     if stream:
         return response

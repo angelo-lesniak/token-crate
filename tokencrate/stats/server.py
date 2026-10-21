@@ -22,8 +22,6 @@ from .transcripts import Filter, read_sessions
 # `stats --serve` without `--port`, clear of the API (4207) and UI
 # (4224, 4250) defaults.
 SERVE_PORT = 4210
-# How often the served page asks the browser to reload it.
-REFRESH_SECONDS = 60
 
 
 def stats_server(
@@ -76,7 +74,6 @@ def stats_server(
                 samples = sampler.snapshot()
                 page = html(
                     read_sessions(settings.agents_dir, selection),
-                    refresh=REFRESH_SECONDS,
                     live=api,
                     selection=selection,
                     slots=rendered_slots(settings.build_dir),

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from ..env import Settings
 from ..localhttp import http_get
-from ..presets import PRESET_NAME_RE
+from ..names import PRESET_NAME_RE
 from ..runtime import model_states
 
 # The live panel: the shortest time between two scrapes of the model
@@ -107,7 +107,7 @@ def gpu_reading(command: list[str]) -> tuple[int | None, int | None, float | Non
         return None, None, None
     if run.returncode:
         return None, None, None
-    fields = [number(field) for field in (run.stdout.splitlines() or [""])[0].split(",")[:3]] + [None] * 3
+    fields = [csv_number(field) for field in (run.stdout.splitlines() or [""])[0].split(",")[:3]] + [None] * 3
     memory, total, power = fields[0], fields[1], fields[2]
     return (
         int(memory) if memory is not None else None,
@@ -116,7 +116,7 @@ def gpu_reading(command: list[str]) -> tuple[int | None, int | None, float | Non
     )
 
 
-def number(text: str) -> float | None:
+def csv_number(text: str) -> float | None:
     """A finite number from one CSV field; None for `[N/A]` and the like."""
     try:
         value = float(text.strip())

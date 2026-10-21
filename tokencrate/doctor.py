@@ -28,6 +28,7 @@ from .engine import (
     loopback_bind_error,
     publishes,
     requested_engine,
+    run_tool,
     select,
     tool_output,
     unsupported_engine,
@@ -101,6 +102,8 @@ class HostFacts:
     # A CONTAINER_ENGINE value that names no supported engine.
     unsupported_engine: str | None = None
     gpu: GpuFacts | None = None
+    # What nvidia-smi said when it gave no answer, as `EngineFacts.error`.
+    gpu_error: str = ""
     nvidia_ctk_present: bool = False
     cdi_devices: list[str] = field(default_factory=list)
     cdi_spec_driver: str | None = None
@@ -190,21 +193,29 @@ def _storage_facts(settings: Settings) -> list[StorageFact]:
 
 def _set_problems(settings: Settings) -> list[SetProblem]:
     """The names in LLM_AGENT_SETS and LLM_SKILL_SETS that no catalogue
-    has. Fetched or not is the start's business, not the host's."""
+    has, worded as the start refuses them. Fetched or not is the start's
+    business, not the host's."""
+
+    def known_agent_set(name: str) -> bool:
+        return bool(agentsets.set_directories(settings.root, name))
+
+    def known_skill_set(name: str) -> bool:
+        return name in skills.catalog(settings.config_dir)
+
     lookups = (
-        ("LLM_AGENT_SETS", lambda name: bool(agentsets.set_directories(settings.root, name)), "agent-sets list"),
-        ("LLM_SKILL_SETS", lambda name: name in skills.catalog(settings.config_dir), "skills list"),
+        ("LLM_AGENT_SETS", "agent set", known_agent_set, "agent-sets"),
+        ("LLM_SKILL_SETS", "skill set", known_skill_set, "skills"),
     )
     problems = []
-    for key, known, listing in lookups:
+    for key, kind, known, command in lookups:
         try:
-            unknown = [name for name in parse_list(settings.get(key), key) if not known(name)]
+            unknown = [name for name in parse_list(settings.get(key), kind) if not known(name)]
         except TokenCrateError as error:
             problems.append(SetProblem(key, str(error)))
             continue
         if unknown:
             problems.append(
-                SetProblem(key, f"names no known set: {', '.join(unknown)} (run: bash bin/tokencrate {listing})")
+                SetProblem(key, f"unknown {kind}: {', '.join(unknown)} (run: bash bin/tokencrate {command} list)")
             )
     return problems
 
@@ -244,7 +255,7 @@ def gather(settings: Settings) -> HostFacts:
         own_container_holds_port=_own_container_holds_port(selection.chosen, settings),
     )
     if settings.gpu:
-        gpu_output = tool_output(NVIDIA_SMI_QUERY, env)
+        gpu_output, facts.gpu_error = run_tool(NVIDIA_SMI_QUERY, env)
         cdi_output = tool_output(["nvidia-ctk", "cdi", "list"], env) or ""
         facts.gpu = parse_gpu_query(gpu_output) if gpu_output else None
         facts.nvidia_ctk_present = shutil.which("nvidia-ctk", path=path) is not None
@@ -290,7 +301,7 @@ def _engine_findings(engine: EngineFacts, gpu_wanted: bool) -> list[Finding]:
         return [*findings, Finding("fail", f"{name} has no working Compose provider")]
     findings.append(Finding("ok", engine.provider))
     if name == "docker":
-        major = _driver_major(engine.server_version)
+        major = _major(engine.server_version)
         findings.append(
             _check(
                 major is not None and major >= DOCKER_MIN_MAJOR,
@@ -301,7 +312,7 @@ def _engine_findings(engine: EngineFacts, gpu_wanted: bool) -> list[Finding]:
             )
         )
         return findings
-    major = _driver_major(engine.version_line.removeprefix("podman version "))
+    major = _major(engine.version_line.removeprefix("podman version "))
     findings.append(
         _check(
             major is not None and major >= PODMAN_MIN_MAJOR,
@@ -357,7 +368,7 @@ def _engine_selection_findings(facts: HostFacts, gpu_wanted: bool) -> list[Findi
     return _engine_findings(engine, gpu_wanted)
 
 
-def _driver_major(version: str) -> int | None:
+def _major(version: str) -> int | None:
     major = version.partition(".")[0]
     return int(major) if re.fullmatch(r"[0-9]+", major) else None
 
@@ -365,13 +376,10 @@ def _driver_major(version: str) -> int | None:
 def _gpu_findings(facts: HostFacts, min_driver_major: int, required_vram_gib: int | None) -> list[Finding]:
     gpu = facts.gpu
     if gpu is None:
-        return [
-            Finding(
-                "fail", "nvidia-smi found no NVIDIA GPU (missing tool or driver); the supported GPU path is unavailable"
-            )
-        ]
+        cause = f": {facts.gpu_error}" if facts.gpu_error else ""
+        return [Finding("fail", f"nvidia-smi found no NVIDIA GPU{cause}; the supported GPU path is unavailable")]
     memory = f"{gpu.total_mib} MiB" if gpu.total_mib is not None else "memory unknown"
-    major = _driver_major(gpu.driver_version)
+    major = _major(gpu.driver_version)
     findings = [
         Finding("ok", f"NVIDIA GPU: {gpu.name}, driver {gpu.driver_version}, {memory}"),
         _check(

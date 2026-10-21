@@ -14,14 +14,17 @@ import os
 import re
 import signal
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property, partial
+from pathlib import Path
 from typing import Any
 
 from . import (
     PROJECT_ROOT,
     TokenCrateError,
+    agenthome,
     agents,
     agentsets,
     checkpins,
@@ -38,13 +41,11 @@ from . import (
     warn,
 )
 from . import engine as engines
-from .names import SET_NAME_RE, select_sets
+from .names import PRESET_NAME_RE, parse_list, select_sets
 from .stats import page as statspage
 from .stats import server as statsserver
 
 POSITIVE_INTEGER_RE = re.compile(r"^[1-9][0-9]*$")
-PORT_RE = re.compile(r"[0-9]{1,5}")
-DRAFT_SPEC_RE = re.compile(r"^hf:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[^\s]+$")
 
 
 @dataclass
@@ -72,11 +73,10 @@ Handler = Callable[[Context, Options, list[str]], int | None]
 @dataclass(frozen=True)
 class Flag:
     """One option. `what` names the value it carries (empty for a switch)
-    and `valid` accepts that value; a `repeat` flag collects its values."""
+    and `valid` accepts that value."""
 
     what: str = ""
     valid: Callable[[str], object] = lambda raw: True
-    repeat: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,12 +108,14 @@ class Command:
 
 
 SWITCH = Flag()
-PRESET = Flag("a preset name")
+PRESET = Flag("a preset id", PRESET_NAME_RE.fullmatch)
+PRESETS = Flag("a comma-separated list of preset ids", bool)
+MODEL_SETS = Flag("a comma-separated list of model set names", bool)
 POSITIVE = Flag("a positive integer", POSITIVE_INTEGER_RE.fullmatch)
-PORT = Flag("a port from 1 to 65535", lambda raw: PORT_RE.fullmatch(raw) and 1 <= int(raw) <= 65535)
-AGENT = Flag("pi or omp", session.AGENTS.__contains__)
+PORT = Flag("a port from 1 to 65535", partial(env.validate_port, label="--port"))
+AGENT = Flag("pi or omp", agenthome.AGENTS.__contains__)
 SETS = Flag("a comma-separated list of agent sets (or an empty string)")
-DIRECTORY = Flag("a directory")
+DIRECTORY = Flag("a directory", bool)
 SINCE = Flag("a duration (30m, 12h, 7d, 2w) or an ISO date or date-time")
 
 
@@ -176,10 +178,10 @@ def resolve(argv: list[str]) -> tuple[Command, list[str]]:
 
 
 def parse(command: Command, arguments: list[str]) -> tuple[Options, list[str]]:
-    """The flags of `command` with their values (True for a switch, a list
-    for a repeated flag, the rest of the line for `--`) and its positional
-    arguments. A repeated single flag is refused rather than resolved to
-    one occurrence, so a typo in either stays visible."""
+    """The flags of `command` with their values (True for a switch, the rest
+    of the line for `--`) and its positional arguments. A repeated flag is
+    refused rather than resolved to one occurrence, so a typo in either
+    stays visible."""
     options: Options = {}
     names: list[str] = []
     least, most = command.arguments
@@ -198,7 +200,7 @@ def parse(command: Command, arguments: list[str]) -> tuple[Options, list[str]]:
         flag = command.flags.get(argument)
         if flag is None:
             raise TokenCrateError(refusal(command, argument))
-        if argument in options and not flag.repeat:
+        if argument in options:
             raise TokenCrateError(f"{argument} may be given once with {command.name}")
         if not flag.what:
             options[argument] = True
@@ -206,13 +208,7 @@ def parse(command: Command, arguments: list[str]) -> tuple[Options, list[str]]:
             continue
         if index + 1 >= len(arguments) or not flag.valid(arguments[index + 1]):
             raise TokenCrateError(f"{argument} requires {flag.what}")
-        value = arguments[index + 1]
-        if flag.repeat:
-            if value in options.get(argument, []):
-                raise TokenCrateError(f"{argument} names {value} twice")
-            options.setdefault(argument, []).append(value)
-        else:
-            options[argument] = value
+        options[argument] = arguments[index + 1]
         index += 2
     if len(names) < least or (most is not None and len(names) > most):
         raise usage_error(command.name)
@@ -222,16 +218,6 @@ def parse(command: Command, arguments: list[str]) -> tuple[Options, list[str]]:
 # -- Shared steps --------------------------------------------------------------
 
 
-def requirement_text(preset: presets.Preset) -> str:
-    """The `[requires]` of a preset as `presets list` prints it."""
-    parts = []
-    if "vram_gib" in preset.requires:
-        parts.append(f"{preset.requires['vram_gib']} GiB GPU memory")
-    if "ram_gib" in preset.requires:
-        parts.append(f"{preset.requires['ram_gib']} GiB system memory")
-    return "needs " + " and ".join(parts) if parts else "(no [requires])"
-
-
 def print_set_list(catalog: dict) -> None:
     """One line per manifest with its description."""
     for name, entry in catalog.items():
@@ -239,7 +225,7 @@ def print_set_list(catalog: dict) -> None:
 
 
 def run_model_sets(settings: env.Settings, action: str, names: list[str], verify: bool = False) -> int:
-    catalog = models.available_sets(settings.config_dir / "model-sets")
+    catalog = models.catalog(settings.config_dir)
     selected = select_sets(catalog, names, "model set")
     models_dir = runtime.models_directory(settings)
     if action == "status":
@@ -247,6 +233,14 @@ def run_model_sets(settings: env.Settings, action: str, names: list[str], verify
     with models.model_download_lock(models_dir):
         models.fetch(selected, models_dir, settings.hf_token)
     return 0
+
+
+def save_report(settings: env.Settings, kind: str, text: str) -> Path:
+    reports = settings.root / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    path = reports / f"{kind}-{time.strftime('%Y%m%d-%H%M%S')}.md"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def run_probe(context: Context, kind: str, selected: list[str], options: Options) -> int:
@@ -272,7 +266,7 @@ def run_probe(context: Context, kind: str, selected: list[str], options: Options
         rows = probe.bench(url, selected, int(options.get("--iterations", 3)), "--long" in options)
         text, status = probe.bench_report(url, rows), 0
     print(text, end="")
-    path = runtime.save_report(settings, kind, text)
+    path = save_report(settings, kind, text)
     print(f"Saved {kind} report to {path}")
     if rows is not None:
         # The same stem as the Markdown report, so the pair stays together.
@@ -282,16 +276,6 @@ def run_probe(context: Context, kind: str, selected: list[str], options: Options
     if status != 0:
         warn(f"the {kind} run failed with status {status}")
     return status
-
-
-def model_set_waits(model_sets: dict, pinned: dict[str, str]) -> tuple[str, ...]:
-    """One line per model set that waits for a newer llama.cpp build, for pins check."""
-    build = env.pinned_llama_build(pinned)
-    return tuple(
-        f"model set {model_set.name} {wait}"
-        for model_set in model_sets.values()
-        if (wait := presets.build_wait(model_set, build))
-    )
 
 
 def run_doctor(context: Context, preset: str, facts: doctor.HostFacts | None = None) -> int:
@@ -342,11 +326,11 @@ def cmd_doctor(context: Context, options: Options, _names: list[str]) -> int:
 
 def cmd_up(context: Context, options: Options, _names: list[str]) -> None:
     settings = context.settings
-    model_sets = options.get("--model-set", [])
+    model_sets = parse_list(options.get("--model-sets", ""), "model set")
     if "all" in model_sets:
-        raise TokenCrateError("use individual --model-set names with up; all is available through models fetch")
+        raise TokenCrateError("name the model sets of up individually; all is available through models fetch")
     if model_sets:
-        select_sets(models.available_sets(settings.config_dir / "model-sets"), model_sets, "model set")
+        select_sets(models.catalog(settings.config_dir), model_sets, "model set")
     # The host checks run before the download, so the check that matters
     # most (the card against the preset) cannot be skipped by starting; the
     # engine they probed is the one the stack starts on.
@@ -409,12 +393,7 @@ def cmd_agent_check(context: Context, options: Options, _names: list[str]) -> in
 
 
 def cmd_bench(context: Context, options: Options, _names: list[str]) -> int:
-    return run_probe(context, "bench", options.get("--preset", []), options)
-
-
-def cmd_bench_history(context: Context, _options: Options, _names: list[str]) -> None:
-    # Reads the saved JSON on the host; no engine or stack is needed.
-    print(probe.bench_history(context.settings.root / "reports"), end="")
+    return run_probe(context, "bench", parse_list(options.get("--presets", ""), "preset", PRESET_NAME_RE), options)
 
 
 def cmd_stats(context: Context, options: Options, _names: list[str]) -> None:
@@ -426,7 +405,7 @@ def cmd_stats(context: Context, options: Options, _names: list[str]) -> None:
     slots = presets.rendered_slots(settings.build_dir)
     text = stats.report(sessions, selection, slots)
     print(text, end="")
-    path = runtime.save_report(settings, "stats", text)
+    path = save_report(settings, "stats", text)
     print(f"Saved stats report to {path}")
     page = path.with_suffix(".html")
     page.write_text(statspage.html(sessions, selection=selection, slots=slots), encoding="utf-8")
@@ -440,7 +419,7 @@ def cmd_stats_serve(context: Context, options: Options, _names: list[str]) -> in
 
 def cmd_agent(context: Context, options: Options, names: list[str]) -> int:
     [agent] = names
-    if agent not in session.AGENTS:
+    if agent not in agenthome.AGENTS:
         raise TokenCrateError(f"unsupported agent: {agent} (choose pi or omp)")
     if "--sets" in options and agent != "pi":
         raise TokenCrateError(session.SETS_ARE_PI_ONLY)
@@ -452,12 +431,12 @@ def cmd_agent(context: Context, options: Options, names: list[str]) -> int:
         engines.detect(settings),
         context.configuration,
         agent,
-        options.get("--preset", ""),
-        options.get("--dir") or os.getcwd(),
-        "--egress" in options,
-        options.get("--", []),
-        options.get("--sets"),
-        "--cloud" in options,
+        preset=options.get("--preset", ""),
+        project_dir=options.get("--dir") or os.getcwd(),
+        egress="--egress" in options,
+        arguments=options.get("--", []),
+        sets=options.get("--sets"),
+        cloud="--cloud" in options,
     )
 
 
@@ -486,15 +465,13 @@ def cmd_ui(context: Context, options: Options, names: list[str]) -> int:
 
 
 def cmd_ui_action(action: str, context: Context, _options: Options, names: list[str]) -> int:
-    if names and not SET_NAME_RE.fullmatch(names[0]):
-        raise usage_error(f"ui {action}")
     engine = engines.detect(context.settings, launching=False)
     name = names[0] if names else ""
     return uis.stop(engine, name) if action == "stop" else uis.logs(engine, name)
 
 
 def cmd_models_list(context: Context, _options: Options, _names: list[str]) -> None:
-    print_set_list(models.available_sets(context.settings.config_dir / "model-sets"))
+    print_set_list(models.catalog(context.settings.config_dir))
     print("Download with models fetch <set>; files go below LLM_MODELS_DIR.")
 
 
@@ -503,8 +480,6 @@ def cmd_model_sets(action: str, context: Context, options: Options, names: list[
 
 
 def cmd_models_draft(context: Context, _options: Options, names: list[str]) -> None:
-    if not DRAFT_SPEC_RE.fullmatch(names[0]):
-        raise TokenCrateError("model draft needs hf:<owner>/<repository>:<file.gguf>")
     sys.stdout.write(models.draft(names[0], context.settings.hf_token))
 
 
@@ -512,13 +487,13 @@ def cmd_presets_list(context: Context, _options: Options, _names: list[str]) -> 
     loaded = context.configuration
     for preset in loaded.presets:
         wait = loaded.wait(preset.name)
-        marks = requirement_text(preset) + (f"; {wait}" if wait else "")
+        marks = preset.requirement_text() + (f"; {wait}" if wait else "")
         print(f"{preset.name} [{preset.model_set}] {marks} - {preset.description}")
     default = context.settings.default_preset or "unset"
     print(f"Selected by LLM_DEFAULT_PRESET ({default}) or --preset; a waiting preset stays out of the router.")
 
 
-def cmd_presets_render(context: Context, _options: Options, _names: list[str]) -> None:
+def cmd_presets_check(context: Context, _options: Options, _names: list[str]) -> None:
     presets.validate(context.configuration, default_preset=context.settings.default_preset)
 
 
@@ -537,9 +512,8 @@ def cmd_skill_sets(action: str, context: Context, _options: Options, names: list
 
 
 def cmd_pins(context: Context, _options: Options, _names: list[str]) -> None:
-    # Read through the validating loader first: a bad edit is a refusal.
-    if context.pinned:
-        sys.stdout.write(env.pinned_lines(PROJECT_ROOT / "pins.env"))
+    # Through the validating loader, so a bad edit is a refusal.
+    sys.stdout.write("".join(f"{key}={value}\n" for key, value in context.pinned.items()))
 
 
 def cmd_pins_check(context: Context, _options: Options, names: list[str]) -> None:
@@ -547,7 +521,7 @@ def cmd_pins_check(context: Context, _options: Options, names: list[str]) -> Non
     # Only the llama.cpp build gate reads the manifests, so a broken one
     # must not break `pins check pi`.
     waits = (
-        model_set_waits(models.available_sets(context.settings.config_dir / "model-sets"), context.pinned)
+        presets.model_set_waits(models.catalog(context.settings.config_dir), env.pinned_llama_build(context.pinned))
         if component in ("all", "llama-cpp")
         else ()
     )
@@ -561,7 +535,7 @@ def cmd_pins_check(context: Context, _options: Options, names: list[str]) -> Non
 # -- The table -----------------------------------------------------------------
 
 COMMANDS = (
-    Command("init", "", "Create .env and the host data directories.", {}, cmd_init),
+    Command("init", "", "Create .env and the host storage directories.", {}, cmd_init),
     Command(
         "doctor",
         "[--preset id]",
@@ -571,12 +545,18 @@ COMMANDS = (
     ),
     Command(
         "up",
-        "[--model-set name]... [--timeout seconds]",
+        "[--model-sets names] [--timeout seconds]",
         "Check the host, fetch named model sets, render presets, build the image if needed, and start llama-server.",
-        {"--model-set": Flag("a set name", repeat=True), "--timeout": POSITIVE},
+        {"--model-sets": MODEL_SETS, "--timeout": POSITIVE},
         cmd_up,
     ),
-    Command("down", "", "Stop and remove the model, terminal agents, browser UIs, and Compose networks.", {}, cmd_down),
+    Command(
+        "down",
+        "",
+        "Stop and remove the model, terminal agents, browser UIs, the dashboard, and Compose networks.",
+        {},
+        cmd_down,
+    ),
     Command("status", "", "Show the service state and the load state of every rendered preset.", {}, cmd_status),
     Command("logs", "", "Follow the llama container logs.", {}, cmd_logs),
     Command(
@@ -596,17 +576,10 @@ COMMANDS = (
     ),
     Command(
         "bench",
-        "[--preset id]... [--iterations n] [--long]",
+        "[--presets ids] [--iterations n] [--long]",
         "Measure prompt-processing and generation speed per preset and save a report.",
-        {"--preset": Flag("a preset name", repeat=True), "--iterations": POSITIVE, "--long": SWITCH},
+        {"--presets": PRESETS, "--iterations": POSITIVE, "--long": SWITCH},
         cmd_bench,
-    ),
-    Command(
-        "bench --history",
-        "",
-        "Print the measurements of every saved bench JSON under reports/, oldest first; no stack needed.",
-        {"--history": SWITCH},
-        cmd_bench_history,
     ),
     Command(
         "stats",
@@ -699,11 +672,11 @@ COMMANDS = (
     ),
     Command("presets list", "", "List the available presets and their model sets.", {}, cmd_presets_list),
     Command(
-        "presets render",
+        "presets check",
         "",
         "Validate every preset and model set; up renders them into build/.",
         {},
-        cmd_presets_render,
+        cmd_presets_check,
     ),
     Command("skills list", "", "List the available skill sets.", {}, cmd_skills_list),
     Command(
@@ -767,12 +740,18 @@ def install_signal_handlers() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] in ("help", "--help", "-h"):
-        sys.stdout.write(USAGE)
-        return 0
     install_signal_handlers()
     try:
-        return dispatch(argv)
+        if not argv or argv[0] in ("help", "--help", "-h"):
+            sys.stdout.write(USAGE)
+            status = 0
+        else:
+            status = dispatch(argv)
+        # A listing fits the pipe buffer, so a reader that is gone is first
+        # seen here; left to interpreter shutdown it is an "Exception
+        # ignored" line and exit status 120.
+        sys.stdout.flush()
+        return status
     except TokenCrateError as error:
         warn(str(error))
         return 1

@@ -22,8 +22,8 @@ except ImportError:
         "(a silent skip would hollow out the gate, so the dependency is mandatory)"
     ) from None
 
-from tests.support import home_tmpfs_directories
-from tokencrate import PROJECT_ROOT, agentsets, env, presets, session, uis
+from tests.support import HOME_IN_CONTAINER, home_tmpfs_directories
+from tokencrate import PROJECT_ROOT, agenthome, agentsets, env, presets, session, uis
 from tokencrate.cli import USAGE
 from tokencrate.env import PIN_KEYS
 
@@ -36,6 +36,67 @@ UI_SERVICES = ("agent-ui", "ui-forward")
 # The dashboard profile: the exporter on the Node image, VictoriaMetrics, Grafana,
 # and with the GPU the DCGM exporter in its own profile.
 DASHBOARD_SERVICES = ("llama-exporter", "victoriametrics", "grafana", "gpu-exporter")
+# What each service may carry, so a second key cannot undo a hardening one
+# (`privileged`, `pid`, `network_mode`, `cap_add`, `devices`), and its bind
+# targets outside the home, so no service gains a bind the tests do not
+# name; the home binds are pinned per agent in assert_agent_service.
+HARDENED_KEYS = {"init", "read_only", "cap_drop", "security_opt", "user", "pids_limit", "tmpfs", "networks"}
+AGENT_KEYS = HARDENED_KEYS | {
+    "image",
+    "build",
+    "profiles",
+    "stdin_open",
+    "tty",
+    "working_dir",
+    "environment",
+    "volumes",
+}
+SERVICE_KEYS = {
+    "llama": HARDENED_KEYS
+    | {"image", "build", "restart", "stop_grace_period", "ports", "volumes", "environment", "labels"},
+    "agent-pi": AGENT_KEYS,
+    "agent-omp": AGENT_KEYS,
+    "agent-ui": AGENT_KEYS | {"labels", "stop_grace_period", "command"},
+    "ui-forward": HARDENED_KEYS | {"image", "profiles", "labels", "ports", "environment", "volumes", "command"},
+    "llama-exporter": HARDENED_KEYS | {"image", "profiles", "environment", "volumes", "command"},
+    "victoriametrics": HARDENED_KEYS | {"image", "profiles", "volumes", "command"},
+    "grafana": HARDENED_KEYS | {"image", "profiles", "ports", "environment", "volumes"},
+    "gpu-exporter": HARDENED_KEYS | {"image", "profiles", "environment"},
+}
+AGENT_MOUNTS = {
+    "${LLM_AGENT_PROJECT_DIR:-/workspace}",
+    "/opt/tokencrate/skills",
+    "/opt/tokencrate/skills-local",
+    "/etc/tokencrate/agent",
+}
+MOUNT_TARGETS = {
+    "llama": {
+        "/models",
+        f"/etc/tokencrate/{presets.CONFIG_FILE_NAME}",
+        "/etc/tokencrate/chat-templates",
+        "/etc/tokencrate/ui-config.json",
+    },
+    "agent-pi": AGENT_MOUNTS | {"/etc/tokencrate/agent-generated/models.json"},
+    "agent-omp": AGENT_MOUNTS | {"/etc/tokencrate/agent-generated/models.yml"},
+    "agent-ui": AGENT_MOUNTS | {"/etc/tokencrate/agent-generated/models.json"},
+    "ui-forward": {"/etc/tokencrate/ui-forward.js"},
+    "llama-exporter": {"/etc/tokencrate/llama-exporter.js"},
+    "victoriametrics": {"/etc/tokencrate/scrape.yaml", "/victoria-metrics-data"},
+    "grafana": {"/etc/tokencrate/provisioning"},
+    "gpu-exporter": set(),
+}
+# Where a bind may come from: the checkout, a storage setting, or the
+# per-start project and home. The engine socket and a host directory have
+# no such source.
+MOUNT_SOURCES = (
+    "./",
+    "${TOKENCRATE_ROOT:?",
+    "${LLM_MODELS_DIR:?",
+    "${LLM_SKILLS_DIR:?",
+    "${LLM_LOCAL_SKILLS_DIR:?",
+    "${LLM_AGENT_PROJECT_DIR:-",
+    "${TOKENCRATE_AGENT_HOME:-",
+)
 # oh-my-pi reads its global context file from the home, so the repository's
 # copy is bound there read-only. Both agents take their settings from
 # /etc/tokencrate through the entrypoint, which writes them into the home.
@@ -341,6 +402,45 @@ class ProjectContractTests(unittest.TestCase):
                     options.get(key), "isolated", f"compose.docker.yaml must set {key}: isolated on the {name} network"
                 )
 
+    def test_no_service_carries_a_key_or_a_bind_the_contracts_do_not_name(self) -> None:
+        # The other tests pin what must be present; this one pins what must
+        # be absent, since one more key or bind (`privileged`, the engine
+        # socket, a host directory) widens a boundary without failing a
+        # presence check. Each overlay carries its one concern and nothing else.
+        compose = load_yaml("compose.yaml")
+        self.assertEqual({key for key in compose if not key.startswith("x-")}, {"name", "services", "networks"})
+        for name, service in compose["services"].items():
+            with self.subTest(service=name):
+                self.assertEqual(set(service), SERVICE_KEYS[name], f"{name} carries a key the contracts do not name")
+                targets = set()
+                for mount in service.get("volumes") or []:
+                    self.assertIsInstance(mount, dict, f"{name}: every mount is a long-form bind: {mount}")
+                    self.assertEqual(mount.get("type"), "bind", f"{name}: every mount is a bind: {mount}")
+                    source = str(mount.get("source"))
+                    self.assertTrue(source.startswith(MOUNT_SOURCES), f"{name} binds {source}, not a named source")
+                    targets.add(mount["target"])
+                outside_home = {target for target in targets if not target.startswith(HOME_IN_CONTAINER)}
+                self.assertEqual(outside_home, MOUNT_TARGETS[name], f"{name} binds a target the contracts do not name")
+        overlays = {
+            "compose.gpu.yaml": {"llama": {"devices"}, "gpu-exporter": {"devices"}},
+            "compose.podman.yaml": {name: {"userns_mode"} for name in compose["services"]},
+            "compose.agent-egress.yaml": {
+                "agent-pi": {"networks"},
+                "agent-omp": {"networks"},
+                "agent-ui": {"networks", "labels"},
+            },
+        }
+        for relative, expected in overlays.items():
+            overlay = load_yaml(relative)
+            self.assertEqual(
+                {key for key in overlay if not key.startswith("x-")}, {"services"}, f"{relative} changes services alone"
+            )
+            self.assertEqual(
+                {name: set(service) for name, service in overlay["services"].items()},
+                expected,
+                f"{relative} must set exactly the keys of its one concern",
+            )
+
     def test_agent_services_run_hardened_on_the_internal_network_with_a_tmpfs_home(self) -> None:
         compose = load_yaml("compose.yaml")
         dockerfile = read_text("services/agents/Dockerfile")
@@ -375,11 +475,11 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(generated["read_only"])
         self.assertTrue(generated["source"].endswith(f"/build/agents/{agent}/{filename}"))
         self.assertIsNone(find_mount(service, "/etc/tokencrate/agent-generated"))
-        self.assertIn(agent, session.AGENTS, f"{name} is not an agent of session.AGENTS")
+        self.assertIn(agent, agenthome.AGENTS, f"{name} is not an agent of agenthome.AGENTS")
         # The home is a per-container tmpfs. The retained directories and the
         # configuration files are its only binds, and every ancestor of a
         # bind has an owned tmpfs of its own.
-        home = session.HOME_IN_CONTAINER
+        home = HOME_IN_CONTAINER
         # The UI state directory is the set's own; compose.yaml carries the
         # variable, whose fallback only lets a render without the wrapper resolve.
         state = "${TOKENCRATE_UI_STATE:-.ui-state}" if name == "agent-ui" else None
@@ -417,6 +517,8 @@ class ProjectContractTests(unittest.TestCase):
             self.assertIn(
                 "${TOKENCRATE_HOME_OWNER:?", options, f"{name}: the tmpfs {target} must be owned by the host user"
             )
+            # The size docs/configuration.md states for the home.
+            self.assertIn("size=256m", options.split(","), f"{name}: the tmpfs {target} must be 256 MiB")
         for target in home_mounts:
             for parent in Path(target).parents:
                 if parent.is_relative_to(home):
@@ -457,6 +559,7 @@ class ProjectContractTests(unittest.TestCase):
             "GF_ANALYTICS_REPORTING_ENABLED",
             "GF_ANALYTICS_CHECK_FOR_UPDATES",
             "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES",
+            "GF_ANALYTICS_FEEDBACK_LINKS_ENABLED",
             "GF_NEWS_NEWS_FEED_ENABLED",
             "GF_SNAPSHOTS_EXTERNAL_ENABLED",
         ):
@@ -561,7 +664,15 @@ class ProjectContractTests(unittest.TestCase):
             read_only=True,
         )
         self.assertNotIn("depends_on", forward, "the template must not start a generic UI dependency")
-        self.assertEqual(forward.get("command", [None])[0], "node", "the ui-forward service must run node")
+        command = forward.get("command") or []
+        self.assertEqual(command[:1], ["node"], "the ui-forward service must run node")
+        # The forwarder's target is the UI container, by the name the
+        # wrapper gives it; a rename on one side would time out every UI start.
+        self.assertEqual(
+            command[2:3],
+            [uis.container_names("${TOKENCRATE_UI_SET:-}")[0]],
+            "ui-forward must target the UI container by the name uis.container_names spells",
+        )
 
     def test_every_service_runs_as_the_host_user(self) -> None:
         # Podman additionally keeps the id mapping.
@@ -606,7 +717,8 @@ class ProjectContractTests(unittest.TestCase):
         # forwarder; a launcher that writes the number itself could drift
         # from the manifest, and the mismatch would show only as the `ui`
         # start timeout.
-        for entry in agentsets.catalog(PROJECT_ROOT).values():
+        for manifest in sorted((PROJECT_ROOT / "config" / "agent-sets").glob(f"*/{agentsets.MANIFEST}")):
+            entry = agentsets.read_manifest(manifest.parent, f"config/agent-sets/{manifest.parent.name}")
             if entry.ui is None:
                 continue
             launcher = entry.directory / entry.ui.command
@@ -698,6 +810,7 @@ class ProjectContractTests(unittest.TestCase):
                         fragment, anchors, f"broken heading anchor in {path.relative_to(PROJECT_ROOT)}: {raw_target}"
                     )
         readme = pages[PROJECT_ROOT / "README.md"]
+        self.assertIn("## Choose what to do next", readme, "README lost the table that indexes every page")
         index = readme.split("## Choose what to do next", 1)[1].split("\n## ", 1)[0]
         docs = PROJECT_ROOT / "docs"
         for page in [*sorted(docs.glob("*.md")), PROJECT_ROOT / "CONTRIBUTING.md", PROJECT_ROOT / "SECURITY.md"]:

@@ -13,9 +13,12 @@ only (mode `0600`); the wrapper refuses it otherwise and names the
 
 Precedence is the shell environment, then `.env`, then `.env.example`.
 The wrapper refuses to run without `.env.example`. A key omitted from
-`.env` takes the example's default, not an empty value. An empty value
-for any setting but `LLM_SKILL_SETS` fails the Compose call, which names
-the variable. Change local settings in `.env` or the shell; editing
+`.env` takes the example's default, not an empty value. The wrapper
+itself refuses an empty `LLM_*_DIR` or `LLM_CLOUD_KEYS_FILE`, naming the
+key and the default (`LLM_MODELS_DIR must not be empty; omit the line to
+take the default (./data/models)`). An empty value for any other setting
+but `LLM_SKILL_SETS` fails the Compose call, which names the variable.
+Change local settings in `.env` or the shell; editing
 `.env.example` changes the defaults for every checkout.
 
 The wrapper reads `.env` as `KEY=VALUE` lines and refuses what it cannot
@@ -68,7 +71,7 @@ local Docker context or Podman connection first.
 | `LLM_SKILL_SETS`, `LLM_AGENT_SETS`, `LLM_PROJECT_ROOTS`, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `UMASK`, `LLM_AGENT_TMPFS_SIZE` | The next `agent`, `ui`, or `smoke --agent` start; running sessions keep their values |
 | `LLM_CLOUD_KEYS_FILE` and the file's contents | The next `agent --cloud` or `ui --cloud` start; a running session or UI keeps the keys it was given |
 | `LLM_MODELS_DIR`, `LLM_AGENTS_DIR`, `LLM_SKILLS_DIR`, `LLM_LOCAL_SKILLS_DIR`, `CONTAINER_ENGINE` | The next command; `init` creates missing directories, and a running llama container keeps its mounts until `up` recreates it. While a stack runs, commands use the engine recorded in `build/stack.json`, and a disagreeing `CONTAINER_ENGINE` is refused until `down` |
-| `HF_TOKEN` | The next `models fetch`, `models draft`, or `up --model-set` |
+| `HF_TOKEN` | The next `models fetch`, `models draft`, or `up --model-sets` |
 
 [Agent configuration](agents.md#agent-configuration) describes the agent
 settings files (`config/agents/pi/settings.json`,
@@ -122,7 +125,7 @@ for the last ten minutes without the dashboard profile.
 | Default path | Contents |
 | --- | --- |
 | `data/models/<owner>/<repository>/<source>` | Model library (`LLM_MODELS_DIR`); `<source>` is the manifest's path: a filename, or a quantization directory and filename for a split set |
-| `data/models/.../<file>.tokencrate-verified` | The record of a verified model file (checksum, size, modification time, inode) that `models status`, `models fetch`, and `up --model-set` trust while the file is unchanged |
+| `data/models/.../<file>.tokencrate-verified` | The record of a verified model file (checksum, size, modification time, inode) that `models status`, `models fetch`, and `up --model-sets` trust while the file is unchanged |
 | `data/agents/<agent>/<project>-<hash>/` | Retained state per agent and project; only the subdirectories listed below are mounted |
 | `data/agents/pi/<set>-state/` | Per-UI-set state shared by all projects (see below) |
 | `data/skills/<set>/<skill>/` | Fetched skill sets |
@@ -135,15 +138,18 @@ for the last ten minutes without the dashboard profile.
 | `build/locks/<project>.lock` | Lock for the steps that change the stack; holds `<pid> <command>` of the holder, which a waiting command names |
 | `build/stack.json` | The engine and project of the running stack, written by `up` and removed by `down` |
 | `local/cloud-keys.env` | The cloud keys file (`LLM_CLOUD_KEYS_FILE`), copied from `cloud-keys.env.example`; mounted only by `agent --cloud` and `ui --cloud` |
-| `reports/` | Smoke, bench, and stats reports; `bench` writes its measurements as JSON (what `bench --history` reads) and `stats` its page as HTML next to the Markdown |
+| `reports/` | Smoke, bench, and stats reports; `bench` writes its measurements as JSON and `stats` its page as HTML next to the Markdown |
 | `data/dashboard/victoria/` | The [dashboard](#dashboard)'s samples, 90 days of the model server's counters |
 
 Do not delete a lock file while a TokenCrate command is running.
 
 Each agent-set selection keeps its own `build/agents/pi/<digest>/`
 directory and image; the digest is of the rendered files. Neither is
-removed automatically. For a selection you do not use, deleting both is
-safe; the next `agent` or `ui` renders what it needs again.
+removed automatically. A `build/agents/pi/<digest>/` whose `Dockerfile`
+is missing refuses the next start (`has no Dockerfile; remove the
+directory and retry`); the wrapper never deletes files there. For a
+selection you do not use, deleting both is safe; the next `agent` or
+`ui` renders what it needs again.
 
 `data/`, `local/`, `build/`, and `reports/` are ignored by Git. To keep the
 model library on another disk, point `LLM_MODELS_DIR` at it; symbolic links
@@ -192,9 +198,10 @@ then delete the storage directories named in `.env` and the checkout.
 
 ## Pins
 
-`pins.env` is a `KEY=VALUE` file at the repository root with exactly these
-keys. Every value is plain, without quotes or whitespace; the wrapper
-rejects anything else.
+`pins.env` is a `KEY=VALUE` file at the repository root with these keys,
+named as [Adding a pin](../CONTRIBUTING.md#adding-a-pin) says. Every
+value is plain, without quotes or whitespace; the wrapper rejects
+anything else.
 
 | Key | Meaning |
 | --- | --- |
@@ -260,7 +267,7 @@ printed by `agent pi`. Images of different pins and selections coexist.
    | Changed pin | Run |
    | --- | --- |
    | Every pin | `bash tests/static.sh` and `python3 tests/integration.py` |
-   | `LLAMA_CPP_TAG` | The [NVIDIA host baseline](validation.md#nvidia-host-baseline); the [router observations](validation.md#router-behavior-the-wrapper-relies-on); for a model set whose gate the new build opens, its presets' fallback ladder with `smoke` and `bench` |
+   | `LLAMA_CPP_TAG` | The [NVIDIA host baseline](validation.md#nvidia-host-baseline); the [router observations](../CONTRIBUTING.md#router-behavior-the-wrapper-relies-on); for a model set whose gate the new build opens, its presets' fallback ladder with `smoke` and `bench` |
    | `PI_VERSION`, `OMP_VERSION`, `NODE_TAG`, `BUN_TAG` | An agent session with a small task, then `bash bin/tokencrate smoke --agent pi` (with each `--sets` selection you use) and `bash bin/tokencrate smoke --agent omp` |
 
 4. Record the run as [Validation](validation.md#recording-a-run)
@@ -271,9 +278,13 @@ printed by `agent pi`. Images of different pins and selections coexist.
 ## Updating the checkout
 
 1. Run `git pull`, then `bash bin/tokencrate init` to create missing
-   directories while keeping `.env`.
+   directories while keeping `.env`. `git log --oneline ORIG_HEAD..`
+   lists what the pull brought, and `git diff ORIG_HEAD -- pins.env
+   .env.example config/skill-sets` shows whether a pin, a default, or a
+   skill set moved.
 2. Review `.env.example` and copy any settings to override into `.env`;
    omitted settings take the example's new defaults.
-3. Run `skills fetch` for the sets in `LLM_SKILL_SETS` to apply changed
-   pins and remove obsolete skills.
-4. Run `down`, then `up` to apply the new configuration.
+3. When a skill set moved, run `skills fetch` for the sets in
+   `LLM_SKILL_SETS` to apply changed pins and remove obsolete skills.
+4. Run `down`, then `up` to apply the new configuration; `up` rebuilds
+   the image when its inputs changed.

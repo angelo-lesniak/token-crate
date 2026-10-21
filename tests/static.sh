@@ -56,7 +56,13 @@ while IFS= read -r file; do
   module=${module//\//.}
   [[ "$module" == *.__main__ ]] || "$python_bin" -c "import $module"
 done < <(find tokencrate -name '*.py' | sort)
-"$python_bin" -m unittest discover -s tests -t . -p 'test_*.py'
+# unittest reports a skipped test in its summary line and still exits 0;
+# strict mode treats the skip like a missing tool.
+unittest_log=$(mktemp)
+trap 'rm -f -- "$unittest_log"' EXIT
+"$python_bin" -m unittest discover -s tests -t . -p 'test_*.py' 2>&1 | tee "$unittest_log" >&2
+unittest_summary=$(tail -n 1 "$unittest_log")
+[[ "$unittest_summary" != *skipped=* ]] || skip "unit tests: $unittest_summary"
 
 if command -v ruff >/dev/null 2>&1; then
   ruff check tokencrate tests tests/fixtures/engine-bin/docker
@@ -96,7 +102,7 @@ if command -v rg >/dev/null 2>&1; then
       printf '.\0'
     fi
   }
-  if scan_paths | xargs -0 rg -n -o '/mnt/host[s]hare|/home/[A-Za-z0-9._-]+' \
+  if scan_paths | xargs -0 rg -n -o '/mnt/host[s]hare|/home/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+' \
     | grep -v ':/home/agent$'; then
     printf 'static: machine-specific absolute host paths remain\n' >&2
     exit 1

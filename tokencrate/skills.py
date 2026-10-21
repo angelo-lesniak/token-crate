@@ -3,8 +3,7 @@
 The CLI runs this module in-process on the host: ``skills fetch`` and
 ``skills status`` call :func:`fetch`, and ``agent`` refuses to start while
 :func:`missing_skills` names skills of a selected set that were never
-fetched. :func:`digest_command` is not wired to a command; CONTRIBUTING.md
-documents it as the snippet that prints a skill set's tree digest.
+fetched.
 """
 
 from __future__ import annotations
@@ -135,14 +134,10 @@ def read_manifest(path: Path, allowed_hosts: set[str]) -> SkillSet:
     return SkillSet(name, description, tuple(skills))
 
 
-def available_sets(manifest_dir: Path, allowed_hosts: set[str]) -> dict[str, SkillSet]:
-    return load_catalog(manifest_dir, lambda path: read_manifest(path, allowed_hosts), "skill set")
-
-
 def catalog(config_dir: Path) -> dict[str, SkillSet]:
     """The shipped skill sets below config_dir, read against its host allowlist."""
     hosts = load_allowed_hosts(config_dir / "skill-sets" / "allowed-git-hosts.txt")
-    return available_sets(config_dir / "skill-sets", hosts)
+    return load_catalog(config_dir / "skill-sets", lambda path: read_manifest(path, hosts), "skill set")
 
 
 # --- Git ---------------------------------------------------------------------
@@ -358,16 +353,3 @@ def fetch(selected: list[SkillSet], target: Path, *, verify_only: bool) -> int:
                     shutil.rmtree(path)
                     print(f"  {path.name}: removed (not in the manifest)")
     return result
-
-
-def digest_command(repository: str, commit: str, subpath: str, allowed_hosts: set[str]) -> str:
-    """Return the tree digest of one pinned skill directory, for a new manifest row."""
-    repository = validate_repository(repository, allowed_hosts)
-    if not SHA1_RE.fullmatch(commit):
-        raise TokenCrateError("commit must be a full lowercase Git commit")
-    subpath = relative_path(subpath, "path", "digest")
-    with tempfile.TemporaryDirectory(prefix="tokencrate-skill-digest-") as raw_workdir:
-        subtree = checkout_subtree(repository, commit, subpath, Path(raw_workdir))
-        digest = tree_digest(subtree)
-        validate_skill_document(subtree, PurePosixPath(subpath).name)
-    return digest

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import runpy
 import tempfile
 import types
 import unittest
@@ -15,6 +16,13 @@ from tests import integration
 
 
 class IntegrationCleanupTests(unittest.TestCase):
+    def test_the_entry_point_lets_a_ctrl_c_reach_the_class_cleanups(self) -> None:
+        # Without catchbreak a KeyboardInterrupt unwinds past doClassCleanups:
+        # the stack stays up and the fixture copies stay in tracked config/.
+        with mock.patch.object(unittest, "main") as main:
+            runpy.run_path(integration.__file__, run_name="__main__")
+        main.assert_called_once_with(verbosity=2, catchbreak=True)
+
     def test_only_an_attempted_up_registers_stack_cleanup(self) -> None:
         for failure in (("skills", "fetch"), ("skills", "status"), ("up",)):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as raw:

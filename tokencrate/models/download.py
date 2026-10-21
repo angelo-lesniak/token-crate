@@ -112,10 +112,7 @@ def fetch(selected: list[ModelSet], models_root: Path, token: str | None) -> Non
     files = merged_files(selected)
     print_notices(selected)
 
-    located = [
-        (destination_path(models_root, model_file.destination, roots, create_parent=True), model_file)
-        for model_file in files
-    ]
+    located = [(destination_path(models_root, model_file.destination, roots), model_file) for model_file in files]
     announce_hashing(located)
     pending: list[PendingFile] = []
     for destination, model_file in located:
@@ -142,8 +139,10 @@ def fetch(selected: list[ModelSet], models_root: Path, token: str | None) -> Non
     for item in pending:
         model_file, destination, staging = item.model_file, item.destination, item.staging
         staging_root = staging.parent
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # The walk of the staging root covers this file's staging directory too.
         prepare_staging_directory(staging_root)
-        prepare_staging_directory(staging)
+        staging.mkdir(mode=0o700, exist_ok=True)
         resolved_staging = staging.resolve(strict=True)
         if not is_within(resolved_staging, roots):
             raise TokenCrateError(f"staging directory escapes the model storage: {model_file.destination}")
@@ -176,10 +175,8 @@ def fetch(selected: list[ModelSet], models_root: Path, token: str | None) -> Non
 
 def status(selected: list[ModelSet], models_root: Path, *, verify: bool = False) -> int:
     roots = (models_root.resolve(),)
-    located = [
-        (destination_path(models_root, model_file.destination, roots, create_parent=False), model_file)
-        for model_file in merged_files(selected)
-    ]
+    files = merged_files(selected)
+    located = [(destination_path(models_root, model_file.destination, roots), model_file) for model_file in files]
     announce_hashing(located, verify)
     result = 0
     for path, model_file in located:

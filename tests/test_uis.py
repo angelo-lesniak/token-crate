@@ -7,7 +7,6 @@ import dataclasses
 import io
 import json
 import socket
-import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -50,9 +49,6 @@ class UiTests(unittest.TestCase):
         entry = uis.ui_entry(self.settings, "pi-web")
         self.assertEqual(uis.host_port(entry, ""), "4224")
         self.assertEqual(uis.host_port(entry, "54224"), "54224")
-        for invalid in ("0", "65536", "-1", "localhost:4224", "1.5", " 4224"):
-            with self.assertRaisesRegex(TokenCrateError, "--port requires a port"):
-                uis.host_port(entry, invalid)
         custom = dataclasses.replace(entry, name="custom", ui=dataclasses.replace(entry.ui, host_port=None))
         with self.assertRaisesRegex(TokenCrateError, "^UI set custom declares no host_port; pass --port$"):
             uis.host_port(custom, "")
@@ -233,6 +229,39 @@ class UiTests(unittest.TestCase):
             self.assertEqual(calls[2].kwargs["TOKENCRATE_UI_HOST_PORT"], "4250")
             self.assertEqual(agentsets.load_set(self.scratch.root, "paseo").ui.host_port, 4250)
 
+    def test_a_name_held_by_another_checkout_is_refused_and_its_container_kept(self):
+        # The fixed names are not project-scoped. This project owns no UI
+        # of the set, yet another project's container holds the name: the
+        # failed `run` would stop that UI in its unwind, so the launch
+        # refuses before removing or running anything.
+        ui_name = uis.container_names("paseo")[0]
+        other = json.dumps(container("paseo", project="other-checkout"))
+        self.engine.command = Mock(return_value=Mock(returncode=0, stdout=other))
+        with (
+            patch.object(uis, "containers", return_value=[]),
+            patch.object(self.engine, "require_port"),
+            patch.object(self.engine, "remove_containers") as removed,
+            patch("tokencrate.session.prepare", return_value={}),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.engine.compose = Mock(
+                side_effect=[Mock(), TokenCrateError(f'the container name "/{ui_name}" is already in use')]
+            )
+            with self.assertRaisesRegex(
+                TokenCrateError,
+                f"^the container {ui_name} belongs to another checkout's UI; "
+                "free it there with: bash bin/tokencrate ui stop paseo$",
+            ):
+                uis.start(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+        self.assertEqual([call.args[0] for call in self.engine.compose.call_args_list], ["build"])
+        self.assertEqual({call.args[0] for call in self.engine.command.call_args_list}, {"inspect"})
+        removed.assert_not_called()
+        # A name the engine does not know, and one of this project's, pass.
+        self.engine.command = Mock(return_value=Mock(returncode=1, stdout="", stderr="No such container"))
+        self.assertFalse(self.engine.foreign_container(ui_name))
+        self.engine.command = Mock(return_value=Mock(returncode=0, stdout=json.dumps(container("paseo"))))
+        self.assertFalse(self.engine.foreign_container(ui_name))
+
     def test_the_shared_ui_directory_is_a_real_path(self) -> None:
         store = uis.ui_state_store(self.settings, "pi-web")
         self.assertEqual(store, self.settings.agents_dir / "pi" / "pi-web-state")
@@ -251,23 +280,6 @@ class UiTests(unittest.TestCase):
             [call.args for call in self.engine.container_state.call_args_list],
             [(name,) for name in uis.container_names("pi-web")],
         )
-
-    def test_lock_serializes_close_launches_and_scopes_engine_project(self):
-        entered = threading.Event()
-        finished = threading.Event()
-
-        def other():
-            entered.set()
-            with self.engine.lock():
-                finished.set()
-
-        with self.engine.lock():
-            thread = threading.Thread(target=other)
-            thread.start()
-            entered.wait(2)
-            self.assertFalse(finished.wait(0.05))
-        thread.join(2)
-        self.assertTrue(finished.is_set())
 
     def test_all_ui_names_and_addresses_are_containment_targets(self):
         # The UI of a set started with --egress or --cloud marks its name

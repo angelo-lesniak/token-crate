@@ -1,4 +1,4 @@
-"""The aggregation of the usage records into tables, computed once for
+"""The aggregation of the usage records into tables, defined once for
 both renderers.
 
 One pass over the transcripts (`transcripts.read_sessions`) feeds every

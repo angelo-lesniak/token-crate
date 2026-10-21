@@ -121,6 +121,18 @@ class AgentCheckTests(unittest.TestCase):
         egress = self.run_check(FAKE_DNS="1", TOKENCRATE_EGRESS="1")
         self.assertIn("[ok] example.com resolves (expected with --egress)", egress)
 
+    def test_the_project_mount_must_be_writable(self) -> None:
+        # The identity line proves nothing by itself; the project line
+        # proves the read-write mount the agent edits through.
+        lines = self.run_check()
+        self.assertIn(f"[info] running as {os.getuid()}:{os.getgid()} with HOME={self.home}", lines)
+        self.assertIn(f"[ok] project directory is mounted read-write: {self.tmp}", lines)
+        read_only = self.tmp / "read-only"
+        read_only.mkdir(mode=0o500)
+        self.addCleanup(read_only.chmod, 0o700)
+        lines = self.run_check(TOKENCRATE_PROJECT_DIR=str(read_only))
+        self.assertIn(f"[fail] project directory is missing or not writable: {read_only}", lines)
+
     def test_the_interface_count_is_reported(self) -> None:
         # The host has whatever it has; the line names the count it judged.
         lines = self.run_check()

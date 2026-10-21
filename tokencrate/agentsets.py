@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import TokenCrateError
-from .names import SET_NAME_RE, SHA256_RE, UI_ACTIONS, parse_list, read_toml, relative_path
+from .names import SET_NAME_RE, SHA256_RE, parse_list, read_toml, relative_path
 from .names import description as read_description
 
 MANIFEST = "set.toml"
@@ -78,6 +78,8 @@ UI_OPTIONAL_KEYS = {"host_port"}
 # and `tokencrate-ui-forward-<set>`: a DNS label (63 characters), and no
 # set may name another set's forwarder.
 UI_SET_NAME_RE = re.compile(r"^(?!forward-)[a-z0-9][a-z0-9-]{0,40}$")
+# These CLI verbs cannot also name a UI set.
+UI_ACTIONS = ("stop", "logs")
 # The home directories an agent's own state occupies; a UI's state directory
 # is a sibling of them, never one of them.
 RESERVED_HOME_DIRECTORIES = {".", "..", ".pi", ".omp", ".agents", ".config", ".local", ".cache"}
@@ -280,6 +282,10 @@ def read_manifest(directory: Path, source: str) -> AgentSet:
     pi_lens = table.get("pi_lens", {})
     if not isinstance(pi_lens, dict):
         raise fail(context, "pi_lens must be a table")
+    try:
+        json.dumps(pi_lens)
+    except TypeError:
+        raise fail(context, "pi_lens is written as JSON and may not contain TOML dates or times") from None
 
     return AgentSet(
         name,
@@ -500,9 +506,15 @@ def render(root: Path, build_dir: Path, selected: list[AgentSet]) -> str:
     parent = build_dir / "agents" / "pi"
     output = parent / rendered.tag
     # The rename is atomic, so the Dockerfile's presence means the whole
-    # directory; a directory without it is repaired.
+    # directory. One without it was edited by hand: the rename replaces it
+    # only when it is empty, and nothing here deletes a user's files. The
+    # Dockerfile is checked last because a parallel start may rename its
+    # render into place between the two looks.
+    incomplete = TokenCrateError(f"build/agents/pi/{rendered.tag} has no Dockerfile; remove the directory and retry")
     if (output / "Dockerfile").is_file():
         return rendered.tag
+    if output.is_dir() and any(output.iterdir()) and not (output / "Dockerfile").is_file():
+        raise incomplete
     parent.mkdir(parents=True, exist_ok=True)
     # Named for .dockerignore: a staging directory a crash left behind must
     # not enter the build context.
@@ -519,13 +531,11 @@ def render(root: Path, build_dir: Path, selected: list[AgentSet]) -> str:
         for name, script in rendered.checks.items():
             (staging / "checks" / name).write_text(script, encoding="utf-8")
         try:
-            if output.is_dir() and not any(output.iterdir()):
-                output.rmdir()
             staging.rename(output)
         except OSError:
             # Another start renamed its own render into place first.
             if not (output / "Dockerfile").is_file():
-                raise
+                raise incomplete from None
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return rendered.tag

@@ -25,8 +25,8 @@ from pathlib import Path
 
 from tokencrate import engine, env, runtime, session, uis
 
-# The first omp prompt here is a cold prefill of about 16,000 tokens: on a
-# 4-vCPU CI runner it took six to eleven minutes.
+# omp's first prompt here is a cold prompt: on a 4-vCPU CI runner it took
+# six to eleven minutes.
 RPC_TIMEOUT = float(os.environ.get("RPC_TIMEOUT", "1200"))
 MARKERS = {"pi": "hello", "omp": "welcome"}
 AGENTS = os.environ.get("TOKENCRATE_CONCURRENT_AGENTS", "pi,omp").split(",")
@@ -236,21 +236,30 @@ def run(root: Path, project: Path) -> None:
         daemon_log = selected.command("logs", second[0], capture=True, check=False)
         listen = re.search(r"listens on (\S+:\d+)", daemon_log.stdout + daemon_log.stderr)
         assert listen, "the Paseo launcher did not log its listen address"
-        paseo = selected.command(
-            "exec",
-            "-e",
-            f"PASEO_LISTEN={listen.group(1)}",
-            second[0],
-            "paseo",
-            "run",
-            "--provider",
-            "pi",
-            "--model",
-            "tokencrate/ci-small",
-            "--thinking",
-            "off",
-            "Reply with the single word welcome. Do not use tools.",
-            capture=True,
+        # Bounded like the RPC clients: a daemon that accepts the prompt and
+        # never answers must not hang the run.
+        paseo = subprocess.run(
+            [
+                selected.name,
+                "exec",
+                "-e",
+                f"PASEO_LISTEN={listen.group(1)}",
+                second[0],
+                "paseo",
+                "run",
+                "--provider",
+                "pi",
+                "--model",
+                "tokencrate/ci-small",
+                "--thinking",
+                "off",
+                "Reply with the single word welcome. Do not use tools.",
+            ],
+            env=selected.env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=RPC_TIMEOUT,
         )
         print("Paseo run:", paseo.stdout, flush=True)
         agent_id = re.search(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", paseo.stdout).group()

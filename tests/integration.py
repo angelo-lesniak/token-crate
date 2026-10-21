@@ -7,12 +7,13 @@ preset). The checks run the smoke and bench probes (which swap the loaded
 model between the two fixture presets), the agent check and a prompt for
 each agent (pi for every shipped toolchain selection), the thinking-level
 check, and the home lifecycle of both agents and both browser UIs on the
-images the run builds. `down` and the removal of everything the run
-created follow. It needs a container engine and network access (the
-pinned images, 0.4 GB of model files on the first run, github.com for the
-skill sets) and takes several minutes. With LLM_GPU=false (the default
-here) the models run on the CPU; LLM_GPU=true uses the GPU path on an
-NVIDIA host. Requires PyYAML.
+images the run builds. `down`, the removal of the fixture copies, reports,
+and scratch homes follow; the model files and images stay for the next
+run. It needs a container engine and network access (the pinned images,
+0.4 GB of model files on the first run, github.com for the skill sets) and
+takes several minutes. With LLM_GPU=false (the default here) the models
+run on the CPU; LLM_GPU=true uses the GPU path on an NVIDIA host. Requires
+PyYAML.
 
 Usage: python3 tests/integration.py [-k pattern]   (the unittest options;
 CONTAINER_ENGINE selects the engine, PROMPT_TIMEOUT bounds every agent
@@ -38,9 +39,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tests.support import home_tmpfs_directories  # noqa: E402
+from tests.support import HOME_IN_CONTAINER, home_tmpfs_directories  # noqa: E402
+from tokencrate import agenthome, env, session, uis  # noqa: E402
 from tokencrate import engine as engines  # noqa: E402
-from tokencrate import env, session, uis  # noqa: E402
 
 FIXTURES = ROOT / "tests/fixtures"
 MODEL_SETS = ("ci-tiny", "ci-small")
@@ -51,11 +52,11 @@ SELECTIONS = ("coding", "coding,debug,dotnet,web,browser", "coding,debug,odin")
 # A prompt the agent never answers has nothing to wake it: a lost model
 # response leaves the process in its event loop with no request open, and
 # the agent has no timeout of its own. The bound is generous because the
-# fixture models run on the CPU. oh-my-pi's first request on ci-small is
-# about 16,000 tokens and takes over ten minutes there without a cached
-# prompt, so only the concurrent clients test prompts it, with its own bound.
+# fixture models run on the CPU. oh-my-pi's cold prompt on ci-small takes
+# over ten minutes there, so only the concurrent clients test prompts it,
+# with its own bound.
 PROMPT_TIMEOUT = float(os.environ.get("PROMPT_TIMEOUT", "600"))
-HOME = session.HOME_IN_CONTAINER
+HOME = HOME_IN_CONTAINER
 README_TEXT = "# Integration project\n\nA scratch project for the agent checks.\n"
 
 
@@ -116,7 +117,7 @@ class IntegrationTests(unittest.TestCase):
         tokencrate("skills", "fetch", *SKILL_SETS)
         tokencrate("skills", "status", *SKILL_SETS)
         cls.addClassCleanup(tokencrate, "down", capture=True, check=False)
-        tokencrate("up", "--model-set", "ci-small", "--model-set", "ci-tiny")
+        tokencrate("up", "--model-sets", "ci-small,ci-tiny")
         if "  ci-small: loaded" not in tokencrate("status", capture=True).stdout.splitlines():
             raise AssertionError("up did not leave the default preset loaded")
 
@@ -128,7 +129,7 @@ class IntegrationTests(unittest.TestCase):
         for report in cls.reports:
             Path(report).unlink(missing_ok=True)
         if hasattr(cls, "settings"):
-            for agent in session.AGENTS:
+            for agent in agenthome.AGENTS:
                 shutil.rmtree(session.agent_home_directory(cls.settings, agent, cls.project), ignore_errors=True)
         shutil.rmtree(cls.scratch, ignore_errors=True)
 
@@ -170,7 +171,7 @@ class IntegrationTests(unittest.TestCase):
             run(ROOT, project)
         finally:
             for directory in (project, project.with_name(project.name + "-peer")):
-                for agent in session.AGENTS:
+                for agent in agenthome.AGENTS:
                     shutil.rmtree(session.agent_home_directory(self.settings, agent, directory), ignore_errors=True)
             if not had_identity:
                 shutil.rmtree(identity, ignore_errors=True)
@@ -182,7 +183,7 @@ class IntegrationTests(unittest.TestCase):
         self.probe("smoke", "--basic", "--preset", "ci-tiny")
         self.expect_status("ci-tiny: loaded")
         self.expect_status("ci-small: unloaded")
-        output = self.probe("bench", "--preset", "ci-small", "--iterations", "2")
+        output = self.probe("bench", "--presets", "ci-small", "--iterations", "2")
         self.assertRegex(
             output, r"(?m)^\| ci-small \| short \| [0-9]{2,} \|", "bench did not measure a multi-token prompt"
         )
@@ -222,7 +223,7 @@ class IntegrationTests(unittest.TestCase):
         is what a request without a usable level would render. The toy model
         never closes its think block, so the agent's exit status is not checked."""
         llama = self.engine.running_llama_id()
-        for agent in session.AGENTS:
+        for agent in agenthome.AGENTS:
             with self.subTest(agent=agent):
                 marker = f"TOKENCRATE-THINK-{agent}-{os.getpid()}"
                 self.prompt(
@@ -331,7 +332,9 @@ class IntegrationTests(unittest.TestCase):
             )
 
         def execute(cid: str, script: str) -> str:
-            return run("exec", cid, "bash", "-ec", script)
+            # Every script here is a file check or a daemon query: a daemon
+            # that accepts and never answers must not hang the run.
+            return run("exec", cid, "bash", "-ec", script, timeout=30)
 
         def fixture(cid: str) -> None:
             runtime = ["bun", "run", "-"] if agent == "omp" else ["node", "--input-type=module"]
@@ -359,13 +362,13 @@ class IntegrationTests(unittest.TestCase):
                 # fixture) resolves nothing, and an unbounded lookup would
                 # spend the deadline on resolver timeouts.
                 script += (
-                    f' && (curl -sf -o /dev/null "http://127.0.0.1:{port}/{path}" && exit 0;'
+                    f' && (curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:{port}/{path}" && exit 0;'
                     ' for address in $(timeout 3 getent ahostsv4 "$(cat /etc/hostname)" 2>/dev/null'
                     " | awk '{print $1}' | sort -u); do"
-                    f' curl -sf -o /dev/null "http://$address:{port}/{path}" && exit 0; done; exit 1)'
+                    f' curl -sf --max-time 5 -o /dev/null "http://$address:{port}/{path}" && exit 0; done; exit 1)'
                 )
             deadline = time.monotonic() + 65
-            quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "timeout": 30}
             while subprocess.call([engine.name, "exec", cid, "sh", "-c", script], env=engine.env, **quiet) != 0:
                 self.assertLess(time.monotonic(), deadline, "the entrypoint or the UI did not become ready")
                 time.sleep(0.5)
@@ -483,4 +486,6 @@ def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: 
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    # A Ctrl-C ends the suite after the current test, so the class cleanups
+    # (`down`, the fixture copies) still run.
+    unittest.main(verbosity=2, catchbreak=True)

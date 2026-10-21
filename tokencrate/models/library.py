@@ -32,13 +32,8 @@ def is_within(path: Path, roots: tuple[Path, ...]) -> bool:
     return any(path == root or root in path.parents for root in roots)
 
 
-def destination_path(
-    models_root: Path,
-    destination: str,
-    roots: tuple[Path, ...],
-    *,
-    create_parent: bool,
-) -> Path:
+def destination_path(models_root: Path, destination: str, roots: tuple[Path, ...]) -> Path:
+    """The library path of a destination, checked but not created; fetch creates the parent when it stages."""
     path = models_root.joinpath(*PurePosixPath(destination).parts)
     ancestor = path.parent
     while not os.path.lexists(ancestor):
@@ -47,19 +42,10 @@ def destination_path(
         ancestor = ancestor.parent
     if ancestor.is_symlink() and not ancestor.exists():
         raise TokenCrateError(f"destination uses a dangling directory symlink: {destination}")
-    resolved_ancestor = ancestor.resolve(strict=True)
-    if not is_within(resolved_ancestor, roots):
+    if not is_within(ancestor.resolve(strict=True), roots):
         raise TokenCrateError(
             f"destination escapes the model storage: {destination}; keep symlink targets below the models directory"
         )
-    if create_parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    if path.parent.exists():
-        parent = path.parent.resolve(strict=True)
-        if not is_within(parent, roots):
-            raise TokenCrateError(
-                f"destination escapes the model storage: {destination}; keep symlink targets below the models directory"
-            )
     if path.is_symlink():
         resolved = path.resolve(strict=False)
         if not is_within(resolved, roots):
@@ -260,5 +246,5 @@ def require_free_space(models_root: Path, pending: list[PendingFile]) -> None:
     if needed > free:
         raise TokenCrateError(
             f"the selected files need {needed / 1_000_000_000:.1f} GB but only "
-            f"{free / 1_000_000_000:.1f} GB are free below {models_root}"
+            f"{free / 1_000_000_000:.1f} GB are free below {models_root}; make room or fetch fewer sets"
         )

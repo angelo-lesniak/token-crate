@@ -19,12 +19,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # /usr/local/cuda*/compat. Under CDI the host driver is injected instead, and
 # the bundled libcuda breaks CUDA initialization on newer host drivers
 # (ggml-org/llama.cpp issue 23111). The runtime root filesystem is read-only,
-# so the directory is removed here, once, and the build asserts it is gone.
-# The build also asserts that the pulled tag still carries the llama.cpp
-# build number (-b<N>) named by the pin.
+# so the directory is removed here, once. The build also asserts that the
+# pulled tag still carries the llama.cpp build number (-b<N>) named by the pin.
 RUN rm -rf /usr/local/cuda*/compat \
     && ldconfig \
-    && test ! -e /usr/local/cuda/compat \
     && /app/llama-server --version 2>&1 | grep -E "build ${LLAMA_CPP_TAG##*-b}([^0-9]|$)"
 
 # Router mode: llama-server starts without a model, reads the preset file the

@@ -16,4 +16,3 @@ revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502"
 source = "Qwen3.8-27B-UD-Q6_K_XL.gguf"
 size = 25299061664
 sha256 = "701d8fa9ed214ab21bfc130cd2a7df19ca89bbef7713e2dfb19f3c63696aa917"
-

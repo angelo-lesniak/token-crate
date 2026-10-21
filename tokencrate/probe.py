@@ -12,16 +12,13 @@ loopback port, prints the report, and saves it under reports/.
 from __future__ import annotations
 
 import json
-import re
 import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 
-from . import TokenCrateError, stats
+from . import TokenCrateError
 from .localhttp import LOAD_TIMEOUT, request
-from .names import PRESET_NAME_RE
 
 # A chat completion may be the first request, so it waits for the load, and
 # then for up to ANSWER_TOKENS at the slowest shipped preset (a model with
@@ -423,7 +420,9 @@ def bench_sample(url: str, preset: str, prompt: str) -> dict:
 
 def server_facts(url: str, preset: str) -> dict:
     """The preset's build, model path, and `n_ctx` from `/props`, which
-    loads the preset when it is not loaded, so the request waits like a load."""
+    loads the preset when it is not loaded, so the request waits like a load.
+    `default_generation_settings` describes one slot, so `n_ctx` is the
+    slot's context (`ctx_size` over `parallel`), not the server's."""
     facts = {}
     try:
         props = request(f"{url}/props?model={urllib.parse.quote(preset, safe='')}", timeout=LOAD_TIMEOUT)
@@ -457,12 +456,6 @@ def smoke_report(model: str, url: str, results: list[Result], facts: dict) -> tu
     return "\n".join(lines) + "\n", 0
 
 
-def document_build(rows: list[BenchRow]) -> str | None:
-    """The one build every row reports, or None when the rows disagree."""
-    builds = {row.build for row in rows}
-    return builds.pop() if len(builds) == 1 else None
-
-
 def bench_report(url: str, rows: list[BenchRow]) -> str:
     """The Markdown bench report: one line per preset with its facts, then
     the table of the measured runs."""
@@ -470,7 +463,7 @@ def bench_report(url: str, rows: list[BenchRow]) -> str:
     lines.append(f"- Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     lines.append(f"- Endpoint: {url}")
     for preset, row in {row.preset: row for row in rows}.items():
-        lines.append(f"- {preset}: n_ctx {row.n_ctx}, build {row.build}, {row.model_path}")
+        lines.append(f"- {preset}: n_ctx {row.n_ctx} per slot, build {row.build}, {row.model_path}")
     lines += [
         "",
         "| Preset | Run | Prompt tokens | Generated tokens | Prompt tokens/s | Generation tokens/s | Iterations |",
@@ -491,128 +484,11 @@ def bench_report(url: str, rows: list[BenchRow]) -> str:
 def bench_json(url: str, rows: list[BenchRow]) -> str:
     """The bench measurements as JSON, saved next to the Markdown report:
     six `timings` values per iteration for every preset and run, each row
-    with its preset's `n_ctx`, build, and model path (schema 2; schema 1
-    carried one `build` and `n_ctx` for the whole file). The document's
-    `build` stays for a reader that wants one, when every row agrees."""
+    with its preset's `n_ctx`, build, and model path (schema 2)."""
     document = {
         "schema": 2,
         "date": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "endpoint": url,
-        "build": document_build(rows),
         "rows": [asdict(row) for row in rows],
     }
     return json.dumps(document, indent=2) + "\n"
-
-
-# --- bench --history ---------------------------------------------------------
-
-# The files `bench` saves: the stem is the wrapper's own timestamp, which
-# dates and orders the history; the JSON's own `date` is not read.
-BENCH_FILE_RE = re.compile(r"bench-(\d{8})-(\d{6})\.json")
-BENCH_FILE_LIMIT = 1024 * 1024
-BUILD_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-BENCH_RUNS = ("short", "long")
-HISTORY_HEADER = (
-    "| Preset | Run | Date | n_ctx | Build | Prompt tokens | Prompt tokens/s | Generation tokens/s "
-    "| Δ generation | Iterations |",
-    "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
-)
-NO_HISTORY = (
-    "No bench history: `bench` writes reports/bench-<timestamp>.json next to its report, and the history is "
-    "this machine's (reports/ is not tracked)."
-)
-
-
-def bench_history_rows(reports_dir: Path) -> list[str]:
-    """One Markdown row per measured run of every `bench` JSON under
-    `reports_dir`, grouped by preset and run, oldest first within a group,
-    with the change in generation speed against the previous row of the
-    group when both ran at the same `n_ctx`. The build and `n_ctx` are the
-    row's own (schema 2) or the file's (schema 1). A file that is not a
-    bench document is skipped whole, a row that is not a measurement is
-    skipped, and nothing but the build, `n_ctx`, the preset, the run label,
-    and the numbers reaches the table, in the shapes the writer above
-    produces. The rows stay dicts: the files are untrusted input (any
-    key may be missing or of the wrong type), so every value is checked
-    here instead of being trusted into a `BenchRow`."""
-
-    def facts(source: dict) -> tuple[int | None, str]:
-        n_ctx, build = source.get("n_ctx"), source.get("build")
-        return (
-            n_ctx if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx >= 0 else None,
-            build if isinstance(build, str) and BUILD_RE.fullmatch(build) else "?",
-        )
-
-    measured = []
-    for path in sorted(reports_dir.glob("bench-*.json")):
-        match = BENCH_FILE_RE.fullmatch(path.name)
-        if match is None:
-            continue
-        try:
-            if not path.is_file() or path.stat().st_size > BENCH_FILE_LIMIT:
-                continue
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):  # gone, unreadable, malformed, or an integer past the digit limit
-            continue
-        if (
-            not isinstance(document, dict)
-            or (schema := document.get("schema")) not in (1, 2)
-            or not isinstance(document.get("rows"), list)
-        ):
-            continue
-        day, clock = match.group(1), match.group(2)
-        date = f"{day[:4]}-{day[4:6]}-{day[6:]} {clock[:2]}:{clock[2:4]}"
-        for row in document["rows"]:
-            if not isinstance(row, dict):
-                continue
-            n_ctx, build = facts(row if schema == 2 else document)
-            preset, run = row.get("preset"), row.get("run")
-            prompt_tps, generation_tps = (
-                stats.duration(row.get("prompt_tps")),
-                stats.duration(row.get("generation_tps")),
-            )
-            if (
-                not isinstance(preset, str)
-                or not PRESET_NAME_RE.fullmatch(preset)
-                or len(preset) > 64
-                or run not in BENCH_RUNS
-                or prompt_tps is None
-                or generation_tps is None
-                or min(prompt_tps, generation_tps) < 0
-            ):
-                continue
-            measured.append((preset, BENCH_RUNS.index(run), date, n_ctx, build, row, prompt_tps, generation_tps))
-    rows = []
-    previous = None
-    for preset, run_index, date, n_ctx, build, row, prompt_tps, generation_tps in sorted(
-        measured, key=lambda item: item[:3]
-    ):
-        same_group = (
-            previous is not None and previous[:2] == (preset, run_index) and n_ctx is not None and previous[2] == n_ctx
-        )
-        delta = f"{round(generation_tps - previous[3], 1) + 0.0:+.1f}" if same_group else ""
-        previous = (preset, run_index, n_ctx, generation_tps)
-        rows.append(
-            f"| {preset} | {BENCH_RUNS[run_index]} | {date} | {n_ctx if n_ctx is not None else '?'} | {build} | "
-            f"{stats.integer(row.get('prompt_tokens'))} | {prompt_tps:.1f} | {generation_tps:.1f} | {delta} | "
-            f"{stats.integer(row.get('iterations'))} |"
-        )
-    return rows
-
-
-def bench_history(reports_dir: Path) -> str:
-    """The Markdown bench history: the measurements of every saved run, so
-    a llama.cpp pin bump or a preset change shows next to what came before."""
-    lines = ["# TokenCrate bench history", ""]
-    rows = bench_history_rows(reports_dir)
-    if not rows:
-        lines.append(NO_HISTORY)
-    else:
-        lines += [*HISTORY_HEADER, *rows]
-    lines += [
-        "",
-        "One row per measured run of every reports/bench-<timestamp>.json, grouped by preset and run, oldest "
-        "first within a group; the numbers are the report's averages over its iterations. Δ generation is the "
-        "change in generation tokens/s against the row above when both ran at the same n_ctx.",
-    ]
-    return "\n".join(lines) + "\n"

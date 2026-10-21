@@ -1,4 +1,4 @@
-"""The Markdown stats report the CLI prints and saves, and the scope lines
+"""The Markdown stats report the CLI prints and saves, and the scope line
 both renderers lead with."""
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def recent_clause(sessions: list[Session], selection: Filter | None = None, now:
 
 
 def meta_text(sessions: list[Session], selection: Filter | None = None, now: float | None = None) -> str:
-    """The page's one-line scope: counts, the filters or their absence,
+    """The report's one-line scope: counts, the filters or their absence,
     and the last day's share."""
     requests = sum(len(session.requests) for session in sessions)
     agent = f"agent {selection.agent}" if selection and selection.agent else "all agents"
@@ -43,20 +43,11 @@ def meta_text(sessions: list[Session], selection: Filter | None = None, now: flo
     )
 
 
-def summary_line(sessions: list[Session], selection: Filter | None = None, now: float | None = None) -> str:
-    requests = sum(len(session.requests) for session in sessions)
-    line = f"Transcripts: {len(sessions)} session(s), {requests} request(s) below LLM_AGENTS_DIR"
-    described = selection.describe() if selection else ""
-    line = f"{line} ({described})" if described else line
-    recent = recent_clause(sessions, selection, now)
-    return f"{line}; {recent}" if recent else line
-
-
 def report(sessions: list[Session], selection: Filter | None = None, slots: dict[str, int] | None = None) -> str:
     """The Markdown stats report."""
     lines = ["# TokenCrate stats report", ""]
     lines.append(f"- Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    lines.append(f"- {summary_line(sessions, selection)}")
+    lines.append(f"- Scope: {meta_text(sessions, selection)}")
     for table in build_tables(sessions, slots):
         lines += ["", f"## {table.title}", ""]
         if not table.rows:

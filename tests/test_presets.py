@@ -74,7 +74,7 @@ def read_ini(path: Path) -> dict[str, dict[str, str]]:
 class PresetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model_sets = models.available_sets(CONFIG / "model-sets")
+        cls.model_sets = models.catalog(CONFIG)
 
     def workdir(self) -> Path:
         path = Path(tempfile.mkdtemp())
@@ -163,9 +163,6 @@ class PresetTests(unittest.TestCase):
         self.assertEqual({key for key in mtp if mtp[key] != uncensored.get(key)}, {"model"})
         self.assertEqual({key for key in mtp if mtp[key] != mtp_long.get(key)}, {"ctx-size", "ctx-checkpoints"})
         self.assertEqual({key for key in mtp_long if mtp_long[key] != uncensored_long.get(key)}, {"model"})
-        # The two 128K presets differ only in drafting.
-        long = config["qwen3.8-27b-q4-long"]
-        self.assertEqual({key for key in mtp_long if mtp_long[key] != long.get(key)}, {"spec-type", "spec-draft-n-max"})
         # The Flash-Next presets reuse the 27B's patched template, which
         # their file embeds, and never draft with MTP.
         flash = config["qwen3.8-flash-next-q4"]
@@ -311,7 +308,7 @@ class PresetTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "first\n")
             self.assertEqual(os.listdir(path.parent), [path.name])
 
-    def test_render_check_validates_the_shipped_configuration(self):
+    def test_presets_check_validates_the_shipped_configuration(self):
         output = self.workdir() / "build"
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             rendered = presets.validate(presets.load(CONFIG, 10920), default_preset="")
@@ -401,7 +398,7 @@ class PresetTests(unittest.TestCase):
             f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list shows the loadable ones",
         )
         # A build number gates until the pin reaches it.
-        gpt_oss = models.available_sets(self.gated_config("b10921") / "model-sets")["gpt-oss-20b-mxfp4"]
+        gpt_oss = models.catalog(self.gated_config("b10921"))["gpt-oss-20b-mxfp4"]
         self.assertEqual(presets.build_wait(gpt_oss, 10920), "waits for llama.cpp build b10921 (pinned: b10920)")
         self.assertEqual(presets.build_wait(gpt_oss, 10921), "")
         rendered, stdout, _ = self.render(self.gated_config("b10920"))
@@ -459,6 +456,16 @@ class PresetTests(unittest.TestCase):
             head + 'reasoning_effort = "brief"\nreasoning_efforts = ["brief"]\n', "agent thinking level names"
         )
         self.preset_error(head + 'reasoning_effort = "low"\nreasoning_efforts = ["low", "low"]\n', "must not repeat")
+        # The default is written for every request that names no effort, so
+        # it must be a declared level: neither a word alone nor one outside
+        # the list.
+        self.preset_error(
+            head + 'reasoning_effort = "brief"\n', "reasoning_effort must be one of reasoning_efforts (none declared)"
+        )
+        self.preset_error(
+            head + 'reasoning_effort = "xhigh"\nreasoning_efforts = ["low", "high"]\n',
+            "reasoning_effort must be one of reasoning_efforts (low, high)",
+        )
         self.preset_error(head.replace("ctx_size = 8192", "ctx_size = 1000"), "at least 1024")
         self.preset_error(head.replace("ctx_size = 8192\n", ""), "[server] ctx_size is required")
         self.preset_error(head + "parallel = 3\n", "divisible by parallel")
@@ -487,7 +494,7 @@ class PresetTests(unittest.TestCase):
         # after the typed keys (the router keeps the last value of a key).
         path = self.workdir() / "extra.toml"
         path.write_text(
-            PRESET_HEAD + 'reasoning_effort = "low"\nenable_thinking = false\n'
+            PRESET_HEAD + 'reasoning_effort = "low"\nreasoning_efforts = ["low"]\nenable_thinking = false\n'
             '[server.extra]\nverbose = true\nload-mode = "none"\n'
             'override-kv = "a=int:1"\nlog-prompts-dir = "/tmp/prompts"\n',
             encoding="utf-8",

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import TokenCrateError, agentsets, presets, runtime
 from .engine import SERVICE_LABEL, Engine
-from .env import SERVICE_HOST, Settings, validate_port
+from .env import SERVICE_HOST, Settings
 from .localhttp import http_get
 from .session import plan, resolve_project_directory, symlink_in_path
 
@@ -158,10 +158,10 @@ def ui_entry(settings: Settings, ui_set: str) -> agentsets.AgentSet:
 
 
 def host_port(entry: agentsets.AgentSet, requested: str) -> str:
-    """The loopback port the forwarder publishes: `--port` for this launch,
-    else the `host_port` the manifest declares."""
+    """The loopback port the forwarder publishes: `--port` for this launch
+    (validated by the flag), else the `host_port` the manifest declares."""
     if requested:
-        return validate_port(requested, "--port")
+        return requested
     if entry.ui.host_port is None:
         raise TokenCrateError(f"UI set {entry.name} declares no host_port; pass --port")
     return str(entry.ui.host_port)
@@ -244,6 +244,14 @@ def start(
         # A replace: the set's own pair goes, nothing else. --no-deps keeps
         # Compose from touching llama or another UI. A failed target stays
         # for logs/retry/stop.
+        # The names are not project-scoped: one held by another checkout's
+        # UI would fail the `run`, whose unwind would then stop that UI.
+        for name in (ui_name, forward_name):
+            if engine.foreign_container(name):
+                raise TokenCrateError(
+                    f"the container {name} belongs to another checkout's UI; "
+                    f"free it there with: bash bin/tokencrate ui stop {ui_set}"
+                )
         engine.remove_containers([item for item in containers(engine) if set_name(item) == ui_set])
         launch.run(engine, ui_name, "-v", f"{store}:{UI_STATE_MOUNT}", detach=True, no_deps=True)
         # The forwarder is not an agent container: no keys, no overlay.

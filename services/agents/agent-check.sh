@@ -21,7 +21,7 @@ report() {
 
 printf '== TokenCrate agent container check (%s%s) ==\n' "${TOKENCRATE_AGENT:-unknown}" \
   "${TOKENCRATE_EGRESS:+, --egress}"
-report ok "running as $(id -u):$(id -g) with HOME=$HOME"
+report info "running as $(id -u):$(id -g) with HOME=$HOME"
 
 if [[ -w "$HOME" ]]; then
   report ok "agent home is writable: $HOME"
@@ -175,10 +175,10 @@ else
   report fail 'the root filesystem is not mounted read-only'
 fi
 
-if [[ -n "${TOKENCRATE_PROJECT_DIR:-}" && -d "$TOKENCRATE_PROJECT_DIR" ]]; then
-  report ok "project directory is mounted: $TOKENCRATE_PROJECT_DIR"
+if [[ -n "${TOKENCRATE_PROJECT_DIR:-}" && -d "$TOKENCRATE_PROJECT_DIR" && -w "$TOKENCRATE_PROJECT_DIR" ]]; then
+  report ok "project directory is mounted read-write: $TOKENCRATE_PROJECT_DIR"
 else
-  report fail "project directory is missing: ${TOKENCRATE_PROJECT_DIR:-unset}"
+  report fail "project directory is missing or not writable: ${TOKENCRATE_PROJECT_DIR:-unset}"
 fi
 
 # --- oh-my-pi saves its settings by writing a temporary file next to them

@@ -162,14 +162,10 @@ def read_license(raw: object, index: int, name: str) -> License:
 
 
 def read_file(raw: object, index: int, name: str) -> ModelFile:
-    """One [[file]] entry: a pinned Hugging Face file and where the library keeps it."""
+    """One [[file]] entry: a pinned Hugging Face file; the library keeps it at <repository>/<source>."""
     if not isinstance(raw, dict):
         raise TokenCrateError(f"{name}: file {index} must be a table")
-    require_keys(
-        raw,
-        {"role", "repository", "revision", "source", "destination", "size", "sha256"},
-        f"{name} file {index}",
-    )
+    require_keys(raw, {"role", "repository", "revision", "source", "size", "sha256"}, f"{name} file {index}")
     role = raw.get("role")
     if role not in ROLES:
         raise TokenCrateError(f"{name}: file {index} role must be one of {', '.join(ROLES)}")
@@ -180,15 +176,13 @@ def read_file(raw: object, index: int, name: str) -> ModelFile:
         raise TokenCrateError(f"{name}: file {index} has an invalid repository")
     if not isinstance(revision, str) or not SHA1_RE.fullmatch(revision):
         raise TokenCrateError(f"{name}: file {index} revision must be a full lowercase commit")
-    destination = raw.get("destination", f"{repository}/{source}")
-    destination = relative_path(destination, "destination", f"{name} file {index}")
     size = raw.get("size")
     digest = raw.get("sha256")
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
         raise TokenCrateError(f"{name}: file {index} size must be a positive integer")
     if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
         raise TokenCrateError(f"{name}: file {index} sha256 must be lowercase hexadecimal")
-    return ModelFile(role, repository, revision, source, destination, size, digest)
+    return ModelFile(role, repository, revision, source, f"{repository}/{source}", size, digest)
 
 
 def validate_roles(name: str, files: list[ModelFile]) -> None:
@@ -206,7 +200,7 @@ def validate_roles(name: str, files: list[ModelFile]) -> None:
         total = int(weights_match.group("total"))
         if weights_match.group("index") != "00001":
             raise TokenCrateError(f"{name}: the weights file must be part 00001 of a split model")
-        if total < 2 or len(splits) != total - 1:
+        if len(splits) != total - 1:
             raise TokenCrateError(f"{name}: a {total}-part model needs {total - 1} split rows, found {len(splits)}")
         expected_dir = PurePosixPath(weights.destination).parent
         seen_indices = {1}
@@ -227,8 +221,9 @@ def validate_roles(name: str, files: list[ModelFile]) -> None:
             raise TokenCrateError(f"{name}: split rows must cover parts 00002 to {total:05d}")
 
 
-def available_sets(manifest_dir: Path) -> dict[str, ModelSet]:
-    return load_catalog(manifest_dir, read_manifest, "model set")
+def catalog(config_dir: Path) -> dict[str, ModelSet]:
+    """Every model set under config_dir/model-sets, by name."""
+    return load_catalog(config_dir / "model-sets", read_manifest, "model set")
 
 
 def merged_files(selected: list[ModelSet]) -> list[ModelFile]:

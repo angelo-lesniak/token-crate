@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import subprocess
@@ -74,7 +73,7 @@ class FakeRouter(BaseHTTPRequestHandler):
                     b"# TYPE llamacpp:prompt_tokens_total counter\n"
                     b"llamacpp:prompt_tokens_total 12\n"
                     b"llamacpp:tokens_predicted_total 8\n"
-                    b'llamacpp:n_busy_slots_per_decode{model="fixture-preset"} 0\n'
+                    b"llamacpp:n_busy_slots_per_decode 0\n"
                 )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; version=0.0.4")
@@ -304,24 +303,22 @@ else:
         self.assertTrue(text.startswith("# TokenCrate bench report\n\n- Date: "), text)
         self.assertIn(
             f"- Endpoint: {self.url}\n"
-            "- fixture-preset: n_ctx 4096, build b10920, /models/fixture-preset.gguf\n"
-            "- other: n_ctx 8192, build b10920, /models/other.gguf\n\n| Preset | Run |",
+            "- fixture-preset: n_ctx 4096 per slot, build b10920, /models/fixture-preset.gguf\n"
+            "- other: n_ctx 8192 per slot, build b10920, /models/other.gguf\n\n| Preset | Run |",
             text,
         )
         self.assertIn("| fixture-preset | short | 12 | 8 | 500.0 | 42.0 | 2 |", text)
         self.assertIn("| other | long | 12 | 8 | 500.0 | 42.0 | 2 |", text)
         self.assertTrue(text.endswith("prompt caching disabled for the request.\n"), text)
         document = json.loads(probe.bench_json(self.url, rows))
-        self.assertEqual((document["schema"], document["endpoint"], document["build"]), (2, self.url, "b10920"))
-        self.assertNotIn("n_ctx", document)
+        self.assertEqual((document["schema"], document["endpoint"]), (2, self.url))
+        # The facts are the rows', not the document's.
+        self.assertEqual(set(document) - {"date"}, {"schema", "endpoint", "rows"})
         self.assertEqual(
-            [(row["preset"], row["n_ctx"]) for row in document["rows"][1:3]],
-            [("fixture-preset", 4096), ("other", 8192)],
+            [(row["preset"], row["n_ctx"], row["build"]) for row in document["rows"][1:3]],
+            [("fixture-preset", 4096, "b10920"), ("other", 8192, "b10920")],
         )
         self.assertEqual(document["rows"][0]["samples"][1]["prompt_ms"], 24.0)
-        # Rows of different builds leave the document without one.
-        mixed = [rows[0], dataclasses.replace(rows[2], build="b1")]
-        self.assertIsNone(json.loads(probe.bench_json(self.url, mixed))["build"])
 
     def test_completion_checks_ask_for_the_lowest_effort_and_room_for_an_answer(self):
         FakeRouter.requests.clear()
@@ -339,113 +336,6 @@ else:
         ]
         self.assertNotIn("template keeps later system messages", names)
         self.assertIn("mid-conversation system message", names)
-
-    def test_bench_history_lists_every_saved_run_and_nothing_else(self):
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory(prefix="tokencrate-bench-") as tmp:
-            reports = Path(tmp)
-            self.assertIn("No bench history", probe.bench_history(reports))
-            row = {
-                "preset": "ci-small",
-                "run": "short",
-                "prompt_tokens": 223,
-                "prompt_tps": 1854.07,
-                "generation_tps": 138.79,
-                "iterations": 3,
-                "samples": [],
-            }
-            document = {
-                "schema": 1,
-                "date": "2026-09-27T15:00:35+0200",
-                "endpoint": "http://127.0.0.1:4208",
-                "build": "b11028-972d2313b",
-                "n_ctx": 65536,
-                "rows": [row, {**row, "run": "long", "prompt_tokens": 6052}],
-            }
-            (reports / "bench-20260927-150035.json").write_text(json.dumps(document))
-            # An older file without n_ctx and without a build; a hostile row
-            # and a hostile build; the rows that are not measurements.
-            older = {
-                "schema": 1,
-                "build": None,
-                "rows": [
-                    {**row, "prompt_tps": 100.0, "generation_tps": 10.0},
-                    {**row, "preset": "<script>alert(1)</script>"},
-                    {**row, "preset": "x" * 65},
-                    {**row, "run": "TOPSECRET"},
-                    {**row, "prompt_tps": "fast"},
-                    {**row, "generation_tps": -1},
-                    {**row, "prompt_tps": float("inf")},
-                    "not a row",
-                ],
-            }
-            (reports / "bench-20260918-101620.json").write_text(json.dumps(older).replace("Infinity", "1e999"))
-            (reports / "bench-20260919-000000.json").write_text(json.dumps({**document, "build": "b1 | TOPSECRET"}))
-            # A second run without n_ctx: no change is computed between two
-            # unknown context sizes.
-            (reports / "bench-20260918-110000.json").write_text(json.dumps({**older, "rows": [older["rows"][0]]}))
-            (reports / "bench-20260920-000000.json").write_text("{not json")
-            (reports / "bench-20260921-000000.json").write_text(json.dumps({"schema": 3, "rows": [row]}))
-            # Schema 2 carries the facts per row: two presets of different
-            # context sizes in one file, each compared within its own
-            # n_ctx, and a row without facts prints `?`.
-            facts = {"n_ctx": 65536, "build": "b11100-abcdef012", "model_path": "/models/ci-small.gguf"}
-            (reports / "bench-20260928-120000.json").write_text(
-                json.dumps(
-                    {
-                        "schema": 2,
-                        "build": None,
-                        "n_ctx": 1,
-                        "rows": [
-                            {**row, **facts, "generation_tps": 140.0},
-                            {**row, **facts, "preset": "ci-tiny", "n_ctx": 8192, "generation_tps": 300.0},
-                            {**row, "run": "long", "prompt_tokens": 6052},
-                        ],
-                    }
-                )
-            )
-            (reports / "bench-20260929-120000.json").write_text(
-                json.dumps(
-                    {
-                        "schema": 2,
-                        "rows": [
-                            {**row, **facts, "n_ctx": 32768, "generation_tps": 150.0},
-                            {**row, **facts, "preset": "ci-tiny", "n_ctx": 8192, "generation_tps": 310.5},
-                        ],
-                    }
-                )
-            )
-            (reports / "bench-20260922-000000.json").write_text(json.dumps(["rows"]))
-            (reports / "bench-TOPSECRET.json").write_text(json.dumps(document))
-            (reports / "bench-20260923-000000.json").write_text(json.dumps(document) + " " * (1024 * 1024))
-            (reports / "bench-20260924-000000.json").write_text(
-                '{"schema": 1, "rows": [], "n_ctx": ' + "9" * 5000 + "}"
-            )
-            text = probe.bench_history(reports)
-        self.assertEqual(
-            [line for line in text.splitlines() if line.startswith("| ci-")],
-            [
-                # Grouped by preset and run, oldest first; the change in
-                # generation speed against the row above of the same group
-                # and n_ctx (the first row of a group, and a row after a
-                # different n_ctx, have none).
-                "| ci-small | short | 2026-09-18 10:16 | ? | ? | 223 | 100.0 | 10.0 |  | 3 |",
-                "| ci-small | short | 2026-09-18 11:00 | ? | ? | 223 | 100.0 | 10.0 |  | 3 |",
-                "| ci-small | short | 2026-09-19 00:00 | 65536 | ? | 223 | 1854.1 | 138.8 |  | 3 |",
-                "| ci-small | short | 2026-09-27 15:00 | 65536 | b11028-972d2313b | 223 | 1854.1 | 138.8 | +0.0 | 3 |",
-                "| ci-small | short | 2026-09-28 12:00 | 65536 | b11100-abcdef012 | 223 | 1854.1 | 140.0 | +1.2 | 3 |",
-                "| ci-small | short | 2026-09-29 12:00 | 32768 | b11100-abcdef012 | 223 | 1854.1 | 150.0 |  | 3 |",
-                "| ci-small | long | 2026-09-19 00:00 | 65536 | ? | 6052 | 1854.1 | 138.8 |  | 3 |",
-                "| ci-small | long | 2026-09-27 15:00 | 65536 | b11028-972d2313b | 6052 | 1854.1 | 138.8 | +0.0 | 3 |",
-                "| ci-small | long | 2026-09-28 12:00 | ? | ? | 6052 | 1854.1 | 138.8 |  | 3 |",
-                "| ci-tiny | short | 2026-09-28 12:00 | 8192 | b11100-abcdef012 | 223 | 1854.1 | 300.0 |  | 3 |",
-                "| ci-tiny | short | 2026-09-29 12:00 | 8192 | b11100-abcdef012 | 223 | 1854.1 | 310.5 | +10.5 | 3 |",
-            ],
-        )
-        for secret in ("TOPSECRET", "script", "127.0.0.1", "+0200", "xxxxx"):
-            self.assertNotIn(secret, text)
 
     def test_smoke_reports_failures(self):
         # The stock template rejects a later system message, the model calls

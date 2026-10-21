@@ -29,6 +29,10 @@ const MODELS_TIMEOUT_MS = 2000;
 // llama-server answers /metrics between decode steps; a busy 27B slot set
 // can hold one for seconds.
 const METRICS_TIMEOUT_MS = 15000;
+// A panel's query over the dashboard's window is answered in milliseconds,
+// so a store that takes longer is stuck; the gate gives up inside Grafana's
+// own 30 s data-proxy timeout, so the panel reads the gate's answer.
+const QUERY_TIMEOUT_MS = 15000;
 const BODY_LIMIT = 1024 * 1024;
 const PRESET_RE = /^[a-z0-9][a-z0-9.-]*$/;
 const LINE_RE = /^(llamacpp:[a-z_]+)(?:\{position="(\d+)"\})? (-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)$/;
@@ -171,7 +175,7 @@ const gate = http.createServer(async (request, response) => {
   }
   // A panel that goes away or a store that hangs ends the upstream query.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), METRICS_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), QUERY_TIMEOUT_MS);
   // A request's own close fires once its body is read, so the socket's
   // end, before the answer went out, is the signal.
   response.on("close", () => {

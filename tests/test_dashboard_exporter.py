@@ -99,7 +99,8 @@ def fetch(port: int, path: str = "/metrics", method: str = "GET", body: bytes | 
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, response.read().decode()
     except urllib.error.HTTPError as error:
-        return error.code, error.read().decode()
+        with error:
+            return error.code, error.read().decode()
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required to run the exporter")

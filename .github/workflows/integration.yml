@@ -1,5 +1,7 @@
 name: integration
 
+# The same paths for a pull request and for a push to main: the history is
+# direct commits, which the pull-request trigger alone would never check.
 on:
   pull_request:
     paths:
@@ -7,6 +9,25 @@ on:
       - tokencrate/**
       - services/**
       - compose*.yaml
+      - .dockerignore
+      - pins.env
+      - config/**
+      - tests/integration.py
+      - tests/concurrent_clients.py
+      - tests/support.py
+      - tests/fixtures/**
+      - .env.example
+      - requirements-dev.txt
+      - .github/workflows/integration.yml
+  push:
+    branches:
+      - main
+    paths:
+      - bin/tokencrate
+      - tokencrate/**
+      - services/**
+      - compose*.yaml
+      - .dockerignore
       - pins.env
       - config/**
       - tests/integration.py
@@ -54,7 +75,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.13"
+          python-version: "3.11"
 
       - name: Install the test dependencies
         run: python3 -m pip install -r requirements-dev.txt

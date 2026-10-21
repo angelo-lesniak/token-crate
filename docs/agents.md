@@ -67,8 +67,7 @@ session runs out of context.
 When a task needs the network, for example to install packages, start the
 session with `--egress`; no setting grants it. The wrapper prints a
 warning, and the session is then on the default network with a route
-out; [Privacy and containment](privacy.md#defaults-and-their-limits)
-says what else it reaches there.
+out; [Egress](privacy.md#egress) says what else it reaches there.
 
 Agent sets apply to the pi image only; oh-my-pi keeps its built-in tools.
 [Agent sets](agent-sets.md) lists every shipped set and how to write one.
@@ -116,10 +115,10 @@ Use `--cloud` only in a project you trust:
   answered included, with their file contents and tool output ([What
   leaves the machine](privacy.md#what-leaves-the-machine)).
 - Every process in the session can read the keys and has a route out
-  for the session's lifetime, so a project whose `AGENTS.md` or scripts
-  ask for the keys can send them anywhere. A key printed into a
-  transcript stays in the project's agent home, which later sessions and
-  browser UIs of that project mount.
+  for the session's lifetime. A project whose `AGENTS.md` or scripts ask
+  for the keys can therefore send them anywhere. A key printed into a
+  transcript stays in the project's agent home; later sessions and
+  browser UIs of that project mount that home.
 - A browser UI started with `--cloud` holds the keys while it runs
   ([`ui`](cli.md#ui) says what ends that). Whoever reaches its port can
   use them and the route out: every local process, an `--egress` or
@@ -193,8 +192,8 @@ Compared with `agent pi`:
 
 - The UI has no password, and its terminal and file editor have the
   agent's access to the project.
-  [Privacy and containment](privacy.md#defaults-and-their-limits) states
-  who can reach it and what that protects.
+  [Browser UIs](privacy.md#browser-uis) states who can reach it and
+  [Forwarder](privacy.md#forwarder) what the forwarder protects.
 - Extension dialogs (`confirm`, `select`, `input`) appear in the browser.
   Paseo runs pi in RPC mode, which is expected to show no project trust
   prompt, so project-local `.pi/` resources are expected not to load in
@@ -220,10 +219,13 @@ one-click starts. That configuration persists in the project's `.paseo`
 directory and a later `--preset` does not replace it; the browser
 remembers the last choice in its create-agent form. Paseo's web client
 treats a new identity at a known address as an unreachable host. The
-launcher therefore copies the identity (a keypair and server ID) the
-first daemon created into the per-set state directory ([Storage
-layout](configuration.md#storage-layout)) and from there into each later
-project's home before its daemon starts.
+daemon identity (`daemon-keypair.json` and `server-id`) therefore lives
+in each project's `.paseo` directory and is shared through the per-set
+store ([Storage layout](configuration.md#storage-layout)): the launcher
+copies the first daemon's identity into the store, and before a later
+project's daemon starts it copies the store's identity into that
+project's `.paseo`. [Troubleshooting](troubleshooting.md#paseo-asks-to-pair-again-or-shows-the-previous-project)
+says how to get a fresh identity.
 
 ## Use four clients with one model
 
@@ -231,7 +233,9 @@ A terminal pi, a terminal oh-my-pi, PI WEB, and Paseo can work on one
 project at once. Start each with the same `--preset` and `--dir`, and give
 each client its own conversation: shared pi transcripts do not make
 concurrent writes to one conversation safe. All four use the one
-loaded preset; on a preset with one slot, their requests queue.
+loaded preset; on a preset with one slot, their requests queue (the
+[independent-client check](validation.md#status) is the run behind
+this).
 
 ## Agent configuration
 
@@ -258,25 +262,14 @@ Neither bash tool reads shell startup files from the home: pi's bash
 tool passes `--noprofile --norc`, and `PI_BASH_NO_LOGIN=1` keeps
 oh-my-pi's bash tool from starting a login shell.
 
-The entrypoint writes into the fresh home at every start:
-
-- the skills link at `~/.agents/skills`;
-- the model list rendered from the presets;
-- the image seeds: the tools note at `~/.pi/agent/AGENTS.md`, the
-  `coding` set's subagent definitions (they run on the session's own
-  model and thinking level), and the `dotnet` set's NuGet configuration;
-- pi's `settings.json`: the repository file with `tokencrate` as the
-  default provider, the selected preset as the default model, and
-  `packages` set to exactly the image's local directories, which
-  `PI_OFFLINE=1` keeps pi from adding to;
-- oh-my-pi's `~/.omp/agent/config.yml`: the repository file with
-  `modelRoles.default` set to the selected preset; oh-my-pi rewrites it,
-  so a model chosen in the session applies until the container stops.
-
-`PI_CONFIG_FILES` also names the repository file as an overlay above the
-home copy and the project, so changing one of its keys in the session
-has no effect. Automatic skill learning stays off, the bash tool keeps
-`/bin/bash`, and the onboarding wizard, which asks to sign in to a
-provider, stays closed. The repository's `config/agents/omp/AGENTS.md`
-is mounted read-only at `~/.omp/agent/AGENTS.md` as oh-my-pi's global
-context.
+The entrypoint writes the agent configuration into the fresh home at
+every start, which fixes what a session can change. oh-my-pi rewrites
+its `config.yml` in the home, so a model chosen with `/model` lasts
+until the container stops. `PI_CONFIG_FILES` names the repository's
+`config/agents/omp/config.yml` as an overlay above that home copy and
+the project, so changing one of its keys in the session has no effect.
+The `coding` set's subagents run on the session's own model and thinking
+level. The repository's `config/agents/omp/AGENTS.md` is oh-my-pi's
+global context, mounted read-only at `~/.omp/agent/AGENTS.md`. pi's
+`packages` are exactly the image's local directories, and `PI_OFFLINE=1`
+keeps pi from adding to them.

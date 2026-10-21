@@ -1,4 +1,5 @@
 .env
+cloud-keys.env
 CLAUDE.local.md
 .idea/
 .vscode/
@@ -13,8 +14,7 @@ data/
 local/
 reports/
 
-build/*
-!build/.gitkeep
+build/
 config/agent-sets/*/node_modules/
 
 __pycache__/

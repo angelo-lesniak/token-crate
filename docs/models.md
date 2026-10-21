@@ -36,8 +36,7 @@ review them yourself. The repository's MIT license does not cover weights.
 | --- | --- | ---: | ---: | --- | ---: | ---: | --- |
 | `qwen3.8-27b-q4-mtp` (default) | Qwen3.8 Q4 | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 138 to 154 tokens/s | a single agent; a second client waits for the slot instead of sharing it |
 | `qwen3.8-27b-q4` | Qwen3.8 Q4 | 64K total, 32K per slot | 2 | none | 24 GiB | 74 to 75 tokens/s | the built-in chat UI and an agent at the same time on one loaded model |
-| `qwen3.8-27b-q4-long` | Qwen3.8 Q4 | 128K | 1 | none | 28 GiB | 75 to 76 tokens/s | oh-my-pi, whose [first request](agents.md) is large, and long agent sessions |
-| `qwen3.8-27b-q4-mtp-long` | Qwen3.8 Q4 | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 138 to 154 tokens/s | oh-my-pi and long agent sessions at the default's speed |
+| `qwen3.8-27b-q4-mtp-long` | Qwen3.8 Q4 | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 138 to 154 tokens/s | oh-my-pi, whose [first request](agents.md) is large, and long agent sessions at the default's speed |
 | `qwen3.8-27b-q6-quality` | Qwen3.8 Q6 | 48K | 1 | MTP, 2 draft tokens | 30 GiB | 100 to 113 tokens/s | the quality tier |
 | `gpt-oss-20b-fast` | gpt-oss-20b | 128K total, 64K per slot | 2 | none | 20 GiB | 246 to 264 tokens/s | fast chat and a tool-calling fallback |
 | `gpt-oss-20b-small` | gpt-oss-20b | 32K | 1 | none | 15 GiB | 244 to 260 tokens/s | a 16 GB card |
@@ -115,8 +114,7 @@ Two ways to choose another effort without reloading the model:
   | gpt-oss | `low`, `medium`, `high` (the harmony template cannot switch thinking off) | `low`, `medium`, `high` |
   | GLM-5.3-Flash | `low`, `high`, `max` (no thinking switch) | `low`, `high`, `max` |
 
-  On gpt-oss, pi's seeded `xhigh` is a hidden level. A run has confirmed
-  the Qwen rows and gpt-oss's `low` and `medium`; the GLM row and the
+  On gpt-oss, pi's seeded `xhigh` is a hidden level. The GLM row and the
   effort pi sends on gpt-oss under its hidden `xhigh` are [known
   gaps](validation.md#known-gaps).
 - **In any other client**, send the effort with the request:
@@ -170,19 +168,14 @@ their quant and layer split.
 | Prompt processing | 98 tokens/s short, 660 for a 6K prompt | 60 to 70 tokens/s in that same report |
 | Loads on the pinned build | yes | no; waits for a llama.cpp release with `glm5next` |
 
-Flash-Next is the tier's loadable model. Its prompt processing is a
-quarter of the 27B's, so a pi session's first request takes long before
-the first word (43 seconds in the recorded agent session). The weights
-in system memory are memory-mapped, so the host counts them as page
-cache, not as used memory: a system monitor shows a few GiB in use while
-`free` shows 86 GiB of cache. Switching between the two Flash-Next
-presets replaces one 111 GB file in the page cache with the other. The
-Flash-Next presets use a 2048 micro-batch and no MTP; the preset
-comments say what else was tried and how to try `load-mode`. The first
-completion after a load takes 23 to 38 seconds, the page faults of the
-memory map. `load-mode = "none"` doubles prompt processing but left the
-host 5 GiB of available memory and 32 GiB of swap in use after a
-six-turn session, so the presets keep the map.
+Flash-Next is the tier's loadable model. The first request after a load
+is slow: the first completion takes 23 to 38 seconds (the page faults
+of the memory map), and a pi session's first request took 43 seconds
+before the first word, because the model's prompt processing is a
+quarter of the 27B's. The weights in system memory are memory-mapped,
+so the host counts them as page cache, not as used memory: a system
+monitor shows a few GiB in use while `free` shows 86 GiB of cache. The
+preset comments say what else was tried and how to try `load-mode`.
 
 No llama.cpp release carries GLM-5.3-Flash's architecture (`glm5next`),
 so its model sets declare `[requires] llama_build = "unreleased"` and
@@ -190,9 +183,7 @@ so its model sets declare `[requires] llama_build = "unreleased"` and
 ([Adding a model](#adding-a-model) describes the gate). The model ships
 because it is expected to beat the 27B on knowledge; [the settled
 decision](../CONTRIBUTING.md#settled-decisions) gives the scores behind
-that expectation. A load attempt on build b10920 ended with `unknown
-model architecture: 'glm5next'`, and the pinned image's `libllama.so`
-has no `glm5next` symbol; the presets are a [known
+that expectation. The presets are a [known
 gap](validation.md#known-gaps). The GLM presets take their settings from
 [pull request 27754](https://github.com/ggml-org/llama.cpp/pull/27754),
 with a fallback ladder in the preset comments for the first run.
@@ -236,11 +227,14 @@ file embeds a different one, which the patched copy replaces.
    Choose a `<set>` name that `models list` does not show.
 
    The draft pins the repository's current commit and fills sizes and
-   checksums from the Hub. Replace the `TODO` markers (description and
-   license link), set `mtp` (true when the GGUF contains
-   multi-token-prediction heads), and add `chat_template_file` when the
-   model needs the patched template. The parts of a split file are listed
-   as `split` rows.
+   checksums from the Hub. Replace the `TODO` markers (the description
+   and the license name); the draft fills the license `url` with the
+   pinned README, so point it at the license file when the repository
+   has one. Set `mtp` (true when the GGUF contains multi-token-prediction
+   heads), and add `chat_template_file` when the model needs the patched
+   template. The parts of a split file are listed as `split` rows.
+   [Manifest keys](#manifest-keys) lists every key and the rules
+   `presets check` enforces.
 
    A model whose architecture the pinned llama.cpp build does not know
    gets a `[requires]` table with `llama_build`: the first build that
@@ -264,7 +258,7 @@ file embeds a different one, which the patched copy replaces.
    leading dashes: `override-kv`, `load-mode`, `log-prompts-dir`, and
    `verbose` (`EXTRA_KEYS` in `tokencrate/presets.py`). Another option
    joins the list by a code change, after reading its `llama-server
-   --help` entry. Run `presets render` after every edit; it names what it
+   --help` entry. Run `presets check` after every edit; it names what it
    rejects:
 
    - an unknown key, and an extra option outside the list, a typed
@@ -277,15 +271,39 @@ file embeds a different one, which the patched copy replaces.
 
    ```bash
    bash bin/tokencrate models fetch <set>
-   bash bin/tokencrate presets render
+   bash bin/tokencrate presets check
    LLM_DEFAULT_PRESET=<preset> bash bin/tokencrate up
    bash bin/tokencrate smoke --preset <preset>
-   bash bin/tokencrate bench --preset <preset>
+   bash bin/tokencrate bench --presets <preset>
    ```
 
 Attach the `smoke` and `bench` reports to the change; a shipped preset
 also gets its measured columns in the [preset table](#included-presets),
 as [Validation](validation.md#recording-a-run) describes.
+
+### Manifest keys
+
+A model set is `config/model-sets/<set>.toml`; `presets check` refuses
+any key not listed here.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `schema` | yes | `1` |
+| `description` | yes | One line; `models list` prints it |
+| `model_card` | yes | The README of the Hugging Face repository at a commit: `https://huggingface.co/<owner>/<repository>/blob/<commit>/README.md` |
+| `upstream_model` | no | The `owner/repository` the quantization or abliteration derives from |
+| `mtp` | no | `true` when the GGUF has multi-token-prediction heads (default `false`) |
+| `chat_template_file` | no | A `<name>.jinja` under `config/chat-templates/` that replaces the template embedded in the GGUF |
+| `[requires] llama_build` | no | The first llama.cpp build that loads the set, as `pins.env` spells it (`b11100`), or `unreleased` |
+| `[[license]] name`, `url` | yes, one or more | The license name and an immutable URL: a `blob/<commit>` path on huggingface.co or github.com, or `https://cdn.jsdelivr.net/gh/<owner>/<repository>@<commit>/<path>` |
+| `[[file]] role` | yes | `weights` or `split` |
+| `[[file]] repository`, `revision`, `source` | yes | The Hugging Face repository, its full 40-character commit, and the file's path in it; the library keeps the file at `<repository>/<source>` |
+| `[[file]] size`, `sha256` | yes | The byte size and the lowercase SHA-256 of the file |
+
+Exactly one file has the role `weights`. A weights file named
+`*-00001-of-NNNNN.gguf` needs NNNNN−1 `split` rows with the same stem,
+one for each of the parts `00002` to `NNNNN`; a `-00001-of-00001` file
+needs none.
 
 ## Presets for other cards
 
@@ -308,12 +326,12 @@ in TokenCrate is tied to a card size.
 3. Render, start, and measure (a new model set needs its files first):
 
    ```bash
-   bash bin/tokencrate presets render
+   bash bin/tokencrate presets check
    bash bin/tokencrate doctor --preset <preset>
    bash bin/tokencrate models fetch <set>
    LLM_DEFAULT_PRESET=<preset> bash bin/tokencrate up
    bash bin/tokencrate smoke --preset <preset>
-   bash bin/tokencrate bench --preset <preset>
+   bash bin/tokencrate bench --presets <preset>
    ```
 
 4. Set `vram_gib` to what `nvidia-smi` shows llama-server holding after
@@ -329,8 +347,9 @@ only ([What leaves the machine](privacy.md#what-leaves-the-machine)).
 
 Files download into a hidden staging directory beside their destination and
 become visible only after the size and checksum match. An interrupted
-download resumes on the next run with an HTTP range request, and `fetch`
-refuses to start when the bytes still to download exceed the free space. A
+download resumes on the next run with an HTTP range request. `fetch`
+refuses to start when the bytes still to download exceed the free space,
+naming both figures; make room or fetch fewer sets. A
 file at the same destination with different content is never overwritten,
 and a file another tool downloaded into the library layout ([Storage
 layout](configuration.md#storage-layout)) is reused when its checksum

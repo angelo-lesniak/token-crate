@@ -130,7 +130,7 @@
     ctx.lineWidth = ratio;
     ctx.strokeStyle = colors.muted;
     ctx.fillStyle = colors.muted;
-    (data.marks || []).forEach(function (mark, index) {
+    data.marks.forEach(function (mark, index) {
       var x = mark.beyond ? box.left + box.width : Math.round(u.valToPos(mark.value, "x", true));
       ctx.beginPath();
       ctx.moveTo(x, box.top);

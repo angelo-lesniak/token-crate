@@ -134,7 +134,8 @@ def integer(value: object) -> int:
     return min(max(value, 0), TOKEN_LIMIT)
 
 
-def duration(value: object) -> float | None:
+def number(value: object) -> float | None:
+    """A finite number as the transcript wrote it; None for anything else."""
     if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
         return float(value)
     return None
@@ -189,8 +190,8 @@ def read_request(message: dict) -> Request | None:
         cache_write=tokens["cacheWrite"],
         context=context,
         stop_reason=str(message.get("stopReason") or "?"),
-        ttft_ms=duration(message.get("ttft")),
-        duration_ms=duration(message.get("duration")),
+        ttft_ms=number(message.get("ttft")),
+        duration_ms=number(message.get("duration")),
     )
 
 

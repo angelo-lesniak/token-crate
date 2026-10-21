@@ -15,9 +15,9 @@ repository ([Recording a run](#recording-a-run)).
 
 | Procedure | GPU host, rootless Podman | Virtual machine, rootless Podman | Virtual machine, Docker Engine |
 | --- | --- | --- | --- |
-| [Static gate](#static-gate-and-cpu-integration-check) | not run: the host has no Node.js | 2026-09-20 in strict mode; runs before every commit | does not apply |
-| [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-09-20, `LLM_GPU=true`, the nine tests without `test_concurrent_clients` | 2026-09-20, all ten tests | 2026-10-18, Engine 29.9.0 with Compose 5.6.0, all nine tests |
-| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-09-20 for the thirteen loadable presets (driver 610.57.04 and 615.71.09); `smoke` and `bench` on the default preset again 2026-10-18 (driver 615.78.08, Podman 6.1.3) | does not apply | does not apply |
+| [Static gate](#static-gate-and-cpu-integration-check) | not run: the host has no Node.js | 2026-10-21 in strict mode; CI runs it in strict mode on every pull request | does not apply |
+| [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-09-20, `LLM_GPU=true`, without `test_concurrent_clients` | 2026-09-20 | 2026-10-18, Engine 29.9.0 with Docker Compose 5.6.0 |
+| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-09-20 for every preset the pinned build loads (driver 610.57.04 and 615.71.09); `smoke` and `bench` on the default preset again 2026-10-18 (driver 615.78.08, Podman 6.1.3) | does not apply | does not apply |
 | [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-09-20 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,pi-web`, `coding,paseo`, and oh-my-pi; `coding,metrics` 2026-09-27 and, with and without `--egress`, 2026-10-18 | 2026-09-20 for the same selections; `coding,metrics` 2026-09-27 | 2026-09-20 for the same selections, Engine 29.7.2 |
 | [Agent home check](#agent-home-check) | 2026-09-20 | 2026-09-20 | 2026-10-18 |
 | [Cross-project containment check](#cross-project-containment-check) | 2026-09-20 with both UIs running; the checks without a UI again 2026-10-18 | 2026-09-20, with a `--cloud` UI as well | 2026-09-20, Engine 29.7.2; with a `--cloud` UI on 29.8.1 |
@@ -27,7 +27,7 @@ repository ([Recording a run](#recording-a-run)).
 
 The engines of these runs: rootless Podman 6.1.1 to 6.1.3 with
 podman-compose 1.6.0 and `crun`, and Docker Engine 29.7.2, 29.8.1, and
-29.9.0 with Compose 5.5.1 and 5.6.0. Each run used the pins of its date
+29.9.0 with Docker Compose 5.5.1 and 5.6.0. Each run used the pins of its date
 as `bash bin/tokencrate pins` prints them; the measured figures on
 [Models](models.md#included-presets) name their build.
 
@@ -53,11 +53,12 @@ No run covers:
 - the forwarding refusal of `up` and the agent and UI starts: no
   recorded start met an internal bridge that forwards, and whether `up`
   sets up the model's non-internal network before the internal ones on
-  every host ([Privacy and containment](privacy.md#defaults-and-their-limits)
-  names the per-host check);
+  every host ([Rootless Podman](privacy.md#rootless-podman) names the
+  per-host check);
 - an `--egress` session reaching host services through
   `host.containers.internal` on rootless Podman;
-- the lock's wait notice on a real contention;
+- the lock's wait notice, which needs two CLI processes contending for
+  the lock at once;
 - pi's `defaultProjectTrust: ask` prompt and oh-my-pi's ungated
   `bunfig.toml` preload, and that Paseo's RPC-mode pi shows no project
   trust prompt, so `.pi/` resources do not load;
@@ -78,9 +79,12 @@ No run covers:
   PI WEB's browser session or Paseo's create-agent form, a paid provider,
   and the reported cost: every recorded cloud answer came from a scripted
   prompt on a free model;
-- `fetch` and `up --model-set` against a present stamped model file;
+- `fetch` and `up --model-sets` against a present stamped model file;
   they share `file_state` with `models status`, whose trust in the stamp
   has a run;
+- the [router observations](../CONTRIBUTING.md#router-behavior-the-wrapper-relies-on)
+  on the pinned build: they were made on the b10920 image; repeat them
+  after a `LLAMA_CPP_TAG` change;
 - answer quality, refusals included: what three bits cost the 27B on
   agent work, and plain pi against the `coding` bundle on the same tasks
   (the [settled decision](../CONTRIBUTING.md#settled-decisions) names
@@ -126,13 +130,13 @@ On the NVIDIA host under test, with the pins under test in `pins.env`:
 
 ```bash
 bash bin/tokencrate doctor
-bash bin/tokencrate up --model-set qwen3.8-27b-ud-q4-k-xl
+bash bin/tokencrate up --model-sets qwen3.8-27b-ud-q4-k-xl
 bash bin/tokencrate status
 bash bin/tokencrate smoke
-bash bin/tokencrate bench --preset qwen3.8-27b-q4 --preset qwen3.8-27b-q4-mtp
+bash bin/tokencrate bench --presets qwen3.8-27b-q4,qwen3.8-27b-q4-mtp
 ```
 
-Then `smoke --preset` and `bench --preset` for every other shipped preset
+Then `smoke --preset` and `bench --presets` for every other shipped preset
 the host can load, and these hands-on checks:
 
 - Open the built-in UI at the root address, select the default preset,
@@ -191,7 +195,7 @@ directory. On a host with the shipped model set, name the loaded preset
 with `--preset` instead. `smoke --agent` runs its check in a scratch
 project of its own, which stands for the other project. Then:
 
-1. `bash bin/tokencrate up --model-set ci-small`, then `ui pi-web --dir A`
+1. `bash bin/tokencrate up --model-sets ci-small`, then `ui pi-web --dir A`
    and `ui paseo --dir A`.
 2. `bash bin/tokencrate smoke --agent pi`: every UI container and
    forwarder unreachable by name and address; on Docker, no gateway
@@ -221,7 +225,7 @@ alive on one router and model process, containment from both terminal
 agents with and without egress, and the forwarders' `Host` and `Origin`
 checks among them. `TOKENCRATE_CONCURRENT_AGENTS` selects the terminal
 clients kept alive in RPC mode (`pi,omp` by default). CI sets `pi`,
-because omp's first prompt of about 16,000 tokens takes six to eleven
+because omp's first prompt is a cold prompt that takes six to eleven
 minutes on the runner's CPU. `RPC_TIMEOUT` (default 1200 seconds)
 bounds each RPC answer.
 
@@ -298,40 +302,3 @@ is copied here. Afterwards:
   recur on [Troubleshooting](troubleshooting.md), a measurement that
   explains a setting on the page of that setting, a choice in the
   [settled decisions](../CONTRIBUTING.md#settled-decisions).
-
-## Router behavior the wrapper relies on
-
-The observations were read on llama.cpp build b10920's official image
-in router mode (`--models-preset`, `--models-max 1`) with CPU fixture
-models. On the pinned b11028 the CPU integration check confirms
-readiness polling, preset switching, and preset-file behavior, not the
-failure codes.
-Repeat these observations after a `LLAMA_CPP_TAG` change.
-
-- Readiness: `GET /health` answers `{"status":"ok"}` while the default
-  preset is still `loading` in `GET /models`, so `up` polls `/models` for
-  `loaded` (`runtime.wait_until_ready`).
-- Swap: a request whose `model` names another preset waits until the
-  running request has finished; then the router unloads the loaded model
-  and loads the other one. `POST /models/load` answers 400 for the model
-  that is loading or loaded and 500 `model limit reached` for another
-  model while one is loaded, so `up` asks for a load only when nothing is
-  loaded.
-- Failure: a preset whose model server exits leaves the router running,
-  `/models` reports it `unloaded`, and a request for it answers 500; `up`
-  fails when the default preset turns `unloaded` after `loading`.
-- Requests without `model` answer 400 `model name is missing from the
-  request`; `GET /props`, `POST /tokenize`, and `GET /metrics` need
-  `?model=` or a `model` field, which the probe sends. A request routes
-  to its preset, so asking `/metrics` for an unloaded preset is expected
-  to load it first (the swap above; not observed for `/metrics`): scrape
-  only presets `GET /models` reports loaded.
-- Preset file: keys are llama-server option names without dashes
-  (`jinja = true` becomes `--jinja`, `ui-config-file`
-  `--webui-config-file`, `gpu-layers` `--n-gpu-layers`); a key given twice
-  keeps the last value silently; keys in `[*]` reach every child; an
-  unknown key stops the router at start with `option '<key>' not
-  recognized in preset '<name>'`. The renderer therefore keeps a typed
-  vocabulary and passes only `override-kv`, `load-mode`,
-  `log-prompts-dir`, and `verbose` through `[server.extra]`, refusing
-  every other key there.

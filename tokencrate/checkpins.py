@@ -87,11 +87,9 @@ def request_bytes(
         with urllib.request.urlopen(request, timeout=45) as response:
             if urllib.parse.urlsplit(response.url).scheme.lower() != "https":
                 raise TokenCrateError(f"pin source redirected away from HTTPS: {url}")
-            announced = response.headers.get("Content-Length")
-            if announced and announced.isdigit() and int(announced) > MAX_RESPONSE_BYTES:
-                raise TokenCrateError(f"pin source response is too large: {url}")
             content = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as error:
+        error.close()
         if missing_ok and error.code == 404:
             return None
         detail = f"HTTP {error.code}"

@@ -83,8 +83,11 @@ class MetricsExtensionTests(unittest.TestCase):
         # The request hook returns nothing: a value would replace the payload.
         self.assertNotIn("payload", results)
         completed = results["completed"]["message"]
-        self.assertGreaterEqual(completed["ttft"], 40)
-        self.assertGreaterEqual(completed["duration"], completed["ttft"] + 40)
+        # The driver sleeps 40 ms twice. libuv caches its timer clock per loop
+        # iteration at millisecond granularity, so a timer can wake up to 1 ms
+        # before performance.now() says 40 ms have passed.
+        self.assertGreaterEqual(completed["ttft"], 39)
+        self.assertGreaterEqual(completed["duration"], completed["ttft"] + 39)
         self.assertEqual(completed["stopReason"], "stop")
         self.assertEqual(completed["usage"]["totalTokens"], 7)
         self.assertEqual(completed["content"], [{"type": "text", "text": "hi"}])

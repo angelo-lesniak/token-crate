@@ -17,14 +17,14 @@ from __future__ import annotations
 from .download import fetch, status
 from .drafts import draft
 from .library import model_download_lock
-from .manifest import UNRELEASED_BUILD, License, ModelFile, ModelSet, available_sets, merged_files, read_manifest
+from .manifest import UNRELEASED_BUILD, License, ModelFile, ModelSet, catalog, merged_files, read_manifest
 
 __all__ = [
     "UNRELEASED_BUILD",
     "License",
     "ModelFile",
     "ModelSet",
-    "available_sets",
+    "catalog",
     "draft",
     "fetch",
     "merged_files",

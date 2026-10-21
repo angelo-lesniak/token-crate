@@ -11,20 +11,23 @@ import stat
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from unittest import mock
 
-from tests.support import SOURCE_ROOT, Scratch
+from tests.support import Scratch
 from tokencrate import TokenCrateError, env, runtime
+from tokencrate import engine as engines
 from tokencrate.engine import Engine
 
 
 class FakeEngine:
+    """One llama container whose state is the next of `states` per poll (the
+    last one repeats); the lookup lists it in every state but `removed`."""
+
     def __init__(self, states: list[str]) -> None:
         self.states = states
 
-    def running_llama_id(self) -> str:
-        return "llama-1"
+    def container_ids(self, service: str, *, all_states: bool = False) -> list[str]:
+        return ["llama-1"] if self.states[0] != "removed" and (all_states or self.states[0] == "running") else []
 
     def container_state(self, container_id: str) -> str:
         return self.states.pop(0) if len(self.states) > 1 else self.states[0]
@@ -63,13 +66,22 @@ class WaitTests(unittest.TestCase):
         return "\n".join(str(call.args[0]) for call in printed.call_args_list)
 
     def test_an_exited_container_fails_immediately(self) -> None:
+        # Exited before the first poll (a router that fails on its preset
+        # file): the container is found in that state, not reported as
+        # "not running". A crash loop under a restart policy is `restarting`.
         with self.assertRaisesRegex(TokenCrateError, "container is exited before it was ready"):
             self.wait(self.settings(), FakeEngine(["exited"]), {"models": listing()})
+        with self.assertRaisesRegex(TokenCrateError, "container is restarting before it was ready"):
+            self.wait(self.settings(), FakeEngine(["restarting"]), {"models": listing()})
+        self.assertEqual(self.clock, 0)
 
     def test_a_removed_container_fails_immediately(self) -> None:
-        # `removed` is what Engine.container_state reports when inspect fails.
+        # `removed` is what Engine.container_state reports when inspect fails;
+        # a container gone before the first poll is reported the same way.
         with self.assertRaisesRegex(TokenCrateError, "container is removed before it was ready"):
             self.wait(self.settings(), FakeEngine(["running", "removed"]), {"models": None})
+        with self.assertRaisesRegex(TokenCrateError, "container is removed before it was ready"):
+            self.wait(self.settings(), FakeEngine(["removed"]), {"models": None})
 
     def test_healthy_without_a_default_preset_returns(self) -> None:
         output = self.wait(self.settings(LLM_DEFAULT_PRESET=""), FakeEngine(["running"]), {"models": listing()})
@@ -84,7 +96,8 @@ class WaitTests(unittest.TestCase):
         self.assertIn("TokenCrate is ready at http://127.0.0.1:4208/ with preset qwen3.8-27b-q4 loaded", output)
 
     def test_times_out_while_the_preset_is_loading(self) -> None:
-        with self.assertRaisesRegex(TokenCrateError, "did not become ready within 5s"):
+        # The container keeps loading after the refusal; the message says so.
+        with self.assertRaisesRegex(TokenCrateError, "did not become ready within 5s; it keeps loading, and status"):
             self.wait(
                 self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4"),
                 FakeEngine(["running"]),
@@ -302,9 +315,7 @@ class IsolatedNetworkTests(unittest.TestCase):
         self.addCleanup(self.scratch.close)
 
     def engine(self, **overrides: str) -> Engine:
-        from tokencrate import engine
-
-        return engine.detect(env.load(self.scratch.root, self.scratch.environment(**overrides)))
+        return engines.detect(env.load(self.scratch.root, self.scratch.environment(**overrides)))
 
     BRIDGED = json.dumps(
         {
@@ -357,28 +368,23 @@ class IsolatedNetworkTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DashboardStartTests(unittest.TestCase):
     """The dashboard profile's services are started by name, and the GPU
     exporter's profile follows the GPU setting (the CLI test covers the
     CPU path through the fake engine; the doctor refuses a GPU `up` there)."""
 
-    def start(self, gpu: str) -> list[tuple]:
-        import tempfile
+    def setUp(self) -> None:
+        self.scratch = Scratch()
+        self.addCleanup(self.scratch.close)
 
+    def start(self, gpu: str) -> list[tuple]:
         calls: list[tuple] = []
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".env.example").write_text((SOURCE_ROOT / ".env.example").read_text())
-            settings = env.load(root, {"LLM_DASHBOARD": "true", "LLM_GPU": gpu})
-            engine = type("Engine", (), {"compose": lambda self, *args, **kwargs: calls.append((args, kwargs))})()
-            with contextlib.redirect_stdout(io.StringIO()) as out:
-                runtime.start_dashboard(settings, engine)
-            # The samples directory is init's (the storage map), not the start's.
-            self.assertFalse((root / "data" / "dashboard" / "victoria").exists())
+        settings = env.load(self.scratch.root, self.scratch.environment(LLM_DASHBOARD="true", LLM_GPU=gpu))
+        engine = type("Engine", (), {"compose": lambda self, *args, **kwargs: calls.append((args, kwargs))})()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            runtime.start_dashboard(settings, engine)
+        # The samples directory is init's (the storage map), not the start's.
+        self.assertFalse((self.scratch.root / "data" / "dashboard" / "victoria").exists())
         self.assertIn("Dashboard at http://127.0.0.1:4211/", out.getvalue())
         return calls
 
@@ -401,3 +407,7 @@ class DashboardStartTests(unittest.TestCase):
                 )
             ],
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

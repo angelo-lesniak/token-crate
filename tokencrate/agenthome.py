@@ -9,7 +9,6 @@ import the others for these names.
 from __future__ import annotations
 
 AGENTS = ("pi", "omp")
-HOME_IN_CONTAINER = "/home/agent"
 # The home is a per-container tmpfs; these are the only home paths bound
 # from the host, read-write. OMP externalizes transcript images to blobs;
 # its other two directories retain --continue selection and references to

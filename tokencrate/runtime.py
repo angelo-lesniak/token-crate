@@ -14,9 +14,10 @@ from .engine import PROJECT_LABEL, Engine
 from .env import Settings
 from .localhttp import http_get, http_post
 
-# A container in one of these states will not answer (`removed`: the engine
-# no longer knows it); anything else is polled again until the timeout.
-STOPPED_STATES = ("exited", "dead", "stopped", "removing", "removed")
+# A container in one of these states will not answer (`restarting`: a crash
+# loop under a restart policy; `removed`: the engine no longer knows it);
+# anything else is polled again until the timeout.
+STOPPED_STATES = ("exited", "dead", "stopped", "restarting", "removing", "removed")
 # How many polls (two seconds apart) the default preset may still read
 # `unloaded` after this run's own load request before that counts as failed.
 LOAD_GRACE_POLLS = 3
@@ -253,16 +254,22 @@ def wait_until_ready(settings: Settings, engine: Engine, timeout: int, **poll_op
     first request and `up` says so; when nothing is loaded (an earlier load
     failed), `up` asks the router to load the preset once. The container
     must stay running throughout; an exit or removal fails immediately."""
-    container_id = engine.running_llama_id()
+    # Looked up in every state: a container that exited between `up` and
+    # this first poll is judged by the poll like any later exit.
+    ids = engine.container_ids("llama", all_states=True)
+    container_id = ids[0] if ids else ""
     preset = settings.default_preset
     load_started = False
     polls = asked = 0
     refused = ""
     for _ in poll(
-        lambda: engine.container_state(container_id),
+        lambda: engine.container_state(container_id) if container_id else "removed",
         timeout,
         stopped="container is {state} before it was ready. Check the logs: bash bin/tokencrate logs",
-        timed_out=f"container did not become ready within {timeout}s. Check the logs: bash bin/tokencrate logs",
+        timed_out=(
+            f"container did not become ready within {timeout}s; it keeps loading, and status shows the preset "
+            "once it is loaded. Check the logs: bash bin/tokencrate logs"
+        ),
         **poll_options,
     ):
         polls += 1
@@ -317,11 +324,3 @@ def print_models(settings: Settings, engine: Engine) -> None:
         for name, status in (states or {}).items():
             print(f"  {name}: {status}")
         print()
-
-
-def save_report(settings: Settings, kind: str, text: str) -> Path:
-    reports = settings.root / "reports"
-    reports.mkdir(parents=True, exist_ok=True)
-    path = reports / f"{kind}-{time.strftime('%Y%m%d-%H%M%S')}.md"
-    path.write_text(text, encoding="utf-8")
-    return path

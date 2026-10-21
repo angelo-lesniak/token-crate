@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.support import SOURCE_ROOT
-from tokencrate import TokenCrateError, doctor, env
+from tokencrate import TokenCrateError, agentsets, doctor, env
 from tokencrate.doctor import Finding, GpuFacts, HostFacts, SetProblem, StorageFact
 from tokencrate.engine import Engine, EngineFacts, Selection
 from tokencrate.env import HostPath
@@ -317,11 +317,14 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(any("GPU memory" in line for line in lines))
 
     def test_missing_gpu_stack_fails_when_the_gpu_is_wanted(self) -> None:
-        lines = evaluate(healthy_facts(gpu=None, nvidia_ctk_present=False, cdi_devices=[]))
+        # The line keeps what nvidia-smi said, the way the engine lines do.
+        cause = "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver."
+        facts = healthy_facts(gpu=None, gpu_error=cause, nvidia_ctk_present=False, cdi_devices=[])
+        lines = evaluate(facts)
         self.assertEqual(
             failures(lines),
             [
-                "[fail] nvidia-smi found no NVIDIA GPU (missing tool or driver); the supported GPU path is unavailable",
+                f"[fail] nvidia-smi found no NVIDIA GPU: {cause}; the supported GPU path is unavailable",
                 "[fail] nvidia-ctk was not found; install the NVIDIA Container Toolkit and generate CDI devices",
             ],
         )
@@ -449,15 +452,15 @@ class EvaluateTests(unittest.TestCase):
         # A stale .env (LLM_AGENT_SETS=preset) passes every host check;
         # the first agent start would refuse it, doctor says so first.
         problems = [
-            SetProblem("LLM_AGENT_SETS", "names no known set: preset (run: bash bin/tokencrate agent-sets list)"),
-            SetProblem("LLM_SKILL_SETS", "unsafe LLM_SKILL_SETS name: 'a b'"),
+            SetProblem("LLM_AGENT_SETS", "unknown agent set: preset (run: bash bin/tokencrate agent-sets list)"),
+            SetProblem("LLM_SKILL_SETS", "unsafe skill set name: 'a b'"),
         ]
         lines = evaluate(healthy_facts(set_problems=problems))
         self.assertEqual(
             warnings(lines),
             [
-                "[warn] LLM_AGENT_SETS names no known set: preset (run: bash bin/tokencrate agent-sets list)",
-                "[warn] LLM_SKILL_SETS unsafe LLM_SKILL_SETS name: 'a b'",
+                "[warn] LLM_AGENT_SETS unknown agent set: preset (run: bash bin/tokencrate agent-sets list)",
+                "[warn] LLM_SKILL_SETS unsafe skill set name: 'a b'",
             ],
         )
         self.assertEqual(failures(lines), [])
@@ -561,6 +564,15 @@ if "--query-gpu=driver_version,memory.total,memory.free,name" not in sys.argv:
 print("610.57.04, 32607, 31000, Fake RTX 5090 Ti")
 """
 
+# What nvidia-smi prints on a host whose driver is not loaded.
+FAKE_NVIDIA_SMI_FAILING = """\
+import sys
+
+print("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.", file=sys.stderr)
+print("Make sure that the latest NVIDIA driver is installed and running.", file=sys.stderr)
+sys.exit(9)
+"""
+
 # Answers like the real engine: --version, info, the combined rootless/runtime
 # format, `compose version` with the provider's line last, and `ps`.
 FAKE_PODMAN = """\
@@ -617,6 +629,7 @@ class GatherTests(unittest.TestCase):
         self.fake("nvidia-smi", FAKE_NVIDIA_SMI)
         facts = doctor.gather(self.settings(LLM_GPU="true"))
         self.assertEqual(facts.gpu, GpuFacts("610.57.04", 32607, 31000, "Fake RTX 5090 Ti"))
+        self.assertEqual(facts.gpu_error, "")
         # MemTotal is read on every host; this one reports whatever it has.
         self.assertIsInstance(facts.ram_kb, int)
         self.assertIsNone(facts.engine)
@@ -636,6 +649,28 @@ class GatherTests(unittest.TestCase):
         first = facts.storage[0]
         self.assertEqual(
             (first.place.path, first.exists, first.accessible), (self.root / "data" / "models", False, False)
+        )
+
+    def test_gather_keeps_the_first_line_nvidia_smi_gave_when_it_fails(self) -> None:
+        self.fake("nvidia-smi", FAKE_NVIDIA_SMI_FAILING)
+        facts = doctor.gather(self.settings(LLM_GPU="true"))
+        self.assertIsNone(facts.gpu)
+        self.assertEqual(
+            facts.gpu_error, "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver."
+        )
+        facts = doctor.gather(self.settings(LLM_GPU="true", PATH=str(self.tmp / "nowhere")))
+        self.assertEqual((facts.gpu, facts.gpu_error), (None, "nvidia-smi was not found"))
+
+    def test_gather_words_a_set_problem_as_the_start_refuses_it(self) -> None:
+        settings = self.settings(LLM_AGENT_SETS="preset", LLM_SKILL_SETS="a b")
+        with self.assertRaises(TokenCrateError) as refused:
+            agentsets.select(self.root, "preset")
+        self.assertEqual(
+            doctor.gather(settings).set_problems,
+            [
+                SetProblem("LLM_AGENT_SETS", str(refused.exception)),
+                SetProblem("LLM_SKILL_SETS", "unsafe skill set name: 'a b'"),
+            ],
         )
 
     def test_gather_judges_the_port_with_the_bind_the_start_makes(self) -> None:

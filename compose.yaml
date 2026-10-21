@@ -12,22 +12,28 @@ name: "${COMPOSE_PROJECT_NAME:?exported by bin/tokencrate from .env}"
 # required session variable would fail `up`. GIT_AUTHOR_NAME and
 # GIT_AUTHOR_EMAIL are optional settings (commented out in .env.example).
 
-# Shared hardening for interactive coding-agent containers. Agents reach only
+# Every service: an init process, a read-only root, no capability, no
+# privilege gain, and the host user. A service adds its own process limit,
+# tmpfs, and mounts; compose.podman.yaml adds keep-id.
+x-hardened: &hardened
+  init: true
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt:
+    - no-new-privileges:true
+  user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
+
+# Shared settings of the interactive coding-agent containers. Agents reach only
 # the model through the internal `agents` network; compose.agent-egress.yaml
 # moves one session to the default network instead when the user asks for
 # it (the model is there too). A browser UI has its own internal network
 # (`ui`), so a terminal agent of any project can neither resolve nor reach a
 # running UI unless the UI was started with a route out as well.
 x-agent-common: &agent-common
-  read_only: true
-  init: true
+  <<: *hardened
   pids_limit: 512
-  cap_drop: ["ALL"]
-  security_opt:
-    - no-new-privileges:true
   stdin_open: true
   tty: true
-  user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
   networks: [agents]
   # Set per start (the interpolation note above); the project is mounted
   # at its host path.
@@ -151,16 +157,11 @@ services:
       args:
         LLAMA_CPP_TAG: "${LLAMA_CPP_TAG:?pin it in pins.env}"
         LLAMA_CPP_DIGEST: "${LLAMA_CPP_DIGEST:?pin it in pins.env}"
-    init: true
-    read_only: true
-    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
+    <<: *hardened
     restart: "${RESTART_POLICY:?exported by bin/tokencrate from .env}"
     # Model servers unload in seconds; a minute covers a busy one.
     stop_grace_period: 60s
     pids_limit: "${LLM_PIDS_LIMIT:?exported by bin/tokencrate from .env}"
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=${LLM_TMPFS_SIZE:?exported by bin/tokencrate from .env}"
     ports:
@@ -276,13 +277,8 @@ services:
   ui-forward:
     image: "docker.io/library/node:${NODE_TAG:?pin it in pins.env}@sha256:${NODE_DIGEST:?pin it in pins.env}"
     profiles: ["ui"]
-    init: true
-    read_only: true
+    <<: *hardened
     pids_limit: 64
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
-    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [ui-publish, ui]
     labels: *ui-label
     ports:
@@ -362,13 +358,8 @@ services:
   llama-exporter:
     image: "docker.io/library/node:${NODE_TAG:?pin it in pins.env}@sha256:${NODE_DIGEST:?pin it in pins.env}"
     profiles: ["dashboard"]
-    init: true
-    read_only: true
+    <<: *hardened
     pids_limit: 64
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
-    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard]
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=16m"
@@ -386,13 +377,8 @@ services:
   victoriametrics:
     image: "docker.io/victoriametrics/victoria-metrics:${VICTORIAMETRICS_TAG:?pin it in pins.env}@sha256:${VICTORIAMETRICS_DIGEST:?pin it in pins.env}"
     profiles: ["dashboard"]
-    init: true
-    read_only: true
+    <<: *hardened
     pids_limit: 256
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
-    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard]
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"
@@ -420,13 +406,8 @@ services:
   grafana:
     image: "docker.io/grafana/grafana:${GRAFANA_TAG:?pin it in pins.env}@sha256:${GRAFANA_DIGEST:?pin it in pins.env}"
     profiles: ["dashboard"]
-    init: true
-    read_only: true
+    <<: *hardened
     pids_limit: 256
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
-    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard-publish, dashboard]
     ports:
       # Loopback only. Grafana listens on 8080 like every published service,
@@ -488,13 +469,8 @@ services:
   gpu-exporter:
     image: "nvcr.io/nvidia/k8s/dcgm-exporter:${DCGM_EXPORTER_TAG:?pin it in pins.env}@sha256:${DCGM_EXPORTER_DIGEST:?pin it in pins.env}"
     profiles: ["dashboard-gpu"]
-    init: true
-    read_only: true
+    <<: *hardened
     pids_limit: 256
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
-    user: "${HOST_UID:?set by bin/tokencrate}:${HOST_GID:?set by bin/tokencrate}"
     networks: [dashboard]
     tmpfs:
       - "/tmp:rw,nosuid,nodev,mode=1777,size=64m"

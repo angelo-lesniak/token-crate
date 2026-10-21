@@ -15,7 +15,7 @@ model_card = "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/blob/621d456e93e
 # the pin is the commit of 2026-09-17.
 mtp = true
 
-# No llama.cpp release carries glm5next (docs/validation.md): pull requests
+# No llama.cpp release carries glm5next (docs/models.md): pull requests
 # 27752 and 27754 (https://github.com/ggml-org/llama.cpp/pull/27754) are open.
 # Replace the sentinel with the first b-number that loads the file and raise
 # the pin past it; until then the renderer keeps the presets of this set

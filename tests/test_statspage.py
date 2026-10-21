@@ -293,6 +293,10 @@ class StatsPageTests(unittest.TestCase):
         # with; the render time is in the footer; nothing names the directory.
         self.assertIn('<p class="meta">3 sessions, 6 requests, all agents, all time; none in the last 24 h</p>', page)
         self.assertNotIn("LLM_AGENTS_DIR", page)
+        # The tiles are the Requests table's `all` cells, not a second sum.
+        tiles = (("Sessions", "3"), ("Requests", "6"), ("Cache-read share", "59%"), ("Requests over 32K", "0%"))
+        for label, value in tiles:
+            self.assertIn(f'<div class="label">{label}</div><div class="value">{value}</div>', page)
         self.assertRegex(page, r"<footer>Rendered 20\d\d-\d\d-\d\d \d\d:\d\d:\d\d [A-Z]+\.</footer>")
         filtered = statspage.html(
             stats.read_sessions(self.agents_dir, stats.Filter(agent="pi")), selection=stats.Filter(agent="pi")
@@ -369,8 +373,9 @@ class StatsPageTests(unittest.TestCase):
         self.assertIn("Model server not reachable; the Preset fit table judges", served)
         served = statspage.html(sessions, live="127.0.0.1:1", slots={}, loaded="ci-big")
         self.assertIn("<b>ci-big</b> is loaded but not in the rendered model list; the Preset fit table", served)
-        # The GPU tiles exist only when the server runs a GPU query.
-        self.assertIn('data-gpu="0"', served)
+        # The live script takes the sampler's pace and the ring's window from
+        # the tag; the GPU tiles exist only when the server runs a GPU query.
+        self.assertIn('data-interval="2000" data-window="600" data-gpu="0"', served)
         self.assertIn('data-gpu="1"', statspage.html(sessions, live="127.0.0.1:1", gpu=True))
 
     def test_a_single_agent_page_names_it_without_a_legend(self) -> None:
