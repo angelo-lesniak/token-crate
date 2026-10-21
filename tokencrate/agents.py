@@ -84,8 +84,8 @@ def agent_check(
     With `egress` the same container runs under the overlay, on the default
     network instead of the agents network: a route out is then the expected
     finding, the gateway probe does not apply, and what still must not be
-    reachable is a browser UI, except one started with --egress or --cloud,
-    which the report marks as reached by design. No provider key is passed
+    reachable is a browser UI, including one started with --egress or
+    --cloud. No provider key is passed
     either way, so the check never carries a credential."""
     # A real path: the retained mounts below it refuse a linked ancestor.
     scratch = Path(os.path.realpath(tempfile.mkdtemp(prefix="tokencrate-agent-check-")))

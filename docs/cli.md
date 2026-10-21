@@ -13,13 +13,9 @@ General rules:
   [README](../README.md#start-here) lists host tools and engine
   requirements. [Privacy and containment](privacy.md#what-leaves-the-machine)
   lists commands that use the network.
-- Precedence is the shell environment, then `.env`, then `.env.example`;
-  [Configuration](configuration.md) says when a change takes effect.
 - While a stack runs, every command uses the engine `up` recorded;
   [When a change takes effect](configuration.md#when-a-change-takes-effect)
   states the `CONTAINER_ENGINE` rule.
-- `LLM_GPU=false` starts the model server without a GPU device and skips
-  the GPU checks of `doctor`; it is for CPU-only checks.
 - `--preset <id>` selects a preset instead of `LLM_DEFAULT_PRESET` for
   `doctor`, `smoke`, `agent`, and `ui`; `bench --presets <ids>` takes a
   comma-separated list. `smoke`, `bench`, `agent`, and `ui` need one or
@@ -58,14 +54,10 @@ bin/tokencrate doctor [--preset id]
 Checks the host and prints one line per check, each with `[ok]`,
 `[warn]`, or `[fail]` and a sentence that says what was found. `up` runs
 the same checks before it downloads anything and stops on a `[fail]`
-line.
-
-A [preset](models.md) says how llama-server runs a downloaded model and
-declares the GPU and system memory it needs. `doctor` checks the host
-against the preset named with `--preset`, or `LLM_DEFAULT_PRESET`
-without the flag. It reads the requirements from the preset's file under
-`config/presets/`, so nothing needs to be rendered or downloaded first.
-With neither set, the preset checks are skipped.
+line. The preset checks compare the host against the requirements a
+[preset](models.md) declares in its file under `config/presets/`, so
+nothing needs to be rendered or downloaded first; with no preset
+selected they are skipped.
 
 A `[warn]` line is something `up` can start without, for example:
 
@@ -86,12 +78,6 @@ System memory is compared against the preset's `[requires] ram_gib` with
 machine reports about 93 GiB). `LLM_PORT` must be bindable on loopback,
 a `[fail]` unless TokenCrate's own llama container publishes that port.
 
-For an unknown preset id, `doctor` prints a warning and runs every
-other check. The commands that use a preset are stricter: `smoke`,
-`bench`, `agent`, and `ui` refuse a preset that is unknown or that the
-pinned llama.cpp build cannot load. `up` refuses such an
-`LLM_DEFAULT_PRESET`.
-
 ```bash
 bash bin/tokencrate doctor --preset qwen3.8-27b-q4-mtp
 ```
@@ -108,11 +94,11 @@ In order:
    stops on a `[fail]` line.
 2. Checks that the `agents`, `ui`, and `dashboard` networks, when they
    exist, are the ones the Compose files declare ([Internal
-   networks](privacy.md#internal-networks) states the rule). Otherwise
-   `up` refuses before downloading, for example with `the agents
-   network's bridge podman1 forwards IPv4 traffic, so a session on
-   another network can reach it. Run: bash bin/tokencrate down, then up`.
+   networks](privacy.md#internal-networks) states the rule). A mismatch
+   is refused before downloading.
 3. Downloads and verifies only the model sets named with `--model-sets`.
+   Plain `up` downloads nothing, and the default preset's files must be
+   present or startup fails.
 4. Renders every preset whose files are present into `build/`: the
    router preset file `models.ini` and the agent model lists. A preset
    whose model set needs a newer llama.cpp build is listed as waiting and
@@ -122,26 +108,21 @@ In order:
    records the engine in `build/stack.json`. Compose recreates the
    container when the rendered preset file or service configuration
    changed; otherwise it keeps the running container.
-7. Waits for the router to answer `GET /models` on the published port.
-   A new model server loads `LLM_DEFAULT_PRESET` at start, and `up`
-   waits for that preset to be ready. On a model server that was already
-   running, `up` requests a load if nothing is loaded and allows three
-   polls for the preset to leave `unloaded`. If another preset already
+7. Waits for the router to answer `GET /models` on the published port
+   and for `LLM_DEFAULT_PRESET` to be ready. On a model server that was
+   already running, `up` requests a load if nothing is loaded and allows
+   three polls for the preset to leave `unloaded`; if another preset
    occupies the slot, `up` reports it and leaves the default to load on
    first request. With no default set, the router's response is enough.
+   The wait fails if the container exits or disappears (a `down`
+   meanwhile, since the build and the wait run without the lock), the
+   preset's llama-server process exits while loading (reported as
+   `unloaded`), or the timeout expires.
 8. Prints the address of the API and the built-in chat UI.
 9. With `LLM_DASHBOARD=true`, starts the
    [dashboard](configuration.md#dashboard) profile beside the model
    (pulling its pinned images on the first start) and prints Grafana's
    loopback address. `LLM_DASHBOARD_PORT` must be free like `LLM_PORT`.
-
-Plain `up` downloads no model files; after rendering, the default
-preset's files must be present or startup fails. The build and the
-readiness wait run without the lock, so a `down` meanwhile goes first or
-removes the container, and the wait reports that. During startup, `up`
-fails if the container exits or disappears, the preset's llama-server
-process exits while loading (reported as `unloaded`), or the timeout
-expires.
 
 | Flag | Meaning |
 | --- | --- |
@@ -165,7 +146,7 @@ and the Compose networks. This ends active agent sessions. Images and
 host data are kept; see the [storage
 layout](configuration.md#storage-layout). `down` finds the containers
 and networks by the Compose project labels of the engine `up` recorded
-(or the detected one), so it works even when the pins are invalid. It
+(or the detected one), so it works even when the pins are invalid, and
 removes the stack record last. A network of the project's name made
 without those labels is left alone, and `up` refuses until it is removed
 by hand.
@@ -182,8 +163,8 @@ and mounted project, so a UI reassigned to another project is visible.
 The line ends with `egress` or `cloud` for a UI started with that flag.
 When the model server runs, it also shows one line per rendered preset
 with the state the router reports on `GET /models`: `unloaded`,
-`loading`, `loaded`, or `sleeping`. `status` works without valid pins or rendered files and does
-not wait for a start or stop in progress.
+`loading`, `loaded`, or `sleeping`. `status` works without valid pins
+or rendered files and does not wait for a start or stop in progress.
 
 ## logs
 
@@ -206,24 +187,28 @@ bin/tokencrate smoke --agent <pi|omp> [--preset id] [--sets names (pi only)] [--
 the published loopback port for one preset and writes the report to
 `reports/smoke-<timestamp>.md`. The first chat completion loads the
 preset and unloads the previous one; loading a large model can take
-minutes. The probes cover the model listing, two chat completions, a
-streamed tool call, the chat template, tokenization, and the Prometheus
-counters (`GET /metrics?model=`). The completions ask for the preset's
-lowest reasoning effort and must return a non-empty answer that ends on
-its own: a reply that exhausts its token budget ends with
-`finish_reason` `length`, which can indicate a reasoning loop. The
-template must render the preset's first two efforts to different
-prompts; a preset that declares fewer than two passes with `nothing to
-compare`. The [patched chat
-template](models.md#the-patched-chat-template) of the Qwen sets must
-accept a system message in the middle of a conversation, which the
-model's own template rejects. `--basic` skips the reply-termination and
-streamed-tool-call checks, which need a capable model, so that a tiny
-model can still check the transport and template.
+minutes. The probes cover:
+
+- the model listing;
+- two chat completions at the preset's lowest reasoning effort, which
+  must return a non-empty answer that ends on its own (`finish_reason`
+  `length` fails and can indicate a reasoning loop);
+- a streamed tool call;
+- the chat template, which must render the preset's first two efforts
+  to different prompts (a preset that declares fewer than two passes
+  with `nothing to compare`) and, for the Qwen sets, accept a system
+  message in the middle of a conversation ([the patched chat
+  template](models.md#the-patched-chat-template));
+- tokenization;
+- the Prometheus counters (`GET /metrics?model=`).
+
+`--basic` skips the reply-termination and streamed-tool-call checks,
+which need a capable model, so that a tiny model can still check the
+transport and template.
 
 **Agent checks:** with `--agent`, `smoke` starts the container the way
 [`agent`](#agent) does, against a scratch project and agent home in a
-temporary directory. It checks the network containment from inside the
+temporary directory, and checks the network containment from inside the
 container. It needs what `agent` needs: a preset the running router
 serves, and every set in `LLM_SKILL_SETS` fetched. Each finding is one
 `[ok]` or `[fail]` line: no route out and no name resolution, no browser
@@ -243,10 +228,10 @@ tested`; run the check while a UI runs to test that boundary.
 `--egress` runs the same check with the route out that `agent --egress`
 and `agent --cloud` add. The session is on the default network and a
 default route is required; whether the internet answers is not probed.
-A browser UI that answers is still a failure, except one started with
-`--egress` or `--cloud`, which is reported as `[info] ... that UI was
-started with --egress or --cloud`. An offline check still fails on it.
-The set checks are skipped. The check never carries a provider key.
+A reachable browser UI is always a failure. Name resolution for a UI
+started with `--egress` or `--cloud` is informational in an egress check;
+an offline check still fails on it. The set checks are skipped. The
+check never carries a provider key.
 
 `--basic` is not valid with `--agent`; `--sets` requires `--agent pi`,
 and `--egress` requires `--agent`.
@@ -290,42 +275,36 @@ Summarizes the retained transcripts below `LLM_AGENTS_DIR` ([storage
 layout](configuration.md#storage-layout)): every conversation the agent
 retained as a transcript (a pi session; a terminal or browser-UI session
 can hold several) that received at least one answer counts. The command
-reads only
-the host directories, so it works with the stack down. It reads usage
-numbers and metadata only, never message content; the report carries no
-conversation text, session names, or project paths
+reads only the host directories, so it works with the stack down. It
+reads usage numbers and metadata only, never message content; the
+report carries no conversation text, session names, or project paths
 ([Privacy](privacy.md#what-leaves-the-machine)). `smoke --agent` uses a
 temporary home and adds nothing; deleting a project's directories below
 `LLM_AGENTS_DIR` removes it from the report. The report is printed and
-written to `reports/stats-<timestamp>.md`.
+written to `reports/stats-<timestamp>.md`, and
 `reports/stats-<timestamp>.html` holds the same report as a
-self-contained page for a browser (open it from its file path): the
-tables, sortable by a click on a column header, and a chart of the
-context-size distribution. The page loads no external scripts, styles,
-or fonts.
+self-contained page (open it from its file path) with sortable tables
+and a chart of the context-size distribution; the page loads no
+external scripts, styles, or fonts.
 
-The first table, Preset fit, answers whether a preset fits. It has one
-row per preset rendered into the agent model list by [`up`](#up), with
-its slot (`ctx_size` / `parallel`), the requests and the sessions whose
-context exceeded that slot, and `fits` or `too small`. Every request in
-the report counts, whichever preset or provider served it, so the table
-judges a preset you have not run yet. Before the first `up` the table
-says `No rendered presets: `up` renders them and writes the model list
-the wrapper reads back.` The chart draws the compaction p50 and one
-preset's slot as labelled lines: the loaded preset on the served page,
-otherwise the rendered preset that served the most requests.
-
-The other tables show, per agent and per provider and model: requests,
-tokens, the cache-read share, the context-size distribution, sessions,
-turns, tool calls, stop reasons, compactions, thinking levels, and time
-to first token and request duration. The Definitions list at the end of
-the report defines each measure. oh-my-pi records the timings itself; pi
+The first table, Preset fit, has one row per preset rendered into the
+agent model list by [`up`](#up), with its slot (`ctx_size` /
+`parallel`), the requests and the sessions whose context exceeded that
+slot, and `fits` or `too small`. Every request in the report counts,
+whichever preset or provider served it, so the table judges a preset you
+have not run yet. Before the first `up` the table says `No rendered
+presets: `up` renders them and writes the model list the wrapper reads
+back.` The other tables show, per agent and per provider and model:
+requests, tokens, the cache-read share, the context-size distribution,
+sessions, turns, tool calls, stop reasons, compactions, thinking levels,
+and time to first token and request duration; the Definitions list at
+the end defines each measure. oh-my-pi records the timings itself; pi
 records them when the [`metrics` agent set](agent-sets.md#shipped-sets),
-part of the default selection, is loaded. Invalid timings, including
-numbers too large to represent, are ignored without dropping the request.
-A session's requests against a cloud provider appear under that provider's
-name. The summary line states the scope (sessions, requests, the agent and
-time filters or their absence) and how much of it is from the last 24 hours.
+part of the default selection, is loaded. Invalid timings are ignored
+without dropping the request. Requests against a cloud provider appear
+under that provider's name. The summary line states the scope (sessions,
+requests, the filters or their absence) and how much of it is from the
+last 24 hours.
 
 `--since <when>` keeps the sessions whose last message is at or after
 a point in time: a duration back from now (`30m`, `12h`, `7d`, `2w`) or
@@ -333,48 +312,29 @@ an ISO date or date-time (`2026-09-20`, `2026-09-20T10:00`, a naive
 value in local time). A session that spans the cutoff counts whole, so
 its earlier requests are in the numbers too. `--agent pi` or `--agent
 omp` keeps one agent's sessions. Both apply to `--serve`, where the
-cutoff is fixed when the server starts. The summary line names the
-filters, and a filter that matches no session is refused with a
-sentence that says so.
+cutoff is fixed when the server starts. A filter that matches no session
+is refused with a sentence that says so.
 
 `--serve` serves the page at `http://127.0.0.1:4210/` (`--port` selects
 another port), re-reading the transcripts every 60 seconds, and saves
-nothing. The served page leads with a verdict on the loaded preset: its
+nothing. The served page leads with a verdict on the loaded preset (its
 slot, and whether every request in the report would have fit it or how
-many would not. It adds a live panel with tiles for the requests the
-model server is processing and has queued, its prompt and generation
-rates in tokens per second, the share of drafted tokens an MTP preset
-accepted since its load, and the GPU's memory in use and power draw,
-plus two charts of the requests and rates over the last ten minutes.
-
-A tile without a number says why (no preset loaded, first sample, no
-draft model); a GPU tile shows `–` with `GPU query failed`. The rates
-follow the server's counters, which llama.cpp advances when a request
-completes, so a long answer shows as one burst at its end rather than a
-steady line.
-
-The server polls the model server's loopback port (`LLM_PORT`) at most
-every 2 seconds and only while a page is open: `GET /models`, and `GET
-/metrics?model=` for the preset that was loaded on this and the previous
-poll. A poll that lands in a model swap therefore does not load the
-unloaded preset again. When `LLM_GPU` is true and `nvidia-smi` is on the
-host's `PATH`, it runs once per poll for the GPU numbers; without the
-tool the page has no GPU tiles.
-
-The samples live in the server's memory for ten minutes and are never
-saved; a saved page has no panel, and the
-[dashboard](configuration.md#dashboard) keeps the server's counters for
-90 days.
-
-The server binds loopback only and answers only requests whose `Host`
-header names its own address, so a web page cannot reach it through the
-browser's name resolution. Anything local that can open the port can
-read the report's numbers and the live samples.
-
-The server runs in the foreground until Ctrl-C. To keep it running in
-the background, start it as its own session and end it with `kill`:
-`setsid bash bin/tokencrate stats --serve </dev/null >build/stats.log
-2>&1 &`. [`down`](#down) stops containers only.
+many would not) and adds a live panel: the model server's processing
+and queued requests, its prompt and generation rates, the share of
+drafted tokens an MTP preset accepted since its load, the GPU's memory
+in use and power draw (when `LLM_GPU` is true and `nvidia-smi` is on the
+host's `PATH`), and two charts of the last ten minutes. A tile without
+a number says why (a GPU tile shows `GPU query failed`). The rates
+follow counters that llama.cpp advances when a request completes, so a
+long answer shows as one burst at its end.
+The panel polls the model server's loopback port at most every 2
+seconds and only while a page is open, with the same two-poll rule as
+the [dashboard](configuration.md#dashboard)'s exporter, so a poll never
+loads a preset; the dashboard is what keeps the counters beyond ten
+minutes. The server binds loopback only and answers only requests whose
+`Host` header names its own address; anything local that can open the
+port can read the report's numbers and the live samples. It runs in the
+foreground until Ctrl-C; [`down`](#down) does not stop it.
 
 ```bash
 bash bin/tokencrate stats --serve
@@ -390,13 +350,12 @@ bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egres
 Opens a coding agent in a container with the project directory mounted
 read-write at the same absolute path it has on the host. For pi, the
 image uses `LLM_AGENT_SETS` unless `--sets` overrides it for this
-session. The value is a comma-separated list (spaces, empty entries, and
-repeats are ignored); an empty string selects plain pi. `--sets` applies
-only to pi; oh-my-pi rejects it. Each combination of sets has its own
-image, built before the first session that uses it ([Agent
-sets](agent-sets.md)). The project defaults to the current directory;
-`--dir` selects another. The rules below apply to the path after
-symbolic links are resolved. The project directory must:
+session; an empty string selects plain pi, and oh-my-pi rejects the
+flag. Each combination of sets has its own image, built before the
+first session that uses it ([Agent sets](agent-sets.md)). The project
+defaults to the current directory; `--dir` selects another. The rules
+below apply to the path after symbolic links are resolved. The project
+directory must:
 
 - lie below your home directory, or below a directory listed in
   `LLM_PROJECT_ROOTS` (absolute paths separated by colons);
@@ -420,14 +379,6 @@ above the project, the start is refused. The refusal names that `.git`:
 repository root or a standalone clone instead of a linked worktree or
 submodule`. A repository that manages the home directory itself lies
 outside the walk.
-
-The agent talks to the running model server over an internal network with
-no internet access. `--egress` puts the session on the default network
-instead, for example to install packages, and the wrapper prints a
-warning. `--egress` and `--cloud` are the only ways to give a session
-internet access. Neither can be turned on in `.env` or any other
-setting, so each session that needs a route out must pass the flag
-again.
 
 `--cloud` (pi only) also mounts the cloud keys file that
 `LLM_CLOUD_KEYS_FILE` names, read-only, into this one session, and
@@ -470,12 +421,12 @@ The command refuses to start unless:
 Arguments after `--` are passed to the agent binary; with pi's `-p`, the
 agent answers one prompt, prints the reply, and exits. Compose attaches
 your terminal only when both standard streams are a terminal and the
-wrapper runs in the foreground. Under `timeout`, in a pipeline, or from
-cron, the wrapper passes `-T` instead; when standard input is a terminal
-it may not read from, it gives the container `/dev/null` in its place. A
-scripted call needs no redirection, and a pipe on standard input still
-reaches the agent. See [Coding agents and skills](agents.md) for what
-the container can and cannot touch.
+wrapper runs in the foreground; otherwise (under `timeout`, in a
+pipeline, from cron) the wrapper passes `-T`, and a terminal it may not
+read from is replaced by `/dev/null`, so a scripted call needs no
+redirection and a pipe on standard input still reaches the agent. See
+[Coding agents and skills](agents.md) for what the container can and
+cannot touch.
 
 Run the wrapper from the checkout and name the project with `--dir`:
 
@@ -506,7 +457,15 @@ bin/tokencrate ui logs [<set>]
 
 `ui <set>` starts one instance of that UI set in the background and
 prints its loopback address. The set must declare a `[ui]` manifest,
-including a custom set under `local/agent-sets`.
+including a custom set under `local/agent-sets`. The image contains
+`LLM_AGENT_SETS`, or `--sets` for this launch, plus the named UI set
+([Agent sets](agent-sets.md#shipped-sets) names each set's download).
+The project directory, `--preset`, and pre-flight checks are those of
+[`agent`](#agent). A launch does not remember options from an earlier
+launch. Only the named UI is replaced; the other UI and the model server
+keep running unchanged. A terminal session and both UIs can use one
+project, with separate conversations and live settings ([the
+four-client workflow](agents.md#use-four-clients-with-one-model)).
 
 `--port` selects a host port from `1` to `65535` for this launch only.
 Without it the forwarder publishes the `host_port` the set's manifest
@@ -520,48 +479,36 @@ port below `net.ipv4.ip_unprivileged_port_start` (normally `1024`); keep
 the default high ports, or have the host administrator lower that
 setting.
 
-The image contains `LLM_AGENT_SETS`, or `--sets` for this launch, plus
-the named UI set ([Agent sets](agent-sets.md#shipped-sets) names each
-set's download). The project directory, `--preset`, and pre-flight
-checks are those of [`agent`](#agent). A launch does not remember
-options from an earlier launch. Only the named UI is replaced; the other
-UI and the model server keep running unchanged.
-
 The UI container is named `tokencrate-ui-<set>` and its forwarder
 `tokencrate-ui-forward-<set>`, so two Compose projects on one engine
-cannot run the same UI set at once. The second launch is refused before
-it removes or starts a container (`the container tokencrate-ui-<set> belongs to
+cannot run the same UI set at once; the second launch is refused before
+it changes anything (`the container tokencrate-ui-<set> belongs to
 another checkout's UI; free it there with: bash bin/tokencrate ui stop
 <set>`). The command waits up to 90 seconds for both containers to run
-and the forwarder to answer. A failed build leaves the previous UI intact. A failed start or
-readiness check leaves that UI in place for `ui logs <set>`, a retry, or
-`ui stop <set>`; it does not stop the other UI. Readiness is an HTTP
-check, not proof of a completed assistant response.
+and the forwarder to answer HTTP, which is not proof of a completed
+assistant response. A failed build leaves the previous UI intact; a
+failed start or readiness check leaves that UI in place for `ui logs
+<set>`, a retry, or `ui stop <set>`.
 
 `ui stop <set>` removes that UI and its forwarder, and fails when the
 set has no container. Plain `ui stop` removes every UI and says so when
 none is running. Neither removes the model server, the networks, or
 saved sessions and UI state. The UI daemon gets the engine's stop
-timeout, 20 seconds on Docker and 10 on Podman. `ui logs <set>` follows the UI daemon output
-until interrupted; plain `ui logs` selects the only UI present and asks
-for a set name when there are several. Both find stopped or failed
-containers without the launch options or a custom manifest.
+timeout, 20 seconds on Docker and 10 on Podman. `ui logs <set>` follows
+the UI daemon output until interrupted; plain `ui logs` selects the only
+UI present and asks for a set name when there are several. Both find
+stopped or failed containers without the launch options or a custom manifest.
 
 A terminal session and both UIs can use one project, with separate
 conversations and live settings ([the four-client
 workflow](agents.md#use-four-clients-with-one-model)).
 
-`--egress` gives the UI container a route out: it joins the default
-network in addition to the `ui` network, where its forwarder reaches it.
-The wrapper prints the warning of [`agent --egress`](#agent). `--cloud`
-also mounts the cloud keys file into the UI container, read-only,
-implies `--egress`, and prints the warning of `agent --cloud`. It
-refuses in the same cases except the one for oh-my-pi, since every UI
-runs pi. The forwarder, which publishes the UI's port on the host, gets
-neither the route out nor the keys. The UI holds them until `ui stop
-<set>`, `down`, or a launch of the set without the flag. [Cloud
-providers](agents.md#cloud-providers) says who can use them meanwhile,
-and [Egress](privacy.md#egress) states the network boundaries.
+`--egress` and `--cloud` grant the UI container the access described for
+[`agent`](#agent). The forwarder receives neither internet access nor
+keys. The UI holds its access until `ui stop <set>`, `down`, or a launch
+of the set without the flag. [Cloud providers](agents.md#cloud-providers)
+explains who can use the keys while the UI runs; [Egress](privacy.md#egress)
+explains its network access.
 
 ```bash
 bash bin/tokencrate ui pi-web --dir ~/src/my-project
@@ -646,8 +593,6 @@ A skill set is a group of [skills](agents.md#skills), each pinned to an
 upstream commit in `config/skill-sets/<set>.toml`; agents load the
 fetched sets that `LLM_SKILL_SETS` names.
 
-Malformed skill repository URLs are refused before Git runs.
-
 `fetch` downloads each skill of the named sets into
 `LLM_SKILLS_DIR/<set>/<skill>`: it clones the pinned commit, copies the
 skill's directory, and checks its tree digest and the frontmatter of its
@@ -673,27 +618,24 @@ bin/tokencrate pins check [component|all]
 With no arguments, prints the non-comment lines of `pins.env`.
 
 `pins check` prints one row per pin of `pins.env` (a digest rides with
-its tag): the current value and the latest eligible upstream version.
-It covers one component or all of them (the default). A component is named by
+its tag): the current value and the latest eligible upstream version,
+for one component or all of them (the default). A component is named by
 its key without `_TAG` or `_VERSION`, in lower case with hyphens
 (`LLAMA_CPP_TAG` is `llama-cpp`). For llama-cpp, the output also links
 the releases between the two builds and lists model sets waiting for a
-newer build. A pin the command cannot look up prints its value with
-`(no resolver; look it up by hand)`: `dcgm-exporter` (its tag on
-nvcr.io) and `cuda-min-driver-major`.
+newer build. `dcgm-exporter` (its tag on nvcr.io) and
+`cuda-min-driver-major` have no resolver; their rows print the current
+value with `(no resolver; look it up by hand)`.
 
 When an update is available, the output ends with a `Paste into pins.env:`
-block of `KEY=VALUE` lines. An image pin has two lines: its tag and
+block of `KEY=VALUE` lines; an image pin has two lines, its tag and
 manifest digest. The command writes nothing; paste the lines into
 `pins.env` and review with `git diff pins.env`. When nothing is newer,
 the last line is `pins.env has the latest eligible pins.`, or `The
 resolved pins are the latest eligible.` when a row had no resolver. When
-a source cannot be read, that pin's row ends with `(lookup failed: ...)`,
-the other rows are still printed, and the command exits with status 1.
-A source whose latest eligible version is older than the current pin
-fails the same way. Docker Hub listings are read newest first and stop
-after the first page that adds nothing newer, so a check normally reads
-two pages of an image's tags.
+a source cannot be read, or its latest eligible version is older than
+the current pin, that pin's row ends with `(lookup failed: ...)`, the
+other rows are still printed, and the command exits with status 1.
 
 | Component | Key | Selection policy |
 | --- | --- | --- |

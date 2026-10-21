@@ -26,31 +26,26 @@ providers](agents.md#cloud-providers) covers the keys file and what a
 | The conversation so far: every prompt, file content, and tool output of the session, the turns the local model answered included | The provider whose model you picked in the agent, over its own endpoint | Only in a `--cloud` session or browser UI, with each request to that model |
 
 Commands not listed above reach only loopback ports or use no network.
-Requests to local model and UI APIs
-bypass host HTTP proxy settings. [`stats`](cli.md#stats) reads the
-retained transcripts on the host and writes a report without message
-content; `stats --serve` offers it on a loopback port to local readers
-only and polls the model server's loopback port while a page is open.
+Requests to local model and UI APIs bypass host HTTP proxy settings.
+[`stats`](cli.md#stats) reads the retained transcripts on the host,
+writes a report without message content, and serves it on a loopback
+port only.
 
 The llama container joins the default network to publish its loopback
 port; UI forwarders join `ui-publish`. Both have a route out.
 Forwarders send requests only to their UI backend. With the shipped
 text-only presets, the model server and the built-in chat UI make no
 outbound requests of their own; the chat UI stores conversations in the
-browser. The model server also serves aggregate Prometheus counters
-(`GET /metrics?model=`) on the published loopback port: numeric token,
-request, and KV-cache figures, never prompt text. The
-[dashboard](configuration.md#dashboard) profile reads those counters
-over the internal `dashboard` network and keeps them under
-`data/dashboard`. Of its containers, Grafana alone has a route out,
-through the network that publishes its port; [Telemetry
-switches](#telemetry-switches) lists the outbound features it turns off.
+browser. The model server's Prometheus counters (`GET /metrics?model=`)
+carry numeric token, request, and KV-cache figures, never prompt text;
+the [dashboard](configuration.md#dashboard) keeps them under
+`data/dashboard`, and of its containers Grafana alone has a route out,
+through the network that publishes its port.
 
 llama.cpp runs in offline mode (`LLAMA_ARG_OFFLINE=1` in `compose.yaml`),
-which stops model downloads from URLs or Hugging Face at startup. The
-preset renderer passes only a short list of `[server.extra]` options
-through, so a preset cannot enable the server's tools, MCP proxy, file
-serving, or remote compute; the list is code, reviewed as such
+which stops model downloads at startup. The preset renderer passes only
+a short list of `[server.extra]` options through, so a preset cannot
+enable the server's tools, MCP proxy, file serving, or remote compute
 ([Adding a model](models.md#adding-a-model)).
 
 ## Telemetry switches
@@ -68,12 +63,10 @@ internet: PI WEB's user-started package installs and updates, Paseo's
 | pi | The install ping, the update check, and the model-catalogue refresh for every configured provider | `PI_TELEMETRY=0` before the package install and at runtime, `PI_SKIP_VERSION_CHECK=1`, `PI_OFFLINE=1`, `enableInstallTelemetry: false`, `enableAnalytics: false`. Without the catalogue refresh, a cloud provider offers the model list bundled with the pinned package |
 | pi extensions (`coding` set) | pi-lens's on-demand installs of language servers and tools; registry packages in pi's package list | `PI_LENS_DISABLE_LSP_INSTALL=1` and `PI_LENS_DISABLE_TOOL_INSTALL=1`; the entrypoint sets the package list to the image's local directories at every start |
 | .NET SDK (`dotnet` set) | Usage telemetry, the first-run banner, the workload update check | `DOTNET_CLI_TELEMETRY_OPTOUT=1`, `DOTNET_NOLOGO=1`, `DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1`; NuGet sources cleared to the image cache |
-| Chromium (`browser` set) | Nothing by setting: it runs headless inside the container and reaches only what the container reaches | None |
 | oh-my-pi | pi's items above; automatic skill learning | Same variables; `config/agents/omp/config.yml` |
 | PI WEB (`pi-web` set) | The release check against the npm registry and the hourly model-catalogue refresh | `PI_WEB_OFFLINE=1` and `PI_WEB_SKIP_VERSION_CHECK=1` in the launcher. Not switchable: it asks the session's model (the local model server) for a title after the first message |
 | Paseo (`paseo` set) | The rendezvous relay and the speech-model downloads at daemon start | `PASEO_RELAY_ENABLED=false`, `PASEO_DICTATION_ENABLED=false`, and `PASEO_VOICE_MODE_ENABLED=false` in the launcher; the hub and push features are never set up. The web UI loads nothing from other sites except a changelog when you open "What's new" |
-| Grafana (dashboard profile) | Usage reporting, the update checks, feedback links, the news feed, plugin preinstalls and plugin-key retrieval, external snapshot publishing, Gravatar lookups | `GF_ANALYTICS_*=false`, `GF_NEWS_NEWS_FEED_ENABLED=false`, `GF_PLUGINS_PREINSTALL_DISABLED=true`, `GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED=true`, `GF_SNAPSHOTS_EXTERNAL_ENABLED=false`, `GF_SECURITY_DISABLE_GRAVATAR=true` in `compose.yaml` |
-| Model downloader | Nothing to switch off: standard-library HTTPS, no client library | Reaches huggingface.co and the CDN hosts it redirects to, and sends the token to huggingface.co only |
+| Grafana (dashboard profile) | Usage reporting, the update checks, feedback links, the news feed, plugin preinstalls and plugin-key retrieval, external snapshot publishing, Gravatar lookups | The `GF_*` variables of the `grafana` service in `compose.yaml` |
 | llama.cpp | Model downloads at startup | Offline mode (`LLAMA_ARG_OFFLINE=1`) |
 
 ## Defaults and their limits
@@ -93,61 +86,52 @@ can use the UI port, and with it the agent's access to the project.
 
 ### Forwarder
 
-The forwarder blocks other websites from using the UI. It
-returns `403` for a foreign `Host` or `Origin`, or, without an `Origin`,
-a `Sec-Fetch-Site` value other than `same-origin` or `none`. These
-checks cover cross-site requests and DNS rebinding. Allowed authorities
-are exactly `127.0.0.1`, `localhost`, and `[::1]` with the UI's own port
-(on port `80`, also without a port), and an `Origin` must use `http://`.
-The UI's own `Origin` passes even if the browser marks the request
-cross-site, as it does between `127.0.0.1` and `localhost`; one UI's
-origin does not authorize another. The UI daemon listens only on the
-container's `ui`-network address, so a UI started with `--egress` or
-`--cloud` has no listener on its default-network address, and neither
+The forwarder returns `403` for a foreign `Host` or `Origin`, or,
+without an `Origin`, a `Sec-Fetch-Site` value other than `same-origin`
+or `none`; these checks cover cross-site requests and DNS rebinding.
+Allowed authorities are exactly `127.0.0.1`, `localhost`, and `[::1]`
+with the UI's own port (on port `80`, also without a port), and an
+`Origin` must use `http://`. An allowed `Origin` takes precedence over
+`Sec-Fetch-Site`; one UI's origin does not authorize another. The UI
+daemon listens only on the container's `ui`-network address, so neither
 the host on Docker nor an `--egress` session reaches it past the
 forwarder ([Validation](validation.md#status) says on which engine a
-run has confirmed it). Rootless Podman keeps its bridges in the user's
-network namespace, which the host does not reach.
+run has confirmed it).
 
 ### llama API
 
-The llama API on `LLM_PORT` has no `Host` check, and its
-CORS setting (`LLAMA_ARG_CORS_ORIGINS=localhost` in `compose.yaml`)
-governs only whether the server echoes a page's origin in the response
-header. After a DNS rebind the page and the API share an origin. A page
-of another site that rebinds its name to `127.0.0.1` can then send
+The llama API on `LLM_PORT` has no `Host` check; its CORS setting
+(`LLAMA_ARG_CORS_ORIGINS=localhost` in `compose.yaml`) governs only the
+response header, not which requests the server accepts. A page of
+another site that rebinds its name to `127.0.0.1` can therefore send
 requests the server acts on and read the answers: a model load (`POST
 /models/load`), a completion, the counters. The slot endpoint, whose
 JSON can carry an in-flight prompt, is off (`no-slots = true` in the
-rendered `[*]` section; nothing in TokenCrate reads it). The forwarder
-and the stats server check `Host`. Grafana answers a request with any
-`Host` other than `127.0.0.1` with a `301` to the same path at
-`http://127.0.0.1:<LLM_DASHBOARD_PORT>` (`GF_SERVER_ENFORCE_DOMAIN`).
-Grafana documents `/api/health` as exempt from that redirect; no run
-has checked it ([known gaps](validation.md#known-gaps)). Host-side clients
-send no `Origin` and are unaffected.
+rendered `[*]` section). The forwarder and the stats server check
+`Host`; Grafana redirects any `Host` other than `127.0.0.1` with a `301`
+to `http://127.0.0.1:<LLM_DASHBOARD_PORT>` (`GF_SERVER_ENFORCE_DOMAIN`).
+Host-side clients send no `Origin` and
+are unaffected.
 
 ### Networks
 
-Terminal agents share the internal `agents` network with
-each other and the model, so offline sessions of different projects
-reach each other's listeners. All browser UIs, their forwarders, and the
-model share the internal `ui` network; each forwarder also joins
+Terminal agents share the internal `agents` network with each other
+and the model, so offline sessions of different projects reach each
+other's listeners. All browser UIs, their forwarders, and the model
+share the internal `ui` network, and each forwarder also joins
 `ui-publish` to publish its loopback port. The dashboard profile's
-containers share the internal `dashboard` network with the model, and no
+containers share the internal `dashboard` network with the model; no
 agent or UI container is on it ([Dashboard](configuration.md#dashboard)
 says what a viewer on this host can do). A session without a route out
-cannot reach any UI. A UI started with `--egress` or `--cloud` joins the
-default network as well; an egress terminal session can resolve its name,
-but the daemon's bind address still prevents a connection
-([Forwarder](#forwarder)). The agent check treats every successful UI
-connection as a failure, with or without egress. All UIs share the `ui`
-network, so while any UI runs with `--cloud` or `--egress`, every other
-running UI, of any project, has a transitive route out through it. A UI
-without the flag is offline only when no such UI is running (a [settled
-decision](../CONTRIBUTING.md#settled-decisions)). Browser UIs are not
-isolated from each other: treat them as trusted peers with access to
-their mounted projects.
+cannot reach any UI; an `--egress` or `--cloud` session can resolve a
+UI's name, but the daemon's bind address still prevents a connection
+([Forwarder](#forwarder)), and the agent check treats every successful
+UI connection as a failure. A UI started with `--egress` or `--cloud`
+joins the default network as well, so while it runs every other running
+UI, of any project, has a transitive route out through the shared `ui`
+network (a [settled decision](../CONTRIBUTING.md#settled-decisions)).
+Browser UIs are not isolated from each other: treat them as trusted
+peers with access to their mounted projects.
 
 ### Services
 
@@ -166,19 +150,16 @@ engine check below. `down`, then `up` recreates it.
 
 ### Rootless Podman
 
-The engine keeps its bridges and gateways in the
-user's network namespace, which exposes no host service. Whether an
-`--egress` or `--cloud` session can reach a UI peer depends on each
-internal bridge's IPv4 `forwarding` flag, which the order of network
-creation decides: netavark creates an internal bridge with the flag off,
-and the first non-internal network switches IPv4 forwarding on in the
-namespace, which turns the flag on for every bridge that already exists.
-`up` and every agent or UI start read the flag of each
+The engine keeps its bridges and gateways in the user's network
+namespace, which exposes no host service. Whether an `--egress` or
+`--cloud` session can reach a UI peer depends on each internal bridge's
+IPv4 `forwarding` flag, which the order of network creation decides:
+the first non-internal network turns the flag on for every bridge that
+already exists. `up` and every agent or UI start read the flag of each
 internal bridge (`podman unshare --rootless-netns`) and refuse a bridge
-that forwards. No bridge exists before a container uses the network.
-[`smoke --agent pi --egress`](cli.md#smoke), run while a browser UI runs
-and again after an engine upgrade, is therefore the per-host proof that
-the UI's `ui` address is unreachable from an egress session.
+that forwards. [`smoke --agent pi --egress`](cli.md#smoke), run while a
+browser UI runs and again after an engine upgrade, is the per-host
+proof that the UI's `ui` address is unreachable from an egress session.
 
 ### Docker
 
@@ -223,5 +204,4 @@ podman network inspect tokencrate_dashboard --format '{{.Internal}}'            
 docker network inspect tokencrate_agents --format '{{json .IPAM.Config}}'         # Docker only: no Gateway
 ```
 
-On Docker, run the `network inspect` lines with `docker`; each internal
-network must also show no `Gateway` in its `IPAM.Config`.
+On Docker, run the `network inspect` lines with `docker`.

@@ -36,17 +36,17 @@ review them yourself. The repository's MIT license does not cover weights.
 | --- | --- | ---: | ---: | --- | ---: | ---: | --- |
 | `qwen3.8-27b-q4-mtp` (default) | Qwen3.8 Q4 | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 138 to 154 tokens/s | a single agent; a second client waits for the slot instead of sharing it |
 | `qwen3.8-27b-q4` | Qwen3.8 Q4 | 64K total, 32K per slot | 2 | none | 24 GiB | 74 to 75 tokens/s | the built-in chat UI and an agent at the same time on one loaded model |
-| `qwen3.8-27b-q4-mtp-long` | Qwen3.8 Q4 | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 138 to 154 tokens/s | oh-my-pi, whose [first request](agents.md) is large, and long agent sessions at the default's speed |
-| `qwen3.8-27b-q6-quality` | Qwen3.8 Q6 | 48K | 1 | MTP, 2 draft tokens | 30 GiB | 100 to 113 tokens/s | the quality tier |
+| `qwen3.8-27b-q4-mtp-long` | Qwen3.8 Q4 | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 138 to 154 tokens/s | long agent sessions and clients with large tool schemas |
+| `qwen3.8-27b-q6-quality` | Qwen3.8 Q6 | 48K | 1 | MTP, 2 draft tokens | 30 GiB | 100 to 113 tokens/s | the larger Q6 quantization |
 | `gpt-oss-20b-fast` | gpt-oss-20b | 128K total, 64K per slot | 2 | none | 20 GiB | 246 to 264 tokens/s | fast chat and a tool-calling fallback |
-| `gpt-oss-20b-small` | gpt-oss-20b | 32K | 1 | none | 15 GiB | 244 to 260 tokens/s | a 16 GB card |
-| `qwen3.8-27b-q3-small` | Qwen3.8 Q3 | 32K | 1 | none | 15 GiB | 89 to 91 tokens/s | a 16 GB card with the 27B; what three bits cost it on agent work is not measured |
+| `gpt-oss-20b-small` | gpt-oss-20b | 32K | 1 | none | 15 GiB | 244 to 260 tokens/s | smaller cards; see the limits below |
+| `qwen3.8-27b-q3-small` | Qwen3.8 Q3 | 32K | 1 | none | 15 GiB | 89 to 91 tokens/s | smaller cards with the 27B; answer quality is not measured |
 | `qwen3.8-27b-q4-mtp-f16kv` | Qwen3.8 Q4 | 64K | 1 | MTP, 3 draft tokens | 25 GiB | 143 to 144 tokens/s | the default's settings with an unquantized KV cache, for long documents and tool calls |
-| `qwen3.8-27b-q4-uncensored-mtp` | Qwen3.8 Q4 abliterated | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 143 to 151 tokens/s | uncensored (abliterated), refusals removed at the weight level |
+| `qwen3.8-27b-q4-uncensored-mtp` | Qwen3.8 Q4 abliterated | 64K | 1 | MTP, 3 draft tokens | 24 GiB | 143 to 151 tokens/s | the abliterated 27B |
 | `qwen3.8-27b-q4-uncensored-mtp-long` | Qwen3.8 Q4 abliterated | 128K | 1 | MTP, 3 draft tokens | 28 GiB | 142 to 147 tokens/s | uncensored (abliterated) with the 128K slot |
 | `glm-5.3-flash-q2` | GLM-5.3-Flash Q2 | 128K | 1 | MTP, 2 draft tokens | 30 GiB and 96 GiB RAM | not loadable | the [96 GB RAM tier](#the-96-gb-ram-tier) |
 | `glm-5.3-flash-q2-uncensored` | GLM-5.3-Flash Q2 uncensored | 64K | 1 | none (its files drop the MTP head) | 30 GiB and 96 GiB RAM | not loadable | uncensored (orcarouter), 2-bit, no memory margin |
-| `qwen3.8-flash-next-q4` | Flash-Next Q4 | 128K | 1 | none | 30 GiB and 96 GiB RAM | 31 to 32 tokens/s | the [96 GB RAM tier](#the-96-gb-ram-tier) that the pinned build loads: 125B parameters, 6B active, experts in system memory |
+| `qwen3.8-flash-next-q4` | Flash-Next Q4 | 128K | 1 | none | 30 GiB and 96 GiB RAM | 31 to 32 tokens/s | the loadable [96 GB RAM tier](#the-96-gb-ram-tier) |
 | `qwen3.8-flash-next-q4-uncensored` | Flash-Next Q4 uncensored | 128K | 1 | none | 30 GiB and 96 GiB RAM | 36 to 37 tokens/s | uncensored (orcarouter), the same settings with two more expert layers on the card |
 
 The `[requires]` values are the preset files' own, which `bash
@@ -54,22 +54,18 @@ bin/tokencrate presets list` prints. The generation speeds are for a
 short and a long prompt on an RTX 5090 with llama.cpp build b11028,
 except the `qwen3.8-flash-next-q4-uncensored` row, measured on b10920;
 [Validation](validation.md#status) says when the baseline last passed.
-The presets measured on the 32 GB card held 3 to 7 GiB less GPU memory
-than they declare; the 16 GB pair held 1.5 to 2.3 GiB less. A full slot
-holds no more than an empty one, because llama-server allocates the KV
-cache when the preset loads (measured with 119,009 tokens in a 128K
-slot), and MTP drafting adds about 1.5 GiB to a 128K slot. The two GLM
-presets have no GPU record.
+A declared value is a ceiling with a few GiB of headroom: llama-server
+allocates the KV cache when the preset loads, so a full slot holds no
+more than an empty one.
 
 The default preset gives a single agent one 64K slot instead of two 32K
-slots. An agent's first request is 8,000 to 19,000 tokens ([Coding
-agents and skills](agents.md) has the figures per agent), and `xhigh`
-reasoning grows the prompt quickly ([reasoning
-effort](#reasoning-effort)). Two requests issued together take twice as
-long as one, because the second waits for the slot. One preset is loaded
-at a time. A request that names another preset waits for the running
-request; then the router unloads the loaded model and reads the other
-one's full file from disk. Keep one preset for a session.
+slots, because an agent's first request is 8,000 to 19,000 tokens
+([Coding agents and skills](agents.md) has the figures per agent) and
+`xhigh` [reasoning](#reasoning-effort) grows the prompt quickly; a
+second request waits for the slot. One preset is loaded at a time: a
+request that names another preset waits for the running request, then
+the router unloads the loaded model and reads the other one's full file
+from disk, so keep one preset for a session.
 
 Any OpenAI-compatible client on the host can use the running stack at
 `http://127.0.0.1:4207/v1` (port `LLM_PORT`) with a model name listed by
@@ -84,15 +80,11 @@ containment](privacy.md#defaults-and-their-limits)).
 Qwen3.8 and gpt-oss think before answering and read their effort from the
 request. The effort is an instruction to the model, not a token budget: the
 Qwen template adds a system line that asks for careful or brief thinking,
-and the model decides how long it thinks: on a task that needs
-reasoning, the 27B generated 258, 503, 573, and 714 tokens per turn at
-`low`, `medium`, `high`, and `xhigh`, and on a one-line answer the level
-made no difference. The Qwen presets default to
+and the model decides how long it thinks. The Qwen presets default to
 `xhigh`, the default of the
-[model card](https://huggingface.co/Qwen/Qwen3.8-27B), which also notes
-that in multi-turn agentic tasks lower effort can cause failures and
-retries that cost more in total. The gpt-oss presets stay at `medium`
-because speed is their purpose. These defaults apply to clients that send
+[model card](https://huggingface.co/Qwen/Qwen3.8-27B); the gpt-oss
+presets stay at `medium` because speed is their purpose. These defaults
+apply to clients that send
 no effort; the agents always send their thinking level. Higher effort
 means longer turns, and the template keeps earlier reasoning in the
 prompt, so a slot fills sooner.
@@ -114,9 +106,8 @@ Two ways to choose another effort without reloading the model:
   | gpt-oss | `low`, `medium`, `high` (the harmony template cannot switch thinking off) | `low`, `medium`, `high` |
   | GLM-5.3-Flash | `low`, `high`, `max` (no thinking switch) | `low`, `high`, `max` |
 
-  On gpt-oss, pi's seeded `xhigh` is a hidden level. The GLM row and the
-  effort pi sends on gpt-oss under its hidden `xhigh` are [known
-  gaps](validation.md#known-gaps).
+  On gpt-oss, pi's seeded `xhigh` is a hidden level; the effort pi sends
+  then is a [known gap](validation.md#known-gaps).
 - **In any other client**, send the effort with the request:
   `reasoning_effort` at the top level of the chat completion body (`low`,
   `medium`, or `xhigh`; for gpt-oss `low`, `medium`, or `high`), or
@@ -133,13 +124,10 @@ descriptions carry the word "uncensored" and the method.
   [huihui-ai's abliteration](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF)
   of the default preset's file with the default preset's settings;
   `qwen3.8-27b-q4-uncensored-mtp-long` is the same file with the settings
-  of `qwen3.8-27b-q4-mtp-long`. Abliterated builds loop in their
-  reasoning in a share of runs. The `reply terminates` check of `smoke`
-  shows such a loop (the reply ends with `length` instead of `stop`),
-  and a 128K slot gives it more room before `n_predict` ends it. In the
-  recorded runs (six long completions at `xhigh` and a six-turn agent
-  session) the abliterated 27B ended its replies as the default preset
-  did.
+  of `qwen3.8-27b-q4-mtp-long`. Abliterated builds can loop in their
+  reasoning; the `reply terminates` check of `smoke` shows such a loop
+  (the reply ends with `length` instead of `stop`), and a 128K slot
+  gives it more room before `n_predict` ends it.
 - `qwen3.8-flash-next-q4-uncensored` runs orcarouter's abliteration of
   Qwen3.8-Flash-Next with the settings of `qwen3.8-flash-next-q4` and two
   more expert layers on the card, which its smaller file leaves room for.
@@ -161,43 +149,35 @@ their quant and layer split.
 | Property | Qwen3.8-Flash-Next | GLM-5.3-Flash |
 | --- | --- | --- |
 | Parameters | 125B total, 6B active, plus a 51B n-gram table | 320B total, 18B active |
-| Quant and download | UD-Q4_K_XL, 111.3 GB (KL 0.047 in [Unsloth's table](https://unsloth.ai/docs/models/qwen3.8-next)) | UD-Q2_K_XL, 108.7 GB (78 percent top-1 agreement with the full model) |
+| Quant and download | UD-Q4_K_XL, 111.3 GB | UD-Q2_K_XL, 108.7 GB |
 | Expert layers in system memory | 38 of 48 (about 60 GiB mapped) | 38 of 45 (about 78 GiB) |
-| Held on the card | 26.2 GiB (declares 30) | not measured (declares 30) |
-| Generation | 31 to 32 tokens/s | 6 to 7 tokens/s in one consumer report on an RTX 3090 |
-| Prompt processing | 98 tokens/s short, 660 for a 6K prompt | 60 to 70 tokens/s in that same report |
+| Held on the card | 26 GiB (declares 30) | not measured (declares 30) |
+| Generation | 31 to 32 tokens/s | not measured |
+| Prompt processing | 98 tokens/s short, 660 for a 6K prompt | not measured |
 | Loads on the pinned build | yes | no; waits for a llama.cpp release with `glm5next` |
 
 Flash-Next is the tier's loadable model. The first request after a load
-is slow: the first completion takes 23 to 38 seconds (the page faults
-of the memory map), and a pi session's first request took 43 seconds
-before the first word, because the model's prompt processing is a
-quarter of the 27B's. The weights in system memory are memory-mapped,
-so the host counts them as page cache, not as used memory: a system
-monitor shows a few GiB in use while `free` shows 86 GiB of cache. The
-preset comments say what else was tried and how to try `load-mode`.
+waits 25 to 45 seconds for the first word (the page faults of the memory
+map), and the model's prompt processing is a quarter of the 27B's. The
+weights in system memory are memory-mapped, so the host counts them as
+page cache, not as used memory. The preset comments say how to try
+`load-mode`.
 
 No llama.cpp release carries GLM-5.3-Flash's architecture (`glm5next`),
 so its model sets declare `[requires] llama_build = "unreleased"` and
-`up`, `presets list`, and `doctor` mark both presets as waiting
-([Adding a model](#adding-a-model) describes the gate). The model ships
-because it is expected to beat the 27B on knowledge; [the settled
-decision](../CONTRIBUTING.md#settled-decisions) gives the scores behind
-that expectation. The presets are a [known
-gap](validation.md#known-gaps). The GLM presets take their settings from
-[pull request 27754](https://github.com/ggml-org/llama.cpp/pull/27754),
-with a fallback ladder in the preset comments for the first run.
+the presets wait behind the [build gate](#adding-a-model). The model
+ships because it is expected to beat the 27B on knowledge ([settled
+decisions](../CONTRIBUTING.md#settled-decisions)). The presets are
+untested, a [known gap](validation.md#known-gaps); their comments name
+the upstream sources and carry a fallback ladder for the first run.
 
 ## KV cache and context checkpoints
 
 The Qwen presets keep the KV cache in `q8_0`. `qwen3.8-27b-q4-mtp-f16kv`
-keeps it unquantized, which cost about 2 GiB more and 7 percent of
-generation speed after a 6K-token prompt on the RTX 5090; the preset
-comment cites the KL benchmark behind the choice. A `bf16` cache held as
-much as `f16` and was no faster on the pinned build, so no preset uses
-it. The Qwen presets use
-context checkpoints (8, or 16 for the 128K presets), which is how
-llama-server reuses earlier prompt work on a hybrid-attention model.
+keeps it unquantized, which costs about 2 GiB more and 7 percent of
+generation speed on a long prompt. The Qwen presets use context
+checkpoints (8, or 16 for the 128K presets), which is how llama-server
+reuses earlier prompt work on a hybrid-attention model.
 
 ## The patched chat template
 
@@ -206,13 +186,11 @@ template: the template embedded in the GGUF raises `System message must
 be at the beginning.` for any system or developer message after the first
 turn, which some clients send mid-conversation. The copy under
 `config/chat-templates/` renders such a message as a normal system turn
-and is otherwise identical (one block differs). `smoke` proves it on the
-running server; the header of
+and is otherwise identical; the header of
 [the template file](../config/chat-templates/qwen3.8-27b-agent.jinja)
-names the upstream source and the discussions behind the change.
-huihui-ai's abliterated 27B embeds the same template as Unsloth's file
-(the same SHA-256), so the patch applies to it; orcarouter's Flash-Next
-file embeds a different one, which the patched copy replaces.
+names the upstream source and the discussions behind the change. The
+abliterated Qwen sets use the same copy. `smoke` proves it on the
+running server.
 
 ## Adding a model
 
@@ -240,10 +218,9 @@ file embeds a different one, which the patched copy replaces.
    gets a `[requires]` table with `llama_build`: the first build that
    loads it, as `pins.env` spells it (`llama_build = "b11100"`), or
    `"unreleased"` while no release carries the support. Its presets
-   validate, are listed as waiting (`waits for llama.cpp build b11100
-   (pinned: b11028)`), and stay out of the router and the agent model
-   lists until the pin reaches that build; `LLM_DEFAULT_PRESET` cannot
-   name one. When a release carries the support, write its build number
+   validate, are listed as waiting, and stay out of the router and the
+   agent model lists until the pin reaches that build;
+   `LLM_DEFAULT_PRESET` cannot name one. When a release carries the support, write its build number
    into the set and raise the pin past it
    ([Upgrading](configuration.md#upgrading)).
 
@@ -251,15 +228,13 @@ file embeds a different one, which the patched copy replaces.
    new set, and adjust the context size and `[requires] vram_gib`. The
    preset id is the file name without `.toml`.
 
-   Presets express llama-server settings through typed keys, which
-   `tokencrate/presets.py` defines with their types and limits. The
+   Presets express llama-server settings through typed keys. The
    `[server.extra]` table passes a short list of further options through
    unchanged, as `name = value` with the option's long name without the
    leading dashes: `override-kv`, `load-mode`, `log-prompts-dir`, and
-   `verbose` (`EXTRA_KEYS` in `tokencrate/presets.py`). Another option
-   joins the list by a code change, after reading its `llama-server
-   --help` entry. Run `presets check` after every edit; it names what it
-   rejects:
+   `verbose`; another option joins the list by a code change in
+   `tokencrate/presets.py`. Run `presets check` after every edit; it
+   names what it rejects:
 
    - an unknown key, and an extra option outside the list, a typed
      setting's own spelling included;
@@ -313,10 +288,9 @@ needs none.
 The smallest shipped presets are `gpt-oss-20b-small` and
 `qwen3.8-27b-q3-small` at 15 GiB, measured on a 32 GB card, not on a
 16 GB one ([known gaps](validation.md#known-gaps)). If none of the
-shipped presets fits
-your card, write one. A preset is a TOML file, and its `[requires]
-vram_gib` is what `doctor --preset` compares with the card; nothing else
-in TokenCrate is tied to a card size.
+shipped presets fits your card, write one: `[requires] vram_gib` is what
+`doctor --preset` compares with the card, and nothing else in TokenCrate
+is tied to a card size.
 
 1. Copy the closest shipped preset under `config/presets/` and shrink
    what the card cannot hold: the slot count (`parallel`) and the context

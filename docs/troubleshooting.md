@@ -1,7 +1,7 @@
 # Troubleshooting
 
-Each section is one failure observed in a run of the shipped tree: the
-message, its cause, and the remedy. Most refusals name their remedy;
+Each section is one observed failure: the message, its cause, and the
+remedy. Most refusals name their remedy;
 when one does not, start with these two commands:
 
 ```bash
@@ -44,14 +44,14 @@ fetch` command the message names, or choose a listed preset.
 
 ## A command refuses because of the stack record
 
-`up` writes `build/stack.json` with the engine it started the stack on,
-and every later command uses that engine. A `CONTAINER_ENGINE` that
-disagrees is refused: `the stack runs on docker, not podman
-(build/stack.json); run: CONTAINER_ENGINE=docker bash bin/tokencrate
-down`. Run that `down`, then `up` on the engine you want. An unreadable
-record is refused as `cannot read the stack record <path>: <error>;
-remove it if no stack is running`: check with `podman ps` or `docker ps`
-that no TokenCrate container runs, then delete the file.
+`up` records the engine it started the stack on in `build/stack.json`,
+and a later command with another `CONTAINER_ENGINE` is refused: `the
+stack runs on docker, not podman (build/stack.json); run:
+CONTAINER_ENGINE=docker bash bin/tokencrate down`. Run that `down`, then
+`up` on the engine you want. An unreadable record is refused as `cannot
+read the stack record <path>: <error>; remove it if no stack is
+running`: check with `podman ps` or `docker ps` that no TokenCrate
+container runs, then delete the file.
 
 ## `up` or a session refuses an internal network
 
@@ -68,10 +68,7 @@ or `dashboard` network is not in the shape the Compose files declare:
   and run: bash bin/tokencrate up` for a network made by hand under the
   project's name.
 
-`down` removes the project's networks and `up` recreates them; a network
-without the project's labels is removed with the command the message
-names. [Internal networks](privacy.md#internal-networks) states the
-rule.
+[Internal networks](privacy.md#internal-networks) states the rule.
 
 ## The agent starts but every request fails
 
@@ -92,16 +89,14 @@ what a reverse proxy must pass on.
 
 ## Paseo asks to pair again or shows the previous project
 
-After a relaunch for another project, reload the page. Paseo remembers
-the daemon identity of each address. The identity, `daemon-keypair.json`
-and `server-id`, lives in each project's `.paseo` directory under its
-agent home and is shared through the per-set store
-`LLM_AGENTS_DIR/pi/paseo-state/` ([Browser UIs](agents.md#browser-uis)
-says how the launcher copies it). For a fresh identity, stop the UI
-(`bash bin/tokencrate ui stop paseo`) and delete the two files from the
-store and from every project's `.paseo`; the browser then pairs again.
-Deleting the store alone changes nothing, because the next start copies
-the project's identity back into it.
+After a relaunch for another project, reload the page. For a fresh
+identity, stop the UI (`bash bin/tokencrate ui stop paseo`) and delete
+`daemon-keypair.json` and `server-id` from the per-set store
+`LLM_AGENTS_DIR/pi/paseo-state/` and from every project's `.paseo`
+directory under its agent home; the browser then pairs again. Deleting
+the store alone changes nothing, because the next start copies a
+project's identity back into it. [Browser UIs](agents.md#browser-uis)
+says how the identity is shared between projects.
 
 ## pi reports `Summarization failed` and refuses the next prompt
 
@@ -109,19 +104,17 @@ A turn that fills the preset's slot ends with `length`, and pi's
 compaction of the overflowing conversation can fail with `Summarization
 failed: generation hit the token cap and the summary is incomplete`; the
 agent then stays busy and refuses the next prompt. Reopen the
-conversation: the recorded session, reopened in PI WEB, compacted and
-continued at a quarter of the slot. A `-long` preset gives the next
-session a 128K slot ([Included presets](models.md#included-presets)).
+conversation (validated in PI WEB): it compacts and continues. A `-long`
+preset gives the next session a 128K slot
+([Included presets](models.md#included-presets)).
 
 ## A reply ends with `length` and no answer
 
-At `xhigh` the model can spend the whole reply budget on reasoning: a
-600-word story prompt with a 4,096-token budget returned no answer on
-the default preset and on the abliterated one alike. Lower the effort
-for the prompt ([reasoning effort](models.md#reasoning-effort)) or raise
-the client's token limit. In `smoke` the same ending fails the `reply
-terminates` check, where it can also mean a reasoning loop
-([`smoke`](cli.md#smoke)).
+At `xhigh` the model can spend the whole reply budget on reasoning and
+return no answer. Lower the effort for the prompt
+([reasoning effort](models.md#reasoning-effort)) or raise the client's
+token limit. In `smoke` the same ending fails the `reply terminates`
+check, where it can also mean a reasoning loop ([`smoke`](cli.md#smoke)).
 
 ## Asking for help
 

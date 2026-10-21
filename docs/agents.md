@@ -8,8 +8,8 @@ read-only and Linux capabilities are dropped.
 
 | Agent | Command | What it is |
 | --- | --- | --- |
-| pi | `bash bin/tokencrate agent pi` | A small coding agent with a fixed tool set, configured entirely from files, plus the [agent sets](agent-sets.md) you select |
-| oh-my-pi | `bash bin/tokencrate agent omp` | A fork of pi with more context per turn and faster-moving releases; its added features (language servers, subagents, MCP) are outside what TokenCrate's runs cover |
+| pi | `bash bin/tokencrate agent pi` | A coding agent with the [agent sets](agent-sets.md) you select |
+| oh-my-pi | `bash bin/tokencrate agent omp` | A fork of pi with built-in tools; see [Validation](validation.md#status) for what TokenCrate checks |
 
 Both agents read the same skills, the same `AGENTS.md` in your project,
 and the same model list, one entry per loadable preset. The preset in
@@ -19,13 +19,10 @@ Reasoning effort is the agent's thinking level; see [reasoning
 effort](models.md#reasoning-effort) for the levels, what each does, and
 how they map onto each preset.
 
-The first request costs about 8,000 tokens for pi with the `coding` set,
-8,900 to 9,700 with the toolchain selections, and 19,028 for oh-my-pi,
-measured with the 27B on an RTX 5090. The default preset has one 64K
-slot; pi compacts the conversation when the slot fills, and a session
-whose turns read 20 KB files filled it in about ten turns and refilled
-it within two. Use `qwen3.8-27b-q4-mtp-long` (one 128K slot) when a
-session runs out of context.
+Tool schemas and global context consume part of the model's context slot.
+Use [`stats`](cli.md#stats) to compare your sessions with the
+[included presets](models.md#included-presets) when compaction becomes
+frequent.
 
 ## What the container can and cannot do
 
@@ -40,8 +37,8 @@ session runs out of context.
   whatever the selected [agent sets](agent-sets.md) add. It cannot install
   system packages; a set is how a package gets into the image.
 - It cannot reach the internet, resolve internet names, or reach a running
-  browser UI; `bash bin/tokencrate smoke --agent pi` proves that those
-  routes are absent. Its other host inputs are read-only: agent settings,
+  browser UI by default. [`smoke`](cli.md#smoke) checks those boundaries.
+  Its other host inputs are read-only: agent settings,
   its generated model-list file, and the skills described below.
 - It reads the skills and any `AGENTS.md` inside the project, so a cloned
   repository can instruct the agent. Project-local code runs inside the
@@ -61,8 +58,7 @@ session runs out of context.
   change for a later one.
 - Commits made inside the container use `GIT_AUTHOR_NAME` and
   `GIT_AUTHOR_EMAIL` from `.env`; without them, `git commit` asks for an
-  identity. The project is marked as a safe Git directory inside the
-  container because its owner can differ from the container user on Docker.
+  identity.
 
 When a task needs the network, for example to install packages, start the
 session with `--egress`; no setting grants it. The wrapper prints a
@@ -80,11 +76,11 @@ file of your own, named by `LLM_CLOUD_KEYS_FILE` (default
 `local/cloud-keys.env`). The file holds one `NAME=value` line per key,
 using the variable names pi reads, for example `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`; pi's
-documentation lists every provider's. Its grammar is the container
-entrypoint's own: an upper-case name, matching quotes around a value
-removed, nothing expanded, blank lines and lines starting with `#`
-skipped, LF line endings. The wrapper mounts the file read-only into
-that one session or UI and never opens it. Start from the template:
+documentation lists every provider's. The grammar: an upper-case name,
+matching quotes around a value removed, nothing expanded, blank lines
+and lines starting with `#` skipped, LF line endings. The wrapper mounts
+the file read-only into that one session or UI and never opens it.
+Start from the template:
 
 ```bash
 cp cloud-keys.env.example local/cloud-keys.env && chmod 600 local/cloud-keys.env
@@ -101,13 +97,12 @@ settings](privacy.md#telemetry-switches) off; any other variable pi
 reads is passed on.
 
 Pick the cloud model with `/model`. pi ships each provider's endpoint
-and a model list bundled with the pinned package, so a provider is
-offered as soon as its key variable is set. One key can enable more than
-one provider: pi also offers the regional and plan variants that read
-the same variable (`moonshotai-cn`, `opencode-go`), and `HF_TOKEN` in
-the file enables its Hugging Face provider. Providers that need a login
-or a second variable, such as pi's ChatGPT subscription (`openai-codex`),
-are not set up by the wrapper.
+and model list with the pinned package, so a provider is offered as
+soon as its key variable is set, together with the regional and plan
+variants that read the same variable. `HF_TOKEN` in the file enables
+pi's Hugging Face provider. A provider that needs a login or a second
+variable, such as pi's ChatGPT subscription (`openai-codex`), is not
+set up by the wrapper.
 
 Use `--cloud` only in a project you trust:
 
@@ -122,8 +117,8 @@ Use `--cloud` only in a project you trust:
 - A browser UI started with `--cloud` holds the keys while it runs
   ([`ui`](cli.md#ui) says what ends that). Whoever reaches its port can
   use them and the route out: every local process and every other browser
-  UI ([network limits](privacy.md#networks)).
-  Run one such UI at a time and stop it when the work is done.
+  UI ([network limits](privacy.md#networks)). Run one such UI at a time
+  and stop it when the work is done.
 - Cloud models are offered through pi only. oh-my-pi fills unset
   provider settings, base URLs included, from `.env` files in its home,
   its configuration root, and the project (`.env`, `.env.local`,
@@ -161,11 +156,9 @@ skills from the image.
 Included:
 
 - `pocock-core`: seventeen engineering and productivity skills from
-  `mattpocock/skills` (MIT), one `[[skill]]` table each in
-  `config/skill-sets/pocock-core.toml`. A skill that another one calls by
-  name is pinned with it; the manifest header lists the callers.
-  `code-review`, `to-spec`, `triage`, and `wayfinder` send you to
-  `setup-matt-pocock-skills` when no issue tracker is configured.
+  `mattpocock/skills` (MIT). `code-review`, `to-spec`, `triage`, and
+  `wayfinder` send you to `setup-matt-pocock-skills` when no issue
+  tracker is configured.
 - `skill-crate`: one skill, `documentation-guidelines`, from
   [SkillCrate](https://github.com/angelo-lesniak/skill-crate) (MIT): the
   documentation policy and workflow that TokenCrate's own pages follow,
@@ -173,8 +166,7 @@ Included:
 
 `skills status <set>` recomputes the digests of fetched skills; a
 mismatch means the files on disk changed. `skills fetch` refuses a commit
-whose digest differs from the manifest, so review an upstream change and
-re-pin it. Read a skill before you pin it.
+whose digest differs from the manifest.
 
 ## Browser UIs
 
@@ -196,8 +188,7 @@ Compared with `agent pi`:
   [Forwarder](privacy.md#forwarder) what the forwarder protects.
 - Extension dialogs (`confirm`, `select`, `input`) appear in the browser.
   Paseo runs pi in RPC mode, which is expected to show no project trust
-  prompt, so project-local `.pi/` resources are expected not to load in
-  Paseo sessions.
+  prompt, so project-local `.pi/` resources do not load there.
 - Each keeps its own state under the agent home (`~/.pi-web`, `~/.paseo`
   in the container), which persists with the project's sessions.
 - `ui <set> --egress` and `ui <set> --cloud` give the UI container what
@@ -205,26 +196,24 @@ Compared with `agent pi`:
   `egress` or `cloud`. [Cloud providers](#cloud-providers) says who can
   use the route and the keys while it runs.
 
-**PI WEB** runs a session daemon and web server on the image's pi. The
-launcher switches off PI WEB's session-spawning tools and environment
-note (the `coding` set provides a subagent tool) and keeps its bundled
-relay out of pi's package list.
+**PI WEB** runs a session daemon and web server on the image's pi. Its
+own session-spawning tools are switched off; the `coding` set's subagent
+tool takes their place.
 
 **Paseo** runs pi as a subprocess in RPC mode. At first start the
-launcher registers the project as a local workspace without a worktree.
-When the project has no daemon configuration yet, it seeds one: `Pi` as
-the only provider, the selected preset as the default model at thinking
-level `xhigh`, and a saved agent profile named after the preset for
-one-click starts. That configuration persists in the project's `.paseo`
-directory and a later `--preset` does not replace it; the browser
-remembers the last choice in its create-agent form. Paseo's web client
-treats a new identity at a known address as an unreachable host. The
-daemon identity (`daemon-keypair.json` and `server-id`) therefore lives
-in each project's `.paseo` directory and is shared through the per-set
-store ([Storage layout](configuration.md#storage-layout)): the launcher
-copies the first daemon's identity into the store, and before a later
-project's daemon starts it copies the store's identity into that
-project's `.paseo`. [Troubleshooting](troubleshooting.md#paseo-asks-to-pair-again-or-shows-the-previous-project)
+launcher registers the project as a local workspace without a worktree
+and, when the project has no daemon configuration yet, seeds one: `Pi`
+as the only provider, the selected preset as the default model at
+thinking level `xhigh`, and a saved agent profile named after the preset
+for one-click starts. That configuration persists in the project's
+`.paseo` directory and a later `--preset` does not replace it; the
+browser remembers the last choice in its create-agent form. Paseo's web
+client treats a new daemon identity at a known address as an unreachable
+host, so the launcher shares one identity (`daemon-keypair.json` and
+`server-id`) between projects through the per-set store: the first
+daemon's identity is copied into the store, and a later project's
+`.paseo` receives the store's copy before its daemon starts.
+[Troubleshooting](troubleshooting.md#paseo-asks-to-pair-again-or-shows-the-previous-project)
 says how to get a fresh identity.
 
 ## Use four clients with one model
@@ -233,21 +222,28 @@ A terminal pi, a terminal oh-my-pi, PI WEB, and Paseo can work on one
 project at once. Start each with the same `--preset` and `--dir`, and give
 each client its own conversation: shared pi transcripts do not make
 concurrent writes to one conversation safe. All four use the one
-loaded preset; on a preset with one slot, their requests queue (the
-[independent-client check](validation.md#status) is the run behind
-this).
+loaded preset; on a preset with one slot, their requests queue.
 
 ## Agent configuration
 
 The defining files are `config/agents/pi/settings.json`,
 `config/agents/omp/config.yml`, `services/agents/entrypoint.sh`, and the
-agent volumes in `compose.yaml`.
+agent volumes in `compose.yaml`. Edit them to change the next container's
+defaults; TokenCrate has no separate input for private agent settings,
+themes, or keybindings. Both agents start at thinking level `xhigh`; pi
+also starts with project trust `ask` and the compaction limits in
+`settings.json`.
 
-At each start, both agents use the repository's thinking level `xhigh`.
-pi also uses project trust `ask` and the compaction limits in
-`settings.json`. Edit the repository files to change the next container's
-defaults. TokenCrate has no separate input for private agent settings,
-themes, or keybindings.
+The entrypoint writes the agent configuration into the fresh home at
+every start. oh-my-pi rewrites its `config.yml` in the home, so a model
+chosen with `/model` lasts until the container stops; the repository's
+`config/agents/omp/config.yml` is an overlay above that home copy and
+the project (`PI_CONFIG_FILES`), so changing one of its keys in the
+session has no effect. The repository's `config/agents/omp/AGENTS.md` is
+oh-my-pi's global context, mounted read-only at
+`~/.omp/agent/AGENTS.md`. pi's `packages` are exactly the image's local
+directories, and `PI_OFFLINE=1` keeps pi from adding to them. Neither
+bash tool reads shell startup files from the home.
 
 A running UI container serves one project and one home, shared by its
 conversations. An agent in one conversation can change what later
@@ -257,19 +253,3 @@ Paseo's provider command and environment. Changes elsewhere in the agent
 home last until the container stops. Stop the UI between tasks that must
 not trust each other, and inspect the project and the retained UI
 directories before trusting a later session.
-
-Neither bash tool reads shell startup files from the home: pi's bash
-tool passes `--noprofile --norc`, and `PI_BASH_NO_LOGIN=1` keeps
-oh-my-pi's bash tool from starting a login shell.
-
-The entrypoint writes the agent configuration into the fresh home at
-every start, which fixes what a session can change. oh-my-pi rewrites
-its `config.yml` in the home, so a model chosen with `/model` lasts
-until the container stops. `PI_CONFIG_FILES` names the repository's
-`config/agents/omp/config.yml` as an overlay above that home copy and
-the project, so changing one of its keys in the session has no effect.
-The `coding` set's subagents run on the session's own model and thinking
-level. The repository's `config/agents/omp/AGENTS.md` is oh-my-pi's
-global context, mounted read-only at `~/.omp/agent/AGENTS.md`. pi's
-`packages` are exactly the image's local directories, and `PI_OFFLINE=1`
-keeps pi from adding to them.

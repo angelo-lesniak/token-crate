@@ -10,13 +10,12 @@ coexist.
 ```bash
 bash bin/tokencrate agent-sets list        # the shipped and private sets
 bash bin/tokencrate agent pi --dir ~/src/my-project          # the sets in LLM_AGENT_SETS
-bash bin/tokencrate agent pi --sets coding,debug,odin --dir ~/src/my-project
 ```
 
-`LLM_AGENT_SETS` in `.env` selects the default sets (`coding,metrics`). Use
-`--sets` to override the selection for one session, or `--sets ''` for
-plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
-[`ui`](cli.md#ui) for command options.
+`LLM_AGENT_SETS` in `.env` selects the default sets (`coding,metrics`) for
+`agent pi` and `ui`. `--sets` overrides the selection for one launch, and
+`--sets ''` selects plain pi. [`agent`](cli.md#agent), [`smoke`](cli.md#smoke),
+and [`ui`](cli.md#ui) list the command options.
 
 ## Shipped sets
 
@@ -24,10 +23,10 @@ plain pi. See [`agent`](cli.md#agent), [`smoke`](cli.md#smoke), and
 | --- | --- | --- |
 | `coding` | The pi coding extensions: pi-lens code intelligence (`lens_diagnostics` after edits; `lsp_navigation` and `ast_grep_*` on demand), anchored edits, `/plan`, `/advisor`, and the subagent tool with the `scout`, `planner`, `reviewer`, and `worker` definitions, each running on the session's own model | Any |
 | `debug` | One `debug` tool over whatever debug adapters the other sets ship | `dotnet`, `web`, or `odin` |
-| `dotnet` | The .NET SDK, csharp-ls, netcoredbg, a read-only NuGet cache warmed with the `console`, `classlib`, `xunit`, and `web` templates; uncached packages need `--egress`, an explicit source, and a writable project cache (`NUGET_PACKAGES`) | `debug` |
+| `dotnet` | The .NET SDK, csharp-ls, netcoredbg, and a read-only NuGet cache warmed with the `console`, `classlib`, `xunit`, and `web` templates; other packages need `--egress`, an explicit source, and a writable `NUGET_PACKAGES` | `debug` |
 | `web` | TypeScript, typescript-language-server, the Vue language tools and `vue-tsc`, js-debug behind a stdio bridge; `npm install` needs `--egress` | `debug` |
 | `browser` | The Chrome DevTools tools against Debian's Chromium, headless, without its own sandbox (the container is the sandbox) | `coding` |
-| `metrics` | A pi extension that records each request's time to first token and duration on the transcript's assistant message, in the fields oh-my-pi writes, so [`stats`](cli.md#stats) fills its Timings table for pi; no tool and no note, so the request does not grow | Any |
+| `metrics` | A pi extension that records each request's time to first token and duration on the transcript's assistant message, which the [`stats`](cli.md#stats) Timings table reads; it adds no tool and no note | Any |
 | `odin` | The Odin compiler, OLS and `odinfmt` on the same monthly tag, clang as the linker, `lldb-dap`, SDL2, Vulkan, `glslc`; no display, so SDL uses its dummy drivers | `debug` |
 | `pi-web` | PI WEB, a browser UI for pi, started with `ui pi-web` | Any |
 | `paseo` | Paseo, a daemon with a browser UI that runs several pi sessions, started with `ui paseo`; about 0.5 GB more image | Any |
@@ -41,29 +40,21 @@ them where an adapter or a browser exists.
 
 ## Common selections
 
-Each example starts where [Start here](../README.md#start-here) ends,
-with the stack up and the skill sets fetched. `--sets` applies to one
-launch; put a selection in `LLM_AGENT_SETS` to make it the default for
-`agent pi` and `ui`. [Validation](validation.md#status) says for which
-selections the agent check last passed.
+Start with the stack up and skills fetched as in
+[Start here](../README.md#start-here).
 
-A .NET backend with a Vue frontend in PI WEB, at <http://127.0.0.1:4224/>:
+A .NET backend and Vue frontend in PI WEB:
 
 ```bash
 bash bin/tokencrate ui pi-web --sets coding,debug,dotnet,web,browser --dir ~/src/my-project
 ```
 
-[`ui`](cli.md#ui) says how `--egress` gives the UI a route out.
-
-Odin with a Claude model beside the local preset, switched with `/model`:
+Odin in terminal pi:
 
 ```bash
 bash bin/tokencrate agent pi --sets coding,debug,odin --cloud --dir ~/src/my-project
 ```
 
-With `--cloud` the whole conversation goes to the provider once you pick
-its model; [Cloud providers](agents.md#cloud-providers) says how to set
-the keys file up and what the flag exposes.
 
 ## Writing a set
 
@@ -89,10 +80,13 @@ apt = ["shellcheck", "pyflakes3"]
 note = "shellcheck and pyflakes3 are installed."
 ```
 
-This is a complete set. Add its name to `LLM_AGENT_SETS` for the next
-`agent pi` start, or run
-`bash bin/tokencrate smoke --agent pi --sets <name>` to build it and check
-containment.
+Build and check the set, replacing `<name>` with its directory name:
+
+```bash
+bash bin/tokencrate smoke --agent pi --sets <name>
+```
+
+[`smoke`](cli.md#smoke) explains the checks and their prerequisites.
 [CONTRIBUTING.md](../CONTRIBUTING.md#adding-an-agent-set) says what a
 shipped set needs beyond that. Manifest keys:
 
@@ -152,6 +146,5 @@ Update the source pin and its verification data together:
   `extensions/dap` between the two commits before changing the pin.
 
 Run `bash bin/tokencrate smoke --agent pi --sets <selection>` to build
-the image and check containment; each set's `check` lines run without
-internet access and report one line per set. Record the result as
+the image and run each set's `check` lines, and record the result as
 [Validation](validation.md#recording-a-run) describes.
