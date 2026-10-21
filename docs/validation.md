@@ -15,7 +15,7 @@ repository ([Recording a run](#recording-a-run)).
 
 | Procedure | GPU host, rootless Podman | Virtual machine, rootless Podman | Virtual machine, Docker Engine |
 | --- | --- | --- | --- |
-| [Static gate](#static-gate-and-cpu-integration-check) | not run: the host has no Node.js | 2026-10-21 in strict mode; CI runs it in strict mode on every pull request | does not apply |
+| [Static gate](#static-gate-and-cpu-integration-check) | not run: the host has no Node.js | 2026-10-21 in strict mode | does not apply |
 | [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-09-20, `LLM_GPU=true`, without `test_concurrent_clients` | 2026-09-20 | 2026-10-18, Engine 29.9.0 with Docker Compose 5.6.0 |
 | [NVIDIA host baseline](#nvidia-host-baseline) | 2026-09-20 for every preset the pinned build loads (driver 610.57.04 and 615.71.09); `smoke` and `bench` on the default preset again 2026-10-18 (driver 615.78.08, Podman 6.1.3) | does not apply | does not apply |
 | [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-09-20 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,pi-web`, `coding,paseo`, and oh-my-pi; `coding,metrics` 2026-09-27 and, with and without `--egress`, 2026-10-18 | 2026-09-20 for the same selections; `coding,metrics` 2026-09-27 | 2026-09-20 for the same selections, Engine 29.7.2 |
@@ -71,6 +71,8 @@ No run covers:
   filled leave the right headroom (the 128K presets were measured with
   an empty and a nearly full slot);
 - the UI launchers' readiness timeouts for a daemon that never answers;
+- the structured assistant-answer check for pi's toolchain selections,
+  the default `coding,metrics` included;
 - the live panel's token rates while the dashboard profile runs beside
   an agent turn on the GPU host, and the profile over weeks (the 90-day
   retention, Grafana's growth on its tmpfs);
@@ -108,21 +110,9 @@ another, runs used `LLM_AGENT_SETS=coding`,
 
 ### Static gate and CPU integration check
 
-The static gate needs no container engine and no model; the integration
-check needs an engine. Run both on any Linux machine with one:
-
-```bash
-bash tests/static.sh
-python3 tests/integration.py
-```
-
-[CONTRIBUTING.md](../CONTRIBUTING.md#tests) says what each runs. The
-gate's Compose render (`tests/podman-compose.sh`) exports the settings
-of `.env.example` and a scratch UI set with a scratch host port. It
-checks the rendered networks, mounts, labels, and published ports
-against those exported values rather than against literal port numbers.
-Neither check proves anything about the GPU or about the quality of the
-shipped presets.
+[Contributing](../CONTRIBUTING.md#tests) gives the automated-check commands,
+prerequisites, coverage, and CI behavior. Neither check establishes GPU
+behavior or the answer quality of the shipped presets.
 
 ### NVIDIA host baseline
 
@@ -203,7 +193,7 @@ project of its own, which stands for the other project. Then:
 3. `bash bin/tokencrate smoke --agent pi --egress`: a default route, and
    every UI peer still unreachable.
 4. `bash bin/tokencrate ui pi-web --egress --dir A`, then both checks
-   again: the egress check reports the UI's name as `[info]`, its `ui`
+   again: the egress check reports name resolution as `[info]`, every UI
    address and forwarder stay `not reachable`, and the check without
    `--egress` reports 0 failures.
 5. `bash bin/tokencrate ui stop`, `bash bin/tokencrate down`, and remove
@@ -254,8 +244,8 @@ the UI launchers. Write `local/cloud-keys.env` with one placeholder key
    container with the engine: the keys file mounted read-only,
    `TOKENCRATE_CLOUD=1`, addresses on the `default` and `ui` networks,
    and no key value in the document. `smoke --agent pi --egress` reports
-   the UI's name and default-network address as `[info]` and its `ui`
-   address and forwarder as `not reachable`, with 0 failures.
+   name resolution as `[info]` and every UI address and forwarder as
+   `not reachable`, with 0 failures.
 4. With a real key for a provider that offers a free model, one prompt
    through `agent pi --cloud` and one through `paseo run --provider pi`
    inside a `--cloud` Paseo container; afterwards search the agent homes

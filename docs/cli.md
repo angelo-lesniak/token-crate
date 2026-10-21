@@ -321,10 +321,11 @@ turns, tool calls, stop reasons, compactions, thinking levels, and time
 to first token and request duration. The Definitions list at the end of
 the report defines each measure. oh-my-pi records the timings itself; pi
 records them when the [`metrics` agent set](agent-sets.md#shipped-sets),
-part of the default selection, is loaded. A session's requests against a
-cloud provider appear under that provider's name. The summary line
-states the scope (sessions, requests, the agent and time filters or
-their absence) and how much of it is from the last 24 hours.
+part of the default selection, is loaded. Invalid timings, including
+numbers too large to represent, are ignored without dropping the request.
+A session's requests against a cloud provider appear under that provider's
+name. The summary line states the scope (sessions, requests, the agent and
+time filters or their absence) and how much of it is from the last 24 hours.
 
 `--since <when>` keeps the sessions whose last message is at or after
 a point in time: a duration back from now (`30m`, `12h`, `7d`, `2w`) or
@@ -644,6 +645,8 @@ bin/tokencrate skills status <set> [<set> ...] | all
 A skill set is a group of [skills](agents.md#skills), each pinned to an
 upstream commit in `config/skill-sets/<set>.toml`; agents load the
 fetched sets that `LLM_SKILL_SETS` names.
+
+Malformed skill repository URLs are refused before Git runs.
 
 `fetch` downloads each skill of the named sets into
 `LLM_SKILLS_DIR/<set>/<skill>`: it clones the pinned commit, copies the

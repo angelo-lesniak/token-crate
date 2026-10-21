@@ -78,7 +78,7 @@ the result in about a minute instead of a push and a wait. It runs:
 - Ruff;
 - `tests/podman-compose.sh`, which renders every Compose file combination
   the wrapper can pass (an engine overlay is always among the files) and
-  checks each service's network placement;
+  checks network placement, mounts, labels, and published ports;
 - a scan for machine-specific host paths;
 - a Compose render with Docker Compose when installed.
 
@@ -98,10 +98,15 @@ template, agents, or Compose files. They need a container engine, PyYAML,
 and network access (images, 0.4 GB of fixture models on the first run,
 GitHub skill sets), and take several minutes. They take over this
 checkout's Compose project: `up` replaces a running stack and cleanup
-stops it with `down`. The docstring of `tests/integration.py` lists the checks;
-`-k <pattern>` selects by name. CI runs them weekly, for pull requests,
-and for pushes to `main` that touch the paths in
+stops it with `down`. The pi toolchain prompts check for completed
+assistant answers, including with the default `coding,metrics` selection;
+the docstring of `tests/integration.py` lists the other checks.
+`-k <pattern>` selects by name. CI runs the checks weekly, for pull
+requests, and for pushes to `main` that touch the paths in
 `.github/workflows/integration.yml`, one job per `CI_JOBS` entry.
+
+[Validation](docs/validation.md) holds host acceptance procedures, dated
+results, and known gaps.
 
 ## Documentation changes
 
@@ -310,11 +315,12 @@ against its stated reason.
 - **Print-only pin checks.** `pins check` prints and never edits, so the
   `pins.env` diff is the review ([`pins`](docs/cli.md#pins)). Remove the
   command if upgrades prove no faster with it than with a manual lookup.
-- **Every Compose setting is required.** Every `.env` setting and the
-  four derived values (`HOST_UID`, `HOST_GID`, `TOKENCRATE_ROOT`,
-  `TOKENCRATE_HOME_OWNER`) are `${VAR:?}` in the Compose files (`?` for
-  `LLM_SKILL_SETS`, which may be empty), so an empty value fails the
-  Compose call naming the variable instead of taking a silent fallback.
+- **Required Compose settings have no fallback.** Required settings and
+  the four derived values (`HOST_UID`, `HOST_GID`, `TOKENCRATE_ROOT`,
+  `TOKENCRATE_HOME_OWNER`) use `${VAR:?}` in the Compose files (`?` for
+  `LLM_SKILL_SETS`, which may be empty), so an empty required value fails
+  the Compose call naming the variable. Host-only settings and optional
+  Git identity values follow `.env.example`.
   Reconsider if a setting gains a second reader that can disagree with
   Compose about its default.
 - **The dashboard is an opt-in profile, and two scrapers carry one

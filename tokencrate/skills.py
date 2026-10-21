@@ -63,13 +63,17 @@ def load_allowed_hosts(path: Path) -> set[str]:
 def normalize_public_repository(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
     if (
         parsed.scheme != "https"
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.port is not None
+        or port is not None
         or parsed.query
         or parsed.fragment
         or not REPOSITORY_PATH_RE.fullmatch(parsed.path)

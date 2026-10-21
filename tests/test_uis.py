@@ -283,9 +283,8 @@ class UiTests(unittest.TestCase):
 
     def test_all_ui_names_and_addresses_are_containment_targets(self):
         # The UI of a set started with --egress or --cloud marks its name
-        # and its default-network address, and nothing else: its address on
-        # the ui network and its forwarder stay targets an egress session
-        # must not reach.
+        # and its default-network address for expected DNS resolution.
+        # Every target must still refuse TCP connections.
         owned = [container("custom", access="egress"), container("custom", 1), container("paseo", 1)]
         with patch.object(self.engine, "containers", return_value=owned):
             targets = uis.peer_targets(self.engine).split()

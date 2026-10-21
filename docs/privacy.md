@@ -138,12 +138,13 @@ containers share the internal `dashboard` network with the model, and no
 agent or UI container is on it ([Dashboard](configuration.md#dashboard)
 says what a viewer on this host can do). A session without a route out
 cannot reach any UI. A UI started with `--egress` or `--cloud` joins the
-default network as well; an `--egress` or `--cloud` terminal session of
-any project can then reach that UI, and through it the UI's project and
-keys, but no other UI. All UIs share the `ui` network, so while any UI
-runs with `--cloud` or `--egress`, every other running UI, of any
-project, has a transitive route out through it. A UI without the flag is
-offline only when no such UI is running (a [settled
+default network as well; an egress terminal session can resolve its name,
+but the daemon's bind address still prevents a connection
+([Forwarder](#forwarder)). The agent check treats every successful UI
+connection as a failure, with or without egress. All UIs share the `ui`
+network, so while any UI runs with `--cloud` or `--egress`, every other
+running UI, of any project, has a transitive route out through it. A UI
+without the flag is offline only when no such UI is running (a [settled
 decision](../CONTRIBUTING.md#settled-decisions)). Browser UIs are not
 isolated from each other: treat them as trusted peers with access to
 their mounted projects.

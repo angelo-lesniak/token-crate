@@ -48,7 +48,7 @@ MODEL_SETS = ("ci-tiny", "ci-small")
 PRESETS = ("ci-tiny", "ci-small", "ci-think")
 SKILL_SETS = ("pocock-core", "skill-crate")
 # Every shipped agent-set selection: the agent check and a prompt run for each.
-SELECTIONS = ("coding", "coding,debug,dotnet,web,browser", "coding,debug,odin")
+SELECTIONS = ("coding", "coding,metrics", "coding,debug,dotnet,web,browser", "coding,debug,odin")
 # A prompt the agent never answers has nothing to wake it: a lost model
 # response leaves the process in its event loop with no request open, and
 # the agent has no timeout of its own. The bound is generous because the
@@ -206,12 +206,28 @@ class IntegrationTests(unittest.TestCase):
                     "--dir",
                     str(self.project),
                     "--",
+                    "--mode",
+                    "json",
                     "-p",
                     "Read README.md in the current directory and reply with its first heading, nothing else.",
                 )
                 self.assertEqual(result.returncode, 0)
-                # This checks command output; the wrapper's banner alone can satisfy it.
-                self.assertTrue(result.stdout.strip(), "pi command produced no output")
+                answers = []
+                for line in result.stdout.splitlines():
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict) or event.get("type") != "message_end":
+                        continue
+                    message = event.get("message", {})
+                    if message.get("role") == "assistant" and message.get("stopReason") in ("stop", "length"):
+                        answers.extend(
+                            part.get("text", "").strip()
+                            for part in message.get("content", [])
+                            if part.get("type") == "text"
+                        )
+                self.assertTrue(any(answers), "pi produced no completed assistant answer")
                 # An extension that fails to load is reported before the answer.
                 self.assertNotRegex(result.stdout, r"(?i)failed to load|error loading")
         self.assert_project_untouched()

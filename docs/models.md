@@ -300,6 +300,9 @@ any key not listed here.
 | `[[file]] repository`, `revision`, `source` | yes | The Hugging Face repository, its full 40-character commit, and the file's path in it; the library keeps the file at `<repository>/<source>` |
 | `[[file]] size`, `sha256` | yes | The byte size and the lowercase SHA-256 of the file |
 
+Repository names (`repository` and `upstream_model`) have an owner and
+a repository component; neither may be `.` or `..`.
+
 Exactly one file has the role `weights`. A weights file named
 `*-00001-of-NNNNN.gguf` needs NNNNN−1 `split` rows with the same stem,
 one for each of the parts `00002` to `NNNNN`; a `-00001-of-00001` file

@@ -136,8 +136,11 @@ def integer(value: object) -> int:
 
 def number(value: object) -> float | None:
     """A finite number as the transcript wrote it; None for anything else."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return float(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return float(value) if math.isfinite(value) else None
+        except OverflowError:
+            return None
     return None
 
 

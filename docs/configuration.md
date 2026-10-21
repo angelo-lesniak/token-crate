@@ -16,8 +16,10 @@ The wrapper refuses to run without `.env.example`. A key omitted from
 `.env` takes the example's default, not an empty value. The wrapper
 itself refuses an empty `LLM_*_DIR` or `LLM_CLOUD_KEYS_FILE`, naming the
 key and the default (`LLM_MODELS_DIR must not be empty; omit the line to
-take the default (./data/models)`). An empty value for any other setting
-but `LLM_SKILL_SETS` fails the Compose call, which names the variable.
+take the default (./data/models)`). Required Compose settings reject
+empty values at the Compose call, which names the variable;
+`LLM_SKILL_SETS` may be empty. Host-only settings and optional Git
+identity values follow [`.env.example`](../.env.example).
 Change local settings in `.env` or the shell; editing
 `.env.example` changes the defaults for every checkout.
 

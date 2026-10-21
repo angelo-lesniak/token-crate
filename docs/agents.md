@@ -121,8 +121,8 @@ Use `--cloud` only in a project you trust:
   browser UIs of that project mount that home.
 - A browser UI started with `--cloud` holds the keys while it runs
   ([`ui`](cli.md#ui) says what ends that). Whoever reaches its port can
-  use them and the route out: every local process, an `--egress` or
-  `--cloud` terminal session of any project, and every other browser UI.
+  use them and the route out: every local process and every other browser
+  UI ([network limits](privacy.md#networks)).
   Run one such UI at a time and stop it when the work is done.
 - Cloud models are offered through pi only. oh-my-pi fills unset
   provider settings, base URLs included, from `.env` files in its home,

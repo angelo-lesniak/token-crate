@@ -124,6 +124,12 @@ class SkillSetTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenCrateError, "full lowercase Git commit"):
             skills.read_manifest(manifest, hosts)
 
+    def test_malformed_repository_urls_use_the_repository_refusal(self):
+        for repository in ("https://github.com:invalid/a/b", "https://github.com:70000/a/b", "https://[github.com/a/b"):
+            with self.subTest(repository=repository):
+                with self.assertRaisesRegex(TokenCrateError, "credential-free HTTPS"):
+                    skills.validate_repository(repository, {"github.com"})
+
     def test_fetch_requires_an_existing_directory_target(self):
         skill_set = skills.SkillSet("fixture", "Fixture", (self.skill("demo"),))
         with self.assertRaisesRegex(TokenCrateError, "skills directory does not exist"):

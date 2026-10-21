@@ -113,8 +113,8 @@ def peer_targets(engine: Engine) -> str:
     """Names and effective IP:port targets for terminal containment probes.
     The name of a UI started with --egress or --cloud, and its address on
     the default network, carry the prefix `egress:`: an egress session
-    reaching those is the documented consequence of the flag, while its
-    address on the `ui` network and its forwarder must stay unreachable."""
+    may resolve that name, but every TCP target must stay unreachable:
+    the daemon binds only its `ui` address, and the forwarder is isolated."""
     targets = []
     default_network = f"{engine.settings.project_name}_default"
     for item in sorted(containers(engine, all_states=False), key=set_name):

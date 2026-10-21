@@ -10,7 +10,7 @@ from .. import TokenCrateError
 from ..names import SET_NAME_RE, SHA1_RE, SHA256_RE, load_catalog, read_toml, relative_path
 from ..names import description as read_description
 
-REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+REPOSITORY_RE = re.compile(r"^(?!\.{1,2}/)[A-Za-z0-9_.-]+/(?!\.{1,2}$)[A-Za-z0-9_.-]+$")
 MODEL_CARD_URL_RE = re.compile(
     r"^https://huggingface\.co/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/blob/[0-9a-f]{40}/README\.md$"
 )

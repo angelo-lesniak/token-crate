@@ -152,6 +152,21 @@ class ModelSetTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenCrateError, "unknown field.*file 1: destination"):
             self.read(MANIFEST_HEAD + file_row("weights", "sub/model.gguf") + 'destination = "elsewhere.gguf"\n')
 
+    def test_repository_components_cannot_be_dot_or_dot_dot(self):
+        for repository in ("./model", "../model", "example/.", "example/.."):
+            with self.subTest(repository=repository):
+                row = file_row("weights", "m.gguf")
+                with self.assertRaisesRegex(TokenCrateError, "invalid repository"):
+                    self.read(
+                        MANIFEST_HEAD + row.replace('repository = "example/model"', f'repository = "{repository}"')
+                    )
+                with self.assertRaisesRegex(TokenCrateError, "upstream_model must be"):
+                    self.read(f'upstream_model = "{repository}"\n' + MANIFEST_HEAD + row)
+                with mock.patch.object(drafts, "hub_json") as lookup:
+                    with self.assertRaisesRegex(TokenCrateError, "draft needs"):
+                        models.draft(f"hf:{repository}:m.gguf", None)
+                    lookup.assert_not_called()
+
     def test_exactly_one_weights_role_is_required(self):
         with self.assertRaisesRegex(TokenCrateError, "exactly one"):
             self.read(MANIFEST_HEAD + file_row("split", "m-00002-of-00002.gguf"))

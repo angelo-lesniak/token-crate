@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from .. import TokenCrateError
 from ..names import SHA1_RE, relative_path
 from .hub import HUB_URL, hub_json
-from .manifest import SPLIT_RE
+from .manifest import REPOSITORY_RE, SPLIT_RE
 
 
 def toml_string(value: str) -> str:
@@ -18,7 +18,7 @@ def toml_string(value: str) -> str:
 
 def draft(spec: str, token: str | None) -> str:
     match = re.fullmatch(r"hf:(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+):(?P<file>\S+)", spec)
-    if match is None:
+    if match is None or not REPOSITORY_RE.fullmatch(match.group("repository")):
         raise TokenCrateError("draft needs hf:<owner>/<repository>:<file.gguf>")
     repository = match.group("repository")
     wanted = relative_path(match.group("file"), "file", "draft")

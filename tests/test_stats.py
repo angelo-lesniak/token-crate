@@ -332,6 +332,16 @@ class StatsReportTests(unittest.TestCase):
         self.assertIsNone(transcripts.number(float("nan")))
         self.assertIsNone(transcripts.number(float("inf")))
         self.assertIsNone(transcripts.number(True))
+        self.assertIsNone(transcripts.number(10**400))
+
+    def test_an_unrepresentable_timing_does_not_discard_the_request(self) -> None:
+        session = transcripts.Session("pi")
+        transcripts.read_line(
+            assistant("tokencrate", "fixture", "stop", tokens(5, 2, 0), ttft=10**400, duration=10**400), session
+        )
+        self.assertEqual(len(session.requests), 1)
+        self.assertIsNone(session.requests[0].ttft_ms)
+        self.assertIsNone(session.requests[0].duration_ms)
 
     def test_percentiles_are_nearest_rank_observations(self) -> None:
         self.assertEqual(tables.percentile([5], 0.9), 5)
