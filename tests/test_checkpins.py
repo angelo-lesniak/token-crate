@@ -48,53 +48,63 @@ def releases(*builds: int) -> list[dict[str, str]]:
 
 
 class LlamaCppTests(unittest.TestCase):
-    def test_the_newest_release_with_an_image_of_the_pinned_family_wins(self) -> None:
+    def test_the_newest_build_with_an_image_of_the_pinned_family_wins(self) -> None:
         values = {"LLAMA_CPP_TAG": "server-cuda13-b10800"}
-        # The newest release has no cuda13 image (yet); the one below it does.
-        manifests = {"server-cuda13-b10920": b'{"mediaType": "index"}'}
+        # The images are published for builds of their own, not for releases:
+        # the newest release (b10999) has none, b10997 has one. The walk goes
+        # build by build with one GHCR token for the whole check.
+        manifests = {"server-cuda13-b10997": b'{"mediaType": "index"}'}
         with (
             mock.patch.object(checkpins, "llama_cpp_release_builds", return_value=[10999, 10920, 10884]),
-            mock.patch.object(checkpins, "ghcr_manifest", side_effect=lambda repo, tag: manifests.get(tag)) as fetched,
+            mock.patch.object(checkpins, "ghcr_token", return_value="tok") as token,
+            mock.patch.object(
+                checkpins, "ghcr_manifest", side_effect=lambda repo, tag, token: manifests.get(tag)
+            ) as fetched,
         ):
             result = resolve("LLAMA_CPP_TAG", values)
-        self.assertEqual((result.key, result.latest), ("LLAMA_CPP_TAG", "server-cuda13-b10920"))
+        self.assertEqual((result.key, result.latest), ("LLAMA_CPP_TAG", "server-cuda13-b10997"))
         self.assertEqual(
-            result.notes, ("  llama.cpp build b10800 -> b10920: https://github.com/ggml-org/llama.cpp/releases",)
+            result.notes, ("  llama.cpp build b10800 -> b10997: https://github.com/ggml-org/llama.cpp/releases",)
         )
+        token.assert_called_once_with("ggml-org/llama.cpp")
         self.assertEqual(
             fetched.call_args_list,
-            [
-                mock.call("ggml-org/llama.cpp", "server-cuda13-b10999"),
-                mock.call("ggml-org/llama.cpp", "server-cuda13-b10920"),
-            ],
+            [mock.call("ggml-org/llama.cpp", f"server-cuda13-b{build}", "tok") for build in (10999, 10998, 10997)],
         )
         # The manifest that confirmed the image is the digest pasted beside the tag.
-        self.assertEqual(result.digest, hashlib.sha256(manifests["server-cuda13-b10920"]).hexdigest())
+        self.assertEqual(result.digest, hashlib.sha256(manifests["server-cuda13-b10997"]).hexdigest())
 
-    def test_llama_cpp_is_current_when_no_newer_release_has_an_image(self) -> None:
+    def test_llama_cpp_is_current_when_no_newer_build_has_an_image(self) -> None:
         values = {"LLAMA_CPP_TAG": "server-cuda13-b10920"}
-        # A current pin fetches no manifest: nothing is pasted for it.
+        # A current pin fetches no token and no manifest: nothing is pasted for it.
         with (
             mock.patch.object(checkpins, "llama_cpp_release_builds", return_value=[10920, 10884]),
+            mock.patch.object(checkpins, "ghcr_token") as token,
             mock.patch.object(checkpins, "ghcr_manifest") as fetched,
         ):
             self.assertEqual(resolve("LLAMA_CPP_TAG", values).latest, "server-cuda13-b10920")
+        token.assert_not_called()
         fetched.assert_not_called()
-        # Newer releases without the image leave the pin current too.
+        # Newer builds without the image leave the pin current; the walk stops at the pin.
         with (
-            mock.patch.object(checkpins, "llama_cpp_release_builds", return_value=[10999, 10920]),
-            mock.patch.object(checkpins, "ghcr_manifest", return_value=None),
+            mock.patch.object(checkpins, "llama_cpp_release_builds", return_value=[10925, 10920]),
+            mock.patch.object(checkpins, "ghcr_token", return_value="tok"),
+            mock.patch.object(checkpins, "ghcr_manifest", return_value=None) as fetched,
         ):
             self.assertEqual(resolve("LLAMA_CPP_TAG", values).latest, "server-cuda13-b10920")
+        self.assertEqual(len(fetched.call_args_list), 5)
         with mock.patch.object(checkpins, "llama_cpp_release_builds", return_value=[10884]):
             with self.assertRaisesRegex(TokenCrateError, "older than the current pin"):
                 resolve("LLAMA_CPP_TAG", values)
+        # A pin far behind with no image within the probe limit is a lookup failure, not "current".
         with (
             mock.patch.object(checkpins, "llama_cpp_release_builds", return_value=[10999, 10998]),
-            mock.patch.object(checkpins, "ghcr_manifest", return_value=None),
+            mock.patch.object(checkpins, "ghcr_token", return_value="tok"),
+            mock.patch.object(checkpins, "ghcr_manifest", return_value=None) as fetched,
         ):
-            with self.assertRaisesRegex(TokenCrateError, "none of the 2 newest llama.cpp releases has a server-cuda13"):
+            with self.assertRaisesRegex(TokenCrateError, "none of the 60 builds below b10999 has a server-cuda13"):
                 resolve("LLAMA_CPP_TAG", {"LLAMA_CPP_TAG": "server-cuda13-b10"})
+        self.assertEqual(len(fetched.call_args_list), checkpins.LLAMA_CPP_PROBE_LIMIT)
 
     def test_llama_cpp_rejects_an_unsupported_or_missing_pin(self) -> None:
         with self.assertRaisesRegex(TokenCrateError, "unsupported current LLAMA_CPP_TAG: v255-cuda13-b10920"):

@@ -17,8 +17,8 @@ repository ([Recording a run](#recording-a-run)).
 | --- | --- | --- | --- |
 | [Static gate](#static-gate-and-cpu-integration-check) | not run: the host has no Node.js | 2026-10-21 in strict mode | does not apply |
 | [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-09-20, `LLM_GPU=true`, without `test_concurrent_clients` | 2026-09-20 | 2026-10-18, Engine 29.9.0 with Docker Compose 5.6.0 |
-| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-10-18 for the default preset (driver 615.78.08, Podman 6.1.3); 2026-09-20 for every other preset the pinned build loads | does not apply | does not apply |
-| [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-10-18 for `coding,metrics` with and without `--egress`; 2026-09-20 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,pi-web`, `coding,paseo`, and oh-my-pi | 2026-09-20 for the same selections | 2026-09-20 for the same selections, Engine 29.7.2 |
+| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-10-21 for the default preset, scripted part (driver 615.78.08, Podman 6.1.3); 2026-10-18 for its hands-on checks; 2026-09-20 for every other preset the pinned build loads | does not apply | does not apply |
+| [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-10-21 for `coding,metrics` without `--egress`, with and without a browser UI running; 2026-10-18 with `--egress`; 2026-09-20 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,pi-web`, `coding,paseo`, and oh-my-pi | 2026-09-20 for the same selections | 2026-09-20 for the same selections, Engine 29.7.2 |
 | [Agent home check](#agent-home-check) | 2026-09-20 | 2026-09-20 | 2026-10-18 |
 | [Cross-project containment check](#cross-project-containment-check) | 2026-10-18 without a UI; 2026-09-20 with both UIs running | 2026-09-20, with a `--cloud` UI | 2026-09-20, with a `--cloud` UI, Engine 29.8.1 |
 | [Independent-client check](#independent-client-check) | 2026-09-20, scripted and by hand in browser windows and terminal screens | 2026-09-20 | 2026-10-18 |

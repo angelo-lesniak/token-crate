@@ -29,6 +29,8 @@ LLAMA_CPP_REPOSITORY = "ggml-org/llama.cpp"
 # is what the check resolves.
 LLAMA_CPP_RELEASES_URL = f"https://api.github.com/repos/{LLAMA_CPP_REPOSITORY}/releases?per_page=30"
 LLAMA_CPP_RELEASE_RE = re.compile(r"^b(?P<build>\d+)$")
+# Images arrive every twenty to thirty builds; the walk gives up after this many.
+LLAMA_CPP_PROBE_LIMIT = 60
 LLAMA_CPP_TAG_RE = re.compile(r"^(?P<family>server-[a-z0-9]+)-b(?P<build>\d+)$")
 # What pins.env holds beside a tag: the 64 hex characters of the manifest the
 # tag points at, which is what the build pulls.
@@ -170,11 +172,12 @@ def ghcr_token(repository: str) -> str:
     return token
 
 
-def ghcr_manifest(repository: str, tag: str) -> bytes | None:
+def ghcr_manifest(repository: str, tag: str, token: str | None = None) -> bytes | None:
     """The manifest document the tag points at, or None when GHCR has no such
     tag. A manifest's digest is the sha256 of the document the registry
-    serves, so the caller hashes the body instead of trusting a header."""
-    headers = {"Authorization": f"Bearer {ghcr_token(repository)}"}
+    serves, so the caller hashes the body instead of trusting a header. A
+    caller that probes many tags passes one token."""
+    headers = {"Authorization": f"Bearer {token or ghcr_token(repository)}"}
     reference = urllib.parse.quote(tag, safe="")
     url = f"https://ghcr.io/v2/{repository}/manifests/{reference}"
     return request_bytes(url, accept=MANIFEST_ACCEPT, headers=headers, missing_ok=True)
@@ -203,23 +206,28 @@ def resolve_llama_cpp(values: dict[str, str]) -> Resolution:
     if match is None:
         raise TokenCrateError(f"unsupported current {key}: {current}")
     family, current_build = match.group("family"), int(match.group("build"))
-    builds = llama_cpp_release_builds()
-    if builds[0] < current_build:
+    newest = llama_cpp_release_builds()[0]
+    if newest < current_build:
         raise TokenCrateError(f"GitHub {LLAMA_CPP_REPOSITORY} latest release is older than the current pin")
-    # The newest release whose image of the pinned family GHCR serves; a
-    # release whose image build failed or has not finished is skipped. The
-    # manifest fetched to confirm it is the digest pin beside the tag.
-    for build in builds:
-        if build <= current_build:
-            return Resolution(key, current, current)
+    # The newest build whose image of the pinned family GHCR serves. The
+    # images are published for builds of their own, not for every release
+    # (b11783 had an image and no release; the thirty releases around it
+    # had none), so the walk goes build by build below the newest release.
+    # The manifest fetched to confirm it is the digest pin beside the tag.
+    token = ghcr_token(LLAMA_CPP_REPOSITORY) if newest > current_build else None
+    for build in range(newest, max(current_build, newest - LLAMA_CPP_PROBE_LIMIT), -1):
         tag = f"{family}-b{build}"
-        manifest = ghcr_manifest(LLAMA_CPP_REPOSITORY, tag)
+        manifest = ghcr_manifest(LLAMA_CPP_REPOSITORY, tag, token)
         if manifest is not None:
             notes = (
                 f"  llama.cpp build b{current_build} -> b{build}: https://github.com/{LLAMA_CPP_REPOSITORY}/releases",
             )
             return Resolution(key, current, tag, notes, hashlib.sha256(manifest).hexdigest())
-    raise TokenCrateError(f"none of the {len(builds)} newest llama.cpp releases has a {family} image on GHCR")
+    if newest - current_build <= LLAMA_CPP_PROBE_LIMIT:
+        return Resolution(key, current, current)
+    raise TokenCrateError(
+        f"none of the {LLAMA_CPP_PROBE_LIMIT} builds below b{newest} has a {family} image on GHCR; look it up by hand"
+    )
 
 
 # --- npm ---------------------------------------------------------------------
