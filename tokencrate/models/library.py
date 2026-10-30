@@ -79,14 +79,8 @@ def stamp_path(path: Path) -> Path:
 
 
 def stamp_of(path_stat: os.stat_result, sha256: str) -> dict:
-    """What a stamp records: the checksum and the identity of the file it was computed from."""
-    return {
-        "sha256": sha256,
-        "size": path_stat.st_size,
-        "mtime_ns": path_stat.st_mtime_ns,
-        "ino": path_stat.st_ino,
-        "dev": path_stat.st_dev,
-    }
+    """What a stamp records: the checksum, and the size and mtime of the file it was computed from."""
+    return {"sha256": sha256, "size": path_stat.st_size, "mtime_ns": path_stat.st_mtime_ns}
 
 
 def read_stamp(path: Path) -> dict | None:
@@ -112,8 +106,8 @@ def file_state(path: Path, expected: ModelFile, *, verify: bool = False) -> str:
 
     Hashing a model library takes minutes per 10 GB, so a file is hashed
     once: the match is recorded in a stamp beside it, and later calls trust
-    the stamp while the file's size, mtime, inode, and the manifest's
-    checksum are the recorded ones. ``verify`` hashes regardless. The stamp
+    the stamp while the file's size, mtime, and the manifest's checksum
+    are the recorded ones. ``verify`` hashes regardless. The stamp
     is trusted because only the host writes the library; the llama
     container mounts it read-only."""
     if path.is_symlink() and not path.exists():

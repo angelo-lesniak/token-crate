@@ -538,7 +538,7 @@ one state per file (`ready`, `missing`, `wrong size`, `wrong checksum`,
 and the like). A file is read in full once; its checksum match is
 recorded in a `<file>.tokencrate-verified` stamp beside it. Later
 runs of `status`, `fetch`, and `up --model-sets` trust the stamp while the
-file's size, modification time, and inode are unchanged. A run that has
+file's size and modification time are unchanged. A run that has
 to read files says so first (`verifying: N file(s) (X.X GB) by checksum;
 later runs trust the record written beside each verified file`).
 `status --verify` re-reads every present file and rewrites the stamps;

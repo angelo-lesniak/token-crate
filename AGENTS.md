@@ -9,6 +9,14 @@ unrelated rewrite. Documentation is maintained surface area too: add
 information only when it helps a named reader decide, act, verify, or
 recover.
 
+Every fact has one source of truth, and the code is the source for what
+the code does: syntax lives in the usage text, settings and defaults in
+`.env.example`, pins in `pins.env`, set contents in the manifests. A page
+links to the source instead of restating it, with the owner map below as
+the only exceptions, and never explains what a module does when reading
+it shows that. A page holds the glue no single file shows: what a user
+needs first, and where the deep dive is.
+
 ## Know this repository
 
 - [Layout](CONTRIBUTING.md#layout) lists the modules and the rules for
@@ -44,6 +52,10 @@ recover.
   compatibility shim: the package has one consumer, this repository.
 - A comment says why, or names the evidence behind a choice that is
   not obvious; it never restates the code.
+- A change describes the new behavior only: no comment, docstring,
+  test, or page says what the code did before. A choice a reviewer
+  might overturn gets its reason once, in one sentence, where the
+  choice is made.
 - Delete what a change makes unused, tests and documentation included.
 - A behavior change arrives with its test in the gate and its line on
   the owner page, in the same change.

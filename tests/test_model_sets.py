@@ -549,7 +549,9 @@ class ModelSetTests(unittest.TestCase):
             destination = models_root / model_file.destination
             stamp = library.stamp_path(destination)
             self.assertEqual(stamp.name, "model.gguf.tokencrate-verified")
-            self.assertEqual(json.loads(stamp.read_text()), library.stamp_of(destination.stat(), model_file.sha256))
+            record = json.loads(stamp.read_text())
+            self.assertEqual(record, library.stamp_of(destination.stat(), model_file.sha256))
+            self.assertEqual(sorted(record), ["mtime_ns", "sha256", "size"])
             self.assertEqual([path.name for path in destination.parent.iterdir() if path != destination], [stamp.name])
 
             hashing = self.hashing()

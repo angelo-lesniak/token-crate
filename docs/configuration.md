@@ -108,7 +108,7 @@ for the last ten minutes without the dashboard profile.
 | Default path | Contents |
 | --- | --- |
 | `data/models/<owner>/<repository>/<source>` | Model library (`LLM_MODELS_DIR`); `<source>` is the manifest's path: a filename, or a quantization directory and filename for a split set |
-| `data/models/.../<file>.tokencrate-verified` | The record of a verified model file (checksum, size, modification time, inode) that `models status`, `models fetch`, and `up --model-sets` trust while the file is unchanged |
+| `data/models/.../<file>.tokencrate-verified` | The record of a verified model file (checksum, size, modification time) that `models status`, `models fetch`, and `up --model-sets` trust while the file is unchanged |
 | `data/agents/<agent>/<project>-<hash>/` | Retained state per agent and project; only the subdirectories listed below are mounted |
 | `data/agents/pi/<set>-state/` | Per-UI-set state shared by all projects (see below) |
 | `data/skills/<set>/<skill>/` | Fetched skill sets |
