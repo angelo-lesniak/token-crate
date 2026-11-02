@@ -93,8 +93,26 @@ Write and review documentation with the `documentation-guidelines` skill
 from [SkillCrate](https://github.com/angelo-lesniak/skill-crate). TokenCrate
 agents load it from the `skill-crate` skill set; for another agent, copy
 `skills/documentation-guidelines` from that repository into its skills
-directory. `AGENTS.md` lists which page owns which facts; update the
-owner page instead of restating a fact elsewhere.
+directory. This section is the checklist the skill asks for.
+
+Each fact has one owner page; update it instead of restating the fact
+elsewhere:
+
+- `docs/cli.md` holds every command and flag; other pages link to it
+  instead of restating flags.
+- `docs/privacy.md` holds the network layout and its limits, the
+  forwarder rules and the Docker gateway mode included.
+- `docs/configuration.md` holds storage, pins, and the dashboard;
+  `.env.example` is the settings reference.
+- `docs/agents.md#cloud-providers` holds the keys-file rules;
+  `cloud-keys.env.example` is only the template.
+- `docs/validation.md#status` is the only statement of what is validated;
+  a validated claim needs a date there. Findings go to the page that owns
+  the fact.
+- `docs/troubleshooting.md` holds observed failures, one section each.
+
+The project has no glossary, no word list, and no changelog
+before the first tagged release; Git history records changes.
 
 A new page needs a row in the README's "Choose what to do next" table.
 Usage and error text in `cli.py` are part of the documented interface:
