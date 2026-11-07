@@ -157,7 +157,7 @@ if [[ -n "${TOKENCRATE_CLOUD:-}" || -e "$CLOUD_KEYS" ]]; then
     [[ "$line" == *=* && "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "cloud keys file line $number is not NAME=value"
     case "$name" in
       PATH | HOME | USER | LOGNAME | IFS | BASH_ENV | ENV | TOKENCRATE_* | LD_* | GIT_CONFIG_GLOBAL | PI_CONFIG_FILES | PI_BASH_NO_LOGIN \
-        | PI_TELEMETRY | PI_SKIP_VERSION_CHECK | PI_OFFLINE | PI_LENS_* | PILENS_* | DOTNET_CLI_* | NODE_OPTIONS | BUN_INSTALL)
+        | PI_TELEMETRY | PI_SKIP_VERSION_CHECK | PI_OFFLINE | PI_LENS_* | PILENS_* | DOTNET_* | NUGET_* | NPM_CONFIG_* | NODE_OPTIONS | BUN_INSTALL)
         die "cloud keys file line $number sets $name, which the agent image owns" ;;
     esac
     value=${line#*=}

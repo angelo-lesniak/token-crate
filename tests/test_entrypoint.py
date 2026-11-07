@@ -157,6 +157,9 @@ class EntrypointTests(unittest.TestCase):
             ("PI_SKIP_VERSION_CHECK=0\n", "sets PI_SKIP_VERSION_CHECK"),
             ("PI_LENS_DISABLE_TOOL_INSTALL=0\n", "sets PI_LENS_DISABLE_TOOL_INSTALL"),
             ("DOTNET_CLI_TELEMETRY_OPTOUT=0\n", "sets DOTNET_CLI_TELEMETRY_OPTOUT"),
+            ("DOTNET_NOLOGO=0\n", "sets DOTNET_NOLOGO"),
+            ("NUGET_PACKAGES=/tmp/x\n", "sets NUGET_PACKAGES"),
+            ("NPM_CONFIG_UPDATE_NOTIFIER=true\n", "sets NPM_CONFIG_UPDATE_NOTIFIER"),
             ("NODE_OPTIONS=--require=/tmp/x.js\n", "sets NODE_OPTIONS"),
         ):
             with self.subTest(content=content):

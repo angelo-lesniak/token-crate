@@ -1,8 +1,7 @@
 # Troubleshooting
 
-Each section is one observed failure: the message, its cause, and the
-remedy. Most refusals name their remedy;
-when one does not, start with these two commands:
+Each section is one observed failure and how to recover. Most refusals
+name their remedy; when one does not, start with these two commands:
 
 ```bash
 bash bin/tokencrate doctor
@@ -11,21 +10,19 @@ bash bin/tokencrate logs
 
 ## `doctor` reports the Docker Compose plugin under Podman
 
-`podman compose` delegates to the Docker Compose plugin, which drops the
-CDI GPU device request, so llama-server would start without the GPU;
-`up` refuses with `the Podman compose provider is the Docker Compose
-plugin, which drops CDI GPU devices; install podman-compose or set
-LLM_GPU=false for CPU-only checks`. Install podman-compose so that
-`podman compose version` reports `podman-compose`, then run `doctor`
-again.
+Podman prefers the Docker Compose plugin when both are installed. After
+installing podman-compose, select it with
+`PODMAN_COMPOSE_PROVIDER=podman-compose` in your shell profile, or
+`compose_providers` in `containers.conf`, and confirm that
+`podman compose version` reports `podman-compose`.
 
 ## CUDA fails to initialize although `nvidia-smi` works
 
 The log shows `no CUDA-capable device is detected` or a driver version
-mismatch, or the model server loads every layer on the CPU. The likely cause
-is a CDI specification left stale by a driver upgrade; under Podman,
-`doctor` warns when the specification names another driver version.
-Regenerate it:
+mismatch, or the model server loads every layer on the CPU. The likely
+cause is a CDI specification left stale by a driver upgrade; under
+Podman, `doctor` warns `the CDI spec references driver <version> but
+the host runs <version>`. Regenerate the specification and start again:
 
 ```bash
 sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
@@ -33,90 +30,53 @@ bash bin/tokencrate doctor
 bash bin/tokencrate up
 ```
 
-## `up` refuses to start because the default preset is not loadable
-
-The message is `the default preset <id> is not loadable; download its
-model set (bash bin/tokencrate models fetch <set>) or set
-LLM_DEFAULT_PRESET to a preset listed as loadable above`: the model set
-behind `LLM_DEFAULT_PRESET` has missing files, and the list `up` printed
-before the refusal shows which presets are loadable. Run the `models
-fetch` command the message names, or choose a listed preset.
-
-## A command refuses because of the stack record
-
-`up` records the engine it started the stack on in `build/stack.json`,
-and a later command with another `CONTAINER_ENGINE` is refused: `the
-stack runs on docker, not podman (build/stack.json); run:
-CONTAINER_ENGINE=docker bash bin/tokencrate down`. Run that `down`, then
-`up` on the engine you want. An unreadable record is refused as `cannot
-read the stack record <path>: <error>; remove it if no stack is
-running`: check with `podman ps` or `docker ps` that no TokenCrate
-container runs, then delete the file.
-
-## `up` or a session refuses an internal network
-
-`up`, `agent`, `smoke --agent`, and `ui` refuse when the `agents`, `ui`,
-or `dashboard` network is not in the shape the Compose files declare:
-
-- on Docker, `the agents network keeps a host gateway address (<address>);
-  it was created without gateway mode isolated. Run: bash bin/tokencrate
-  down, then up`, when a direct Compose call without
-  `compose.docker.yaml` created it;
-- on either engine, `the agents network is not internal. Run: bash
-  bin/tokencrate down, then up`, or `the agents network was not created
-  by this Compose project; remove it (podman network rm <project>_agents)
-  and run: bash bin/tokencrate up` for a network made by hand under the
-  project's name.
-
-[Internal networks](privacy.md#internal-networks) states the rule.
+The warning is gone and `bash bin/tokencrate logs` names the GPU.
 
 ## The agent starts but every request fails
 
 The model is still loading, the model server exited after the agent
-started, or the request does not fit the preset's slot, and the model
-server answers `400 ... exceeds the available context size`. Check `bash bin/tokencrate
-status` and `bash bin/tokencrate logs`; for a larger slot, pick a preset
-with a `-long` suffix from
-[Included presets](models.md#included-presets).
+started, or the request does not fit the preset's slot and the model
+server answers `400 ... exceeds the available context size`. Check
+`bash bin/tokencrate status` and `bash bin/tokencrate logs`. For a
+larger slot, choose a preset with a `-long` suffix from [Included
+presets](models.md#included-presets).
 
 ## The browser UI answers `403` with `refused a request for host`
 
-The forwarder in front of a browser UI refused the request's `Host`,
-`Origin`, or `Sec-Fetch-Site` header; the response names the value. Open
-the address that `ui <set>` prints directly, not through a page of
-another site. [Forwarder](privacy.md#forwarder) states the rule and
-what a reverse proxy must pass on.
+The forwarder in front of the UI refused the request's `Host`,
+`Origin`, or `Sec-Fetch-Site` header; the response names the address to
+open. Open it directly, not through a page of another site.
+[Forwarder](privacy.md#forwarder) lists the values a reverse proxy must
+pass on.
 
 ## Paseo asks to pair again or shows the previous project
 
 After a relaunch for another project, reload the page. For a fresh
 identity, stop the UI (`bash bin/tokencrate ui stop paseo`) and delete
 `daemon-keypair.json` and `server-id` from the per-set store
-`LLM_AGENTS_DIR/pi/paseo-state/` and from every project's `.paseo`
-directory under its agent home; the browser then pairs again. Deleting
-the store alone changes nothing, because the next start copies a
-project's identity back into it. [Browser UIs](agents.md#browser-uis)
-says how the identity is shared between projects.
+`LLM_AGENTS_DIR/pi/paseo-state/` and from the `.paseo` directory of
+every project's agent home. Deleting them from the store alone changes
+nothing, because the next start copies a project's identity back into
+it.
 
 ## pi reports `Summarization failed` and refuses the next prompt
 
-A turn that fills the preset's slot ends with `length`, and pi's
-compaction of the overflowing conversation can fail with `Summarization
-failed: generation hit the token cap and the summary is incomplete`; the
-agent then stays busy and refuses the next prompt. Reopen the
-conversation (validated in PI WEB): it compacts and continues. A `-long`
-preset gives the next session a 128K slot
-([Included presets](models.md#included-presets)).
+After a turn that fills the preset's slot ends with `length`, pi's
+compaction can fail with `Summarization failed: generation hit the
+token cap and the summary is incomplete`; the agent then stays busy and
+refuses the next prompt. In PI WEB, reopen the conversation: it
+compacts and continues. No recovery in terminal pi is known; start a
+new session on a `-long` preset, which gives a 128K slot.
 
 ## A reply ends with `length` and no answer
 
 At `xhigh` the model can spend the whole reply budget on reasoning and
-return no answer. Lower the effort for the prompt
-([reasoning effort](models.md#reasoning-effort)) or raise the client's
-token limit. In `smoke` the same ending fails the `reply terminates`
-check, where it can also mean a reasoning loop ([`smoke`](cli.md#smoke)).
+return no answer. Lower the effort for the prompt or raise the client's
+token limit ([Reasoning effort](models.md#reasoning-effort)). In
+[`smoke`](cli.md#smoke), the same ending fails the `reply terminates`
+check; on an abliterated preset it can also be a reasoning loop.
 
-## Asking for help
+## Ask for help
 
 Ask a question in
 [Discussions](https://github.com/angelo-lesniak/token-crate/discussions/categories/q-a);
