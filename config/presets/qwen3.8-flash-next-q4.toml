@@ -54,9 +54,8 @@ ubatch_size = 2048
 # at the end of this file:
 #   [server.extra]
 #   load-mode = "none"
-# No MTP on the pinned build (llama.cpp pull request 28243 is open, and it
-# needs separate draft files); the ngram speculation types are the thing
-# to try for speed, unmeasured.
+# No speculative decoding: MTP (see the model set) and the ngram types
+# are the things to try for speed, unmeasured.
 reasoning_effort = "xhigh"
 reasoning_efforts = ["low", "medium", "xhigh"]
 
