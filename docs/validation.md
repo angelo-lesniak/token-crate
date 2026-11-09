@@ -11,18 +11,15 @@ on the date.
 | --- | --- | --- | --- |
 | [Static gate](#static-gate-and-cpu-integration-check) | not run (no Node.js) | 2026-10-21 in strict mode | does not apply |
 | [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-09-20, `LLM_GPU=true`, without `test_concurrent_clients` | 2026-09-20 | 2026-10-18, Engine 29.9.0 with Docker Compose 5.6.0 |
-| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-10-21 for the default preset, scripted part (driver 615.78.08, Podman 6.1.3); 2026-10-18 for its hands-on checks; 2026-09-20 for every other preset the pinned build loads | does not apply | does not apply |
-| [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-10-21 for `coding,metrics` without `--egress`, with and without a browser UI running; 2026-10-18 with `--egress`; 2026-09-20 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,pi-web`, `coding,paseo`, and oh-my-pi | 2026-09-20 for the same selections | 2026-09-20 for the same selections, Engine 29.7.2 |
+| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-11-07, scripted part, for every preset the pinned build loads, `glm-5.3-flash-q2` on 2026-11-08 (driver 615.78.08, Podman 6.1.4); 2026-10-18 for its hands-on checks | does not apply | does not apply |
+| [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-11-09 for `coding,web`, `coding,debug,dotnet,web,browser`, and `coding,debug,odin`; 2026-11-07 for `coding`, `coding,metrics`, and oh-my-pi, and for `coding` with a browser UI running, with and without `--egress`; 2026-09-20 for `coding,pi-web` and `coding,paseo` | 2026-09-20 for the same selections | 2026-09-20 for the same selections, Engine 29.7.2 |
 | [Agent home check](#agent-home-check) | 2026-09-20 | 2026-09-20 | 2026-10-18 |
 | [Cross-project containment check](#cross-project-containment-check) | 2026-10-18 without a UI; 2026-09-20 with both UIs running | 2026-09-20, with a `--cloud` UI | 2026-09-20, with a `--cloud` UI, Engine 29.8.1 |
 | [Independent-client check](#independent-client-check) | 2026-09-20, scripted and by hand | 2026-09-20 | 2026-10-18 |
 | [Cloud check](#cloud-check) | 2026-09-20, a free OpenRouter model through `agent pi --cloud` and `ui paseo --cloud` | 2026-09-20, placeholder key | 2026-09-20, `ui pi-web --cloud` with a placeholder key only, Engine 29.8.1 |
 | [Dashboard and stats check](#dashboard-and-stats-check) | 2026-09-29, with the GPU exporter | 2026-09-27, on the CPU fixture preset | not run |
 
-Each run used the pins of its date. The
-generation speeds in the [preset table](models.md#included-presets) come
-from llama.cpp build b11028, except the
-`qwen3.8-flash-next-q4-uncensored` row, measured on b10920.
+Each run used the pins of its date.
 
 ### Known gaps
 
@@ -34,9 +31,8 @@ No run covers:
 - on Docker Engine: the UI daemon's bind address, a `--cloud` terminal
   session and the removal of its container on `SIGTERM`, the llama API's
   CORS setting, and the dashboard profile;
-- the GLM presets, which wait behind the [build
-  gate](models.md#build-gate); when it opens, run `smoke` and `bench`
-  for each and record the build number;
+- `glm-5.3-flash-q2-uncensored`, which waits behind the
+  [build gate](models.md#build-gate);
 - a 16 GB card: `gpt-oss-20b-small` and `qwen3.8-27b-q3-small` were
   measured on a 32 GB card;
 - an internal bridge that forwards: no recorded start met one, so the
@@ -58,9 +54,10 @@ No run covers:
   session, or Paseo's create-agent form, a paid provider, and the
   reported cost: every recorded cloud answer came from a scripted prompt
   on a free model;
-- the [router
+- these [router
   observations](../CONTRIBUTING.md#router-behavior-the-wrapper-relies-on)
-  on the pinned build;
+  on the pinned build: readiness, `POST /tokenize` without a model, a
+  `/metrics` request loading a preset, and the preset-file rules;
 - a reverse proxy in front of the loopback ports;
 - answer quality, refusals included: what three bits cost the 27B on
   agent work, and plain pi against the `coding` bundle on the same
@@ -101,7 +98,7 @@ the host can load, and these hands-on checks:
   confirm the answer and its reasoning block; select another preset and
   confirm the swap in `status`.
 - Confirm in `nvidia-smi` that llama-server holds GPU memory and that the
-  bench report's generation speed is inside the range of the
+  bench report's generation speed rounds to the estimate in the
   [preset table](models.md#included-presets).
 - With `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` set in `.env`, ask
   `bash bin/tokencrate agent pi --dir <project>` for a one-line change
@@ -221,7 +218,7 @@ host):
    is redirected to `127.0.0.1`.
 3. After `smoke` and `bench`, Grafana's query API returns
    `llamacpp:prompt_tokens_total` and, with the GPU exporter,
-   `DCGM_FI_DEV_FB_USED`.
+   `DCGM_FI_DEV_FB_USED_BYTES`.
 4. `bash bin/tokencrate stats --serve` during an agent turn: the live
    panel fills, and `/live` answers 403 for a foreign `Host`.
 5. `bash bin/tokencrate down` also removes the profile's containers and
@@ -235,9 +232,9 @@ outside the repository, named by purpose and UTC time. Afterwards:
 - Put the run's date in the [Status](#status) table for each procedure
   that passed, with the engine or driver version when it changed; a
   procedure the run failed or did not repeat keeps its old date.
-- Refresh the measured columns of the
-  [preset table](models.md#included-presets) for every preset the run
-  re-measured.
+- Change a generation estimate in the [preset
+  table](models.md#included-presets) when the run's speed rounds to
+  another value.
 - Remove the [known gaps](#known-gaps) the run closed and add the ones
   it opened.
 - Put each finding on the page that owns it: a recurring failure on

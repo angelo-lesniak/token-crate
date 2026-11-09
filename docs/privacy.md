@@ -57,7 +57,7 @@ browser tool.
 | pi-lens (`coding` set) | On-demand installs of language servers and tools |
 | .NET SDK (`dotnet` set) | Usage telemetry and the workload update check; NuGet sources point at the image cache |
 | PI WEB (`pi-web` set) | The release check and the model-catalogue refresh |
-| Paseo (`paseo` set) | The rendezvous relay and the speech-model downloads; the hub and push features are never set up |
+| Paseo (`paseo` set) | The rendezvous relay, the speech-model downloads, and the usage sources, which read other agents' credential files and call their providers; the hub and push features are never set up |
 | Grafana (dashboard profile) | Usage reporting, update checks, the news feed, plugin preinstalls and key retrieval, external snapshot publishing, Gravatar lookups |
 
 ## Defaults and their limits

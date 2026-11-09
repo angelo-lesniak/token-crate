@@ -357,8 +357,8 @@ RESOLVERS: dict[str, Callable[[dict[str, str]], Resolution]] = {
         "NODE_TAG",
         "library",
         "node",
-        re.compile(r"^(\d+(?:\.\d+)*)-bookworm-slim$"),
-        search="bookworm-slim",
+        re.compile(r"^(\d+(?:\.\d+)*)-trixie-slim$"),
+        search="trixie-slim",
         even_major_only=True,
     ),
     "BUN_TAG": functools.partial(

@@ -1,6 +1,6 @@
 schema = 1
-description = ".NET SDK 10.0.401 with csharp-ls 0.28.0 (language server), netcoredbg 3.2.0-1092 (debug adapter), and a NuGet cache warmed with the console, classlib, xunit, and web templates"
-apt = ["libgssapi-krb5-2", "libicu72", "libssl3"]
+description = ".NET SDK 10.0.403 with csharp-ls 0.28.0 (language server), netcoredbg 3.2.0-1092 (debug adapter), and a NuGet cache warmed with the console, classlib, xunit, and web templates"
+apt = ["libgssapi-krb5-2", "libicu76", "libssl3t64"]
 # The project name must differ from the template's package name (a project
 # named xunit cannot reference the xunit package); a failed restore fails
 # the build. The seeded NuGet.Config names the warmed cache as the only source.
@@ -22,8 +22,8 @@ check = [
 note = "dotnet SDK with csharp-ls (language server) and netcoredbg (debug adapter, .cs). NuGet restore defaults to the read-only image cache (console, classlib, xunit, and web templates). Uncached packages need --egress, an explicit source, and NUGET_PACKAGES set to a writable directory in the project."
 
 [[asset]]
-url = "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.401/dotnet-sdk-10.0.401-linux-x64.tar.gz"
-sha512 = "51c8b999af9e8dd9998c9edc5944e19a90788862068acd38694e098889054ce8c23d4f0c5cccfa16bf187d044562359e5ee69a9f8ad0bbe913ba90311fbce25b"
+url = "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.403/dotnet-sdk-10.0.403-linux-x64.tar.gz"
+sha512 = "b7b3d8461cf98b07d2552ce9199702fa3ad010ac2671a5f8cd5136f7534e50f6855ba7bbb02b11494563f1d04156276a31cda1103b900e5eecd0d9473dc7b9c5"
 into = "/opt/dotnet"
 
 [[asset]]

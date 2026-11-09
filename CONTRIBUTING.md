@@ -152,8 +152,9 @@ Do not commit models, tokens, `.env`, `build/`, `data/`, `local/`, or
 
 `runtime`, `probe`, and the preset renderer rest on these observations
 of llama-server's router mode (`--models-preset`, `--models-max 1`),
-made on b10920 ([Known gaps](docs/validation.md#known-gaps)); repeat
-them after a `LLAMA_CPP_TAG` change.
+made on b12182 except the ones [Known
+gaps](docs/validation.md#known-gaps) names; repeat them after a
+`LLAMA_CPP_TAG` change.
 
 - Readiness: `GET /health` answers `{"status":"ok"}` while the default
   preset is still `loading` in `GET /models`, so `up` polls `/models` for
@@ -161,15 +162,15 @@ them after a `LLAMA_CPP_TAG` change.
 - Swap: a request whose `model` names another preset waits for the
   running request, then the router unloads the loaded model and loads
   the other. `POST /models/load` answers 400 for the model that is
-  loading or loaded and 500 `model limit reached` for another model
-  while one is loaded, so `up` asks for a load only when nothing is
-  loaded.
+  loading or loaded and swaps the same way for another model, so `up`
+  asks for a load only when nothing is loaded.
 - Failure: a preset whose model server exits leaves the router running,
   `/models` reports it `unloaded`, and a request for it answers 500; `up`
   fails when the default preset turns `unloaded` after `loading`.
 - Requests without `model` answer 400 `model name is missing from the
-  request`; `GET /props`, `POST /tokenize`, and `GET /metrics` need
-  `?model=` or a `model` field, which the probe sends. A `/metrics`
+  request`; `GET /props` without `?model=` answers the router's own
+  properties, and `POST /tokenize` and `GET /metrics` need `?model=` or
+  a `model` field; the probe sends one to each. A `/metrics`
   request for an unloaded preset loads it, so scrape only presets
   `GET /models` reports loaded.
 - Preset file: keys are llama-server option names without dashes

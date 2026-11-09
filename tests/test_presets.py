@@ -20,17 +20,29 @@ CONFIG = PROJECT_ROOT / "config"
 GPT_OSS_20B_WEIGHTS = "ggml-org/gpt-oss-20b-GGUF/gpt-oss-20b-MXFP4.gguf"
 SHIPPED_MODEL_SETS = shipped("model-sets")
 SHIPPED_PRESETS = shipped("presets")
-# A preset whose model set waits for a llama.cpp build no release carries
-# (the GLM presets) never reaches the router. The tests pass the build
-# number they compare against (10920) themselves.
+# A preset whose model set waits for a llama.cpp build the pin has not
+# reached, or one no release carries, never reaches the router. The tests
+# pass the build number they compare against (10920) themselves, which
+# gates both GLM sets.
 _CONFIGURATION = presets.load(CONFIG, 10920)
 _MODEL_SETS, _PRESETS = _CONFIGURATION.model_sets, _CONFIGURATION.presets
-GATED_PRESETS = [p.name for p in _PRESETS if _MODEL_SETS[p.model_set].llama_build == models.UNRELEASED_BUILD]
+UNRELEASED_WAIT = "waits for an unreleased llama.cpp build (pinned: b10920)"
+
+
+def expected_wait(llama_build: str) -> str:
+    if llama_build == models.UNRELEASED_BUILD:
+        return UNRELEASED_WAIT
+    if llama_build and int(llama_build[1:]) > 10920:
+        return f"waits for llama.cpp build {llama_build} (pinned: b10920)"
+    return ""
+
+
+WAITS = {p.name: expected_wait(_MODEL_SETS[p.model_set].llama_build) for p in _PRESETS}
+GATED_PRESETS = [name for name, wait in WAITS.items() if wait]
 LOADABLE_PRESETS = [name for name in SHIPPED_PRESETS if name not in GATED_PRESETS]
 # Every preset of the gpt-oss set: the tests that gate that set or leave
 # only its file on disk expect all of them, not one.
 GPT_OSS_PRESETS = [p.name for p in _PRESETS if p.model_set == "gpt-oss-20b-mxfp4"]
-UNRELEASED_WAIT = "waits for an unreleased llama.cpp build (pinned: b10920)"
 VALIDATED = f"Validated {len(SHIPPED_PRESETS)} preset(s) against {len(SHIPPED_MODEL_SETS)} model set(s)."
 # Every preset states the keys the renderer has no fallback for.
 PRESET_HEAD = (
@@ -150,8 +162,8 @@ class PresetTests(unittest.TestCase):
             self.assertEqual(records[name].missing, [], name)
             self.assertIn(f"{name}: loadable\n", stdout)
         for name in GATED_PRESETS:
-            self.assertEqual((records[name].loadable, records[name].wait), (False, UNRELEASED_WAIT))
-            self.assertIn(f"{name}: {UNRELEASED_WAIT}\n", stdout)
+            self.assertEqual((records[name].loadable, records[name].wait), (False, WAITS[name]))
+            self.assertIn(f"{name}: {WAITS[name]}\n", stdout)
         self.assertIn(f"Rendered {len(LOADABLE_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into {output}.\n", stdout)
         self.assertEqual(presets.rendered_model_ids(output), set(LOADABLE_PRESETS))
         # The MTP variants differ from the default in one thing each: the
@@ -315,7 +327,7 @@ class PresetTests(unittest.TestCase):
         lines = stdout.getvalue().splitlines()
         self.assertEqual(
             lines[:-1],
-            [f"{name}: {UNRELEASED_WAIT if name in GATED_PRESETS else 'valid'}" for name in SHIPPED_PRESETS],
+            [f"{name}: {WAITS[name] or 'valid'}" for name in SHIPPED_PRESETS],
         )
         self.assertEqual(lines[-1], VALIDATED)
         self.assertEqual([item.preset.name for item in rendered], SHIPPED_PRESETS)
@@ -329,8 +341,10 @@ class PresetTests(unittest.TestCase):
             self.assertIn(preset.model_set, model_sets)
         self.assertTrue(model_sets["qwen3.8-27b-ud-q4-k-xl"].mtp)
         glm = model_sets["glm-5.3-flash-ud-q2-k-xl"]
-        self.assertEqual((glm.llama_build, len(glm.splits), glm.mtp), ("unreleased", 3, True))
-        self.assertEqual(len(model_sets["glm-5.3-flash-orcarouter-uncensored-q2-k"].splits), 2)
+        self.assertEqual((glm.llama_build, len(glm.splits), glm.mtp), ("b11474", 3, True))
+        uncensored = model_sets["glm-5.3-flash-orcarouter-uncensored-q2-k"]
+        self.assertEqual((uncensored.llama_build, len(uncensored.splits)), ("unreleased", 2))
+        self.assertEqual(sorted(GATED_PRESETS), ["glm-5.3-flash-q2", "glm-5.3-flash-q2-uncensored"])
         flash = model_sets["qwen3.8-flash-next-ud-q4-k-xl"]
         self.assertEqual(
             (flash.llama_build, flash.mtp, len(flash.splits), flash.chat_template_file),

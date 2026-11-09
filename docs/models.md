@@ -24,8 +24,8 @@ descriptions.
 | `qwen3.8-27b-ud-q3-k-xl` | 13.1 GB | intended for a 16 GB card, not measured on one |
 | `gpt-oss-20b-mxfp4` | 12.1 GB | |
 | `qwen3.8-27b-huihui-abliterated-ud-q4-k-xl` | 17.4 GB | [uncensored](#uncensored-presets) |
-| `glm-5.3-flash-ud-q2-k-xl` | 108.7 GB | [96 GB RAM tier](#the-96-gb-ram-tier); [build gate](#build-gate) |
-| `glm-5.3-flash-orcarouter-uncensored-q2-k` | 116.9 GB | uncensored; 96 GB RAM tier; [gated](#hugging-face-access-and-storage); build gate |
+| `glm-5.3-flash-ud-q2-k-xl` | 108.7 GB | [96 GB RAM tier](#the-96-gb-ram-tier) |
+| `glm-5.3-flash-orcarouter-uncensored-q2-k` | 116.9 GB | uncensored; 96 GB RAM tier; [gated](#hugging-face-access-and-storage); [build gate](#build-gate) |
 | `qwen3.8-flash-next-ud-q4-k-xl` | 111.3 GB | 96 GB RAM tier |
 | `qwen3.8-flash-next-orcarouter-uncensored-q4-k-s` | 111.8 GB | uncensored; 96 GB RAM tier; gated |
 
@@ -39,27 +39,26 @@ The preset files under `config/presets/` hold every setting; `bash
 bin/tokencrate presets list` prints each preset's model set,
 `[requires]`, build wait, and description.
 
-| Preset | Context | Slots | `[requires]` | Generation | Use it for |
+| Preset | Context | Slots | `[requires]` | Generation (tokens/s) | Use it for |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `qwen3.8-27b-q4-mtp` (default) | 64K | 1 | 24 GiB | 138 to 154 tokens/s | a single agent |
-| `qwen3.8-27b-q4` | 64K total, 32K per slot | 2 | 24 GiB | 74 to 75 tokens/s | the built-in chat UI and an agent on one loaded model |
-| `qwen3.8-27b-q4-mtp-long` | 128K | 1 | 28 GiB | 138 to 154 tokens/s | long agent sessions and clients with large tool schemas |
-| `qwen3.8-27b-q6-quality` | 48K | 1 | 30 GiB | 100 to 113 tokens/s | the larger Q6 quantization |
-| `gpt-oss-20b-fast` | 128K total, 64K per slot | 2 | 20 GiB | 246 to 264 tokens/s | fast chat and a tool-calling fallback |
-| `gpt-oss-20b-small` | 32K | 1 | 15 GiB | 244 to 260 tokens/s | [smaller cards](#write-a-preset-for-another-card) |
-| `qwen3.8-27b-q3-small` | 32K | 1 | 15 GiB | 89 to 91 tokens/s | smaller cards with the 27B; answer quality is not measured |
-| `qwen3.8-27b-q4-mtp-f16kv` | 64K | 1 | 25 GiB | 143 to 144 tokens/s | the default with an unquantized KV cache, for long documents and tool calls |
-| `qwen3.8-27b-q4-uncensored-mtp` | 64K | 1 | 24 GiB | 143 to 151 tokens/s | the default, [uncensored](#uncensored-presets) |
-| `qwen3.8-27b-q4-uncensored-mtp-long` | 128K | 1 | 28 GiB | 142 to 147 tokens/s | the 128K preset, uncensored |
-| `glm-5.3-flash-q2` | 128K | 1 | 30 GiB and 96 GiB RAM | not measured | the [96 GB RAM tier](#the-96-gb-ram-tier); waits behind the [build gate](#build-gate) |
-| `glm-5.3-flash-q2-uncensored` | 64K | 1 | 30 GiB and 96 GiB RAM | not measured | uncensored, no memory margin; waits behind the build gate |
-| `qwen3.8-flash-next-q4` | 128K | 1 | 30 GiB and 96 GiB RAM | 33 to 34 tokens/s | the 96 GB RAM tier |
-| `qwen3.8-flash-next-q4-uncensored` | 128K | 1 | 30 GiB and 96 GiB RAM | 36 to 37 tokens/s | the 96 GB RAM tier, uncensored |
+| `qwen3.8-27b-q4-mtp` (default) | 64K | 1 | 24 GiB | ~140 | a single agent |
+| `qwen3.8-27b-q4` | 64K total, 32K per slot | 2 | 24 GiB | ~80 | the built-in chat UI and an agent on one loaded model |
+| `qwen3.8-27b-q4-mtp-long` | 128K | 1 | 28 GiB | ~140 | long agent sessions and clients with large tool schemas |
+| `qwen3.8-27b-q6-quality` | 48K | 1 | 30 GiB | ~110 | the larger Q6 quantization |
+| `gpt-oss-20b-fast` | 128K total, 64K per slot | 2 | 20 GiB | ~340 | fast chat and a tool-calling fallback |
+| `gpt-oss-20b-small` | 32K | 1 | 15 GiB | ~340 | [smaller cards](#write-a-preset-for-another-card) |
+| `qwen3.8-27b-q3-small` | 32K | 1 | 15 GiB | ~90 | smaller cards with the 27B; answer quality is not measured |
+| `qwen3.8-27b-q4-mtp-f16kv` | 64K | 1 | 25 GiB | ~140 | the default with an unquantized KV cache, for long documents and tool calls |
+| `qwen3.8-27b-q4-uncensored-mtp` | 64K | 1 | 24 GiB | ~140 | the default, [uncensored](#uncensored-presets) |
+| `qwen3.8-27b-q4-uncensored-mtp-long` | 128K | 1 | 28 GiB | ~140 | the 128K preset, uncensored |
+| `glm-5.3-flash-q2` | 128K | 1 | 30 GiB and 96 GiB RAM | ~20 | the [96 GB RAM tier](#the-96-gb-ram-tier) |
+| `glm-5.3-flash-q2-uncensored` | 64K | 1 | 30 GiB and 96 GiB RAM | not measured | uncensored, no memory margin; waits behind the [build gate](#build-gate) |
+| `qwen3.8-flash-next-q4` | 128K | 1 | 30 GiB and 96 GiB RAM | ~30 | the 96 GB RAM tier |
+| `qwen3.8-flash-next-q4-uncensored` | 128K | 1 | 30 GiB and 96 GiB RAM | ~30 | the 96 GB RAM tier, uncensored |
 
-The generation speeds are for a short and a long prompt on an RTX 5090;
-[Validation](validation.md#status) names the llama.cpp build they were
-measured on. A declared `[requires]` value is a ceiling with a few GiB
-of headroom: llama-server allocates the KV cache when the preset loads,
+The generation speeds are estimates from a short and a long prompt on
+an RTX 5090, rounded to the nearest ten. A declared `[requires]` value
+is a ceiling with a few GiB of headroom: llama-server allocates the KV cache when the preset loads,
 so a full slot holds no more than an empty one.
 
 The default preset gives a single agent one 64K slot instead of two 32K
@@ -138,24 +137,23 @@ load waits for the page faults of the memory map before the first word,
 an estimated 25 to 45 seconds on an RTX 5090 host. The preset comments
 ([Flash-Next](../config/presets/qwen3.8-flash-next-q4.toml),
 [GLM](../config/presets/glm-5.3-flash-q2.toml)) break down the memory
-on the card and in system memory, and say how to try `load-mode`.
+on the card and in system memory, and say what `load-mode` does to each.
 
-No llama.cpp release knows GLM-5.3-Flash's architecture, `glm5next`, so
-both GLM sets wait behind the [build gate](#build-gate) as
-`unreleased`. Their presets are untested, a [known
-gap](validation.md#known-gaps); their comments carry a fallback ladder
-for the first run.
+The orcarouter GLM set waits behind the [build gate](#build-gate) as
+`unreleased`: its files declare the pre-release architecture name
+`glm5next`, which no llama.cpp release loads; its preset is untested, a
+[known gap](validation.md#known-gaps).
 
 ## Build gate
 
 A model set whose architecture the pinned llama.cpp build does not know
 declares `[requires] llama_build`: the first build that loads it, as
-`pins.env` spells it (`b11100`), or `unreleased`. The gate compares that
+`pins.env` spells it (`b12200`), or `unreleased`. The gate compares that
 build with the number at the end of `LLAMA_CPP_TAG`; an `unreleased` set
 waits for every pin. While a set waits, each of its presets:
 
 - is listed as waiting by `presets check` and `presets list` (`waits for
-  llama.cpp build b11100 (pinned: b11028)`); `doctor --preset` warns,
+  llama.cpp build b12200 (pinned: b12182)`); `doctor --preset` warns,
   and `pins check` names the waiting set;
 - stays out of the router preset file and the agent model lists that
   `up` renders;
@@ -222,7 +220,7 @@ server.
    ```
 
 Attach the `smoke` and `bench` reports to the change; a shipped preset
-also gets its measured columns in the [preset table](#included-presets),
+also gets its generation estimate in the [preset table](#included-presets),
 as [Validation](validation.md#record-a-run) describes.
 
 ### Manifest keys

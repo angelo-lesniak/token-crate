@@ -1,21 +1,17 @@
 schema = 1
-description = "TypeScript 7.0.2, typescript-language-server 6.0.0, the Vue 3.3.11 language tools and vue-tsc, and js-debug 1.117.0 (debug adapter) behind a stdio bridge"
-note = "node with typescript, typescript-language-server, vue-tsc, and js-debug-adapter (debug adapter, .ts and .js). npm install needs --egress. For .vue files run `vue-tsc --noEmit`."
-
-build = ["install -m 0755 js-debug-adapter /usr/local/bin/js-debug-adapter"]
-# The bridge must answer a DAP request over stdio from the container user.
+description = "TypeScript 6.0.3, typescript-language-server 6.0.3, and the Vue 3.3.14 language tools and vue-tsc"
+note = "node with typescript, typescript-language-server, and vue-tsc. npm install needs --egress. For .vue files run `vue-tsc --noEmit`."
+# TypeScript stays on 6 until a stable vue-tsc supports 7 (Vue's language
+# tools 4, which need TypeScript 7.1): 7 ships no lib/tsc, on which vue-tsc
+# crashes, and no tsserver, so the move also replaces
+# typescript-language-server with 7's own `tsc --lsp --stdio`.
 check = [
-  '''request='{"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"pwa-node"}}'''',
-  '''printf 'Content-Length: %d\r\n\r\n%s' "${#request}" "$request" | timeout 30 js-debug-adapter | grep -q '"command":"initialize"'''',
-  "echo 'js-debug answers a DAP initialize request over stdio'",
+  "typescript-language-server --version >/dev/null",
+  "vue-tsc --version >/dev/null",
+  'echo "typescript-language-server $(typescript-language-server --version) and $(vue-tsc --version) answer --version"',
 ]
 
 [npm]
 
 [env]
 PATH = "/opt/tokencrate/sets/web/node_modules/.bin"
-
-[[asset]]
-url = "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz"
-sha256 = "ad8d04ede9d4b75cc290fd5438a65047a06f786d04f604b6112485b36f090772"
-into = "/opt"

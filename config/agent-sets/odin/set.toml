@@ -1,5 +1,5 @@
 schema = 1
-description = "Odin dev-2026-08 with OLS dev-2026-08 (language server) and odinfmt, clang 19 as the linker, lldb-dap 19 (debug adapter), SDL2, Vulkan, and glslc"
+description = "Odin dev-2026-10 with OLS dev-2026-10 (language server) and odinfmt, clang 19 as the linker, lldb-dap 19 (debug adapter), SDL2, Vulkan, and glslc"
 # clang is Odin's linker on Linux (the LLVM 19 one, shared with lldb); the
 # X11 and OpenGL development packages are what the prebuilt raylib in the
 # Odin release links against.
@@ -37,14 +37,14 @@ SDL2, Vulkan headers and loader, glslc. There is no display: SDL uses its dummy 
 
 # Odin and OLS stay on the same monthly tag and are upgraded together.
 [[asset]]
-url = "https://github.com/odin-lang/Odin/releases/download/dev-2026-08/odin-linux-amd64-dev-2026-08.tar.gz"
-sha256 = "d858c0a182bb28d7b04b04dbb8aed592a9c96c84e4400ee917c74b45848a4d87"
+url = "https://github.com/odin-lang/Odin/releases/download/dev-2026-10/odin-linux-amd64-dev-2026-10.tar.gz"
+sha256 = "c3c8b095621fd0c75f7f73e3a0829f1b4d45324225f20ba11ed8dc4da310a8ab"
 into = "/opt/odin"
 strip = 1
 
 [[asset]]
-url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-08/ols-x86_64-unknown-linux-gnu.zip"
-sha256 = "6fbeef39393476ad8c0601ad2fcc75e5df789f1c4990809fe87cd6f3f3680807"
+url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-10/ols-x86_64-unknown-linux-gnu.zip"
+sha256 = "1ee224fcd7b0818acf2e2160e5d4e380d89261d9d96328c9b0a1cb8cc193bb7f"
 into = "/opt/ols"
 
 [env]

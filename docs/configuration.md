@@ -216,9 +216,7 @@ images of equal pins and selections.
    | `VICTORIAMETRICS_TAG`, `GRAFANA_TAG`, `DCGM_EXPORTER_TAG` | `up` with `LLM_DASHBOARD=true`, then open Grafana |
 
 3. Record the run as [Validation](validation.md#record-a-run)
-   describes, with the measured columns of the
-   [preset table](models.md#included-presets) for every preset the run
-   re-measured.
+   describes.
 
 ## Update the checkout
 

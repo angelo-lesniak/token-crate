@@ -24,7 +24,7 @@ the pinned versions. What decides a selection:
 | Set | Select it for |
 | --- | --- |
 | `coding` | Code intelligence, anchored edits, `/plan`, `/advisor`, and subagents that run on the session's own model |
-| `debug` | A `debug` tool over the debug adapters of `dotnet`, `web`, or `odin`, so select one of them too |
+| `debug` | A `debug` tool over the debug adapters of `dotnet` or `odin`, so select one of them too |
 | `dotnet` | .NET; NuGet restores from a read-only cache warmed with four project templates, and other packages need `--egress`, an explicit source, and a writable `NUGET_PACKAGES` |
 | `web` | TypeScript and Vue; `npm install` needs `--egress` |
 | `browser` | Chrome DevTools tools against headless Chromium, which runs without its own sandbox (the container is the sandbox) |

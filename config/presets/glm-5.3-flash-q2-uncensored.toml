@@ -2,15 +2,11 @@ schema = 1
 description = "GLM-5.3-Flash uncensored (abliterated by orcarouter), plain 2-bit: the 96 GB RAM tier, tight, unverified"
 model_set = "glm-5.3-flash-orcarouter-uncensored-q2-k"
 
-# glm-5.3-flash-q2 on the orcarouter file: the same gate, the same first
-# attempt, and the same fallback ladder, which glm-5.3-flash-q2.toml
-# states with their sources. Three settings differ: the slot and
-# n_cpu_moe, because the file is 8 GB larger, and no MTP drafting, because
-# orcarouter's GGUFs drop the draft head (their card), which also makes
-# step 3 of the ladder moot here. Its first run waits for that preset's
-# measured speed and passing smoke. With the gate opened by hand on a
-# build without the architecture, the load fails at once with "unknown
-# model architecture: 'glm5next'".
+# glm-5.3-flash-q2 on the orcarouter file, with its flash attention and
+# micro-batch. Three settings differ: the slot and n_cpu_moe, because the
+# file is 8 GB larger, and no MTP drafting, because orcarouter's GGUFs drop
+# the draft head (their card). Its first run waits for files that declare
+# glm5-next (docs/models.md).
 [server]
 ctx_size = 65536
 n_predict = 16384
@@ -25,12 +21,12 @@ gpu_layers = 99
 # host, so the first run decides: when the host swaps, this preset does
 # not fit and goes. One layer fewer moves 2.4 GB to the card.
 n_cpu_moe = 39
-flash_attn = "off"
+flash_attn = "on"
 cache_type_k = "f16"
 cache_type_v = "f16"
 ctx_checkpoints = 8
 batch_size = 2048
-ubatch_size = 2048
+ubatch_size = 512
 reasoning_effort = "high"
 reasoning_efforts = ["low", "high", "max"]
 thinking_toggle = false

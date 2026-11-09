@@ -577,12 +577,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "DCGM_FI_DEV_GPU_UTIL",
+          "expr": "DCGM_FI_DEV_GPU_UTIL_RATIO * 100",
           "legendFormat": "utilization %"
         },
         {
           "refId": "B",
-          "expr": "DCGM_FI_DEV_FB_USED / 1024",
+          "expr": "DCGM_FI_DEV_FB_USED_BYTES / 1073741824",
           "legendFormat": "memory used GiB"
         }
       ]
@@ -664,12 +664,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "DCGM_FI_DEV_POWER_USAGE",
+          "expr": "DCGM_FI_DEV_BOARD_POWER_WATTS",
           "legendFormat": "power W"
         },
         {
           "refId": "B",
-          "expr": "DCGM_FI_DEV_GPU_TEMP",
+          "expr": "DCGM_FI_DEV_GPU_TEMP_CELSIUS",
           "legendFormat": "temperature C"
         }
       ]

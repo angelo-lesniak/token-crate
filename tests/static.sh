@@ -40,7 +40,6 @@ for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
 node --check config/agent-sets/metrics/timings/index.js
-node --check config/agent-sets/web/js-debug-adapter
 node --check services/agents/ui-forward.js
 node --check services/dashboard/llama-exporter.js
 node --check tokencrate/stats/pages/live.js

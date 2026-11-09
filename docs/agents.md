@@ -149,8 +149,8 @@ The UI has no password, and its terminal and file editor have the
 agent's access to the project; [Browser UIs](privacy.md#browser-uis)
 says who can reach it. Extension dialogs appear in the browser.
 
-PI WEB switches off its own session-spawning tools; the `coding` set's
-subagent tool takes their place.
+PI WEB switches off its own session-spawning and session-messaging
+tools; the `coding` set's subagent tool takes their place.
 
 Paseo runs pi in RPC mode, which shows no project trust prompt, so
 project-local `.pi/` resources are expected not to load there. At first

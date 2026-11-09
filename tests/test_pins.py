@@ -22,7 +22,7 @@ class PinsTests(unittest.TestCase):
             "LLAMA_CPP_DIGEST": "a" * 64,
             "PI_VERSION": "0.85.1",
             "OMP_VERSION": "18.1.18",
-            "NODE_TAG": "24-bookworm-slim",
+            "NODE_TAG": "24-trixie-slim",
             "NODE_DIGEST": "b" * 64,
             "BUN_TAG": "1.4.2-slim",
             "BUN_DIGEST": "c" * 64,

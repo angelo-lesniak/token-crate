@@ -21,7 +21,7 @@ PINS = {
     "LLAMA_CPP_DIGEST": "a" * 64,
     "PI_VERSION": "0.85.1",
     "OMP_VERSION": "18.1.18",
-    "NODE_TAG": "24.21.0-bookworm-slim",
+    "NODE_TAG": "24.21.0-trixie-slim",
     "NODE_DIGEST": "b" * 64,
     "BUN_TAG": "1.4.2-slim",
     "BUN_DIGEST": "c" * 64,
@@ -187,21 +187,21 @@ class RegistryResolverTests(unittest.TestCase):
                 resolve("PI_VERSION", {"PI_VERSION": "0.85.1"})
 
     def test_node_keeps_the_image_family_and_even_lts_majors(self) -> None:
-        values = {"NODE_TAG": "24.21.0-bookworm-slim"}
+        values = {"NODE_TAG": "24.21.0-trixie-slim"}
         tags = [
-            "27.0.0-bookworm-slim",
+            "27.0.0-trixie-slim",
             "26.9.0-alpine",
-            "26.9.0-bookworm",
-            "26.9.0-bookworm-slim",
-            "26.9-bookworm-slim",
-            "26-bookworm-slim",
-            "25.9.0-bookworm-slim",
+            "26.9.0-trixie",
+            "26.9.0-trixie-slim",
+            "26.9-trixie-slim",
+            "26-trixie-slim",
+            "25.9.0-trixie-slim",
         ]
         published = {tag: f"sha256:{index:064x}" for index, tag in enumerate(tags)}
         with mock.patch.object(checkpins, "docker_hub_tags", return_value=published) as listed:
             result = resolve("NODE_TAG", values)
-        self.assertEqual(listed.call_args.args[:3], ("library", "node", "bookworm-slim"))
-        self.assertEqual((result.key, result.latest), ("NODE_TAG", "26.9.0-bookworm-slim"))
+        self.assertEqual(listed.call_args.args[:3], ("library", "node", "trixie-slim"))
+        self.assertEqual((result.key, result.latest), ("NODE_TAG", "26.9.0-trixie-slim"))
         self.assertEqual(result.notes, ("  Image tags: https://hub.docker.com/_/node",))
         # The digest of the chosen tag, from the same listing.
         self.assertEqual(result.digest, f"{3:064x}")
@@ -215,21 +215,21 @@ class RegistryResolverTests(unittest.TestCase):
         # The pin names one release in full, so every patch release is a
         # new tag; a major-line tag, which Docker Hub moves to each release,
         # would leave the check silent.
-        values = {"NODE_TAG": "26.9.0-bookworm-slim", "NODE_DIGEST": "11" * 32}
+        values = {"NODE_TAG": "26.9.0-trixie-slim", "NODE_DIGEST": "11" * 32}
         published = {
-            "26-bookworm-slim": "sha256:" + "22" * 32,
-            "26.9.0-bookworm-slim": "sha256:" + "11" * 32,
-            "26.9.1-bookworm-slim": "sha256:" + "22" * 32,
+            "26-trixie-slim": "sha256:" + "22" * 32,
+            "26.9.0-trixie-slim": "sha256:" + "11" * 32,
+            "26.9.1-trixie-slim": "sha256:" + "22" * 32,
         }
         with mock.patch.object(checkpins, "docker_hub_tags", return_value=published):
             output = checkpins.check("node", values)
         self.assertEqual(
             output,
-            "node: 26.9.0-bookworm-slim -> 26.9.1-bookworm-slim\n"
+            "node: 26.9.0-trixie-slim -> 26.9.1-trixie-slim\n"
             "  Image tags: https://hub.docker.com/_/node\n"
             "\n"
             "Paste into pins.env:\n"
-            "NODE_TAG=26.9.1-bookworm-slim\n"
+            "NODE_TAG=26.9.1-trixie-slim\n"
             f"NODE_DIGEST={'22' * 32}\n",
         )
 
@@ -283,7 +283,7 @@ class RegistryResolverTests(unittest.TestCase):
         payload = {"results": [], "next": "http://hub.docker.com/next"}
         with mock.patch.object(checkpins, "request_json", return_value=payload):
             with self.assertRaisesRegex(TokenCrateError, "unsafe pagination"):
-                checkpins.docker_hub_tags("library", "node", "bookworm-slim")
+                checkpins.docker_hub_tags("library", "node", "trixie-slim")
 
 
 class ReportTests(unittest.TestCase):
@@ -319,7 +319,7 @@ class ReportTests(unittest.TestCase):
                 "PI_VERSION", "0.85.1", "0.86.0", ("  Package history: https://npm/pi",)
             ),
             "OMP_VERSION": current("OMP_VERSION", "18.1.18"),
-            "NODE_TAG": current("NODE_TAG", "24.21.0-bookworm-slim"),
+            "NODE_TAG": current("NODE_TAG", "24.21.0-trixie-slim"),
             "BUN_TAG": current("BUN_TAG", "1.4.2-slim"),
             "VICTORIAMETRICS_TAG": current("VICTORIAMETRICS_TAG", "v1.152.0"),
             "GRAFANA_TAG": current("GRAFANA_TAG", "13.2.2"),
@@ -338,7 +338,7 @@ class ReportTests(unittest.TestCase):
             "pi: 0.85.1 -> 0.86.0\n"
             "  Package history: https://npm/pi\n"
             "omp: 18.1.18 (latest eligible)\n"
-            "node: 24.21.0-bookworm-slim (latest eligible)\n"
+            "node: 24.21.0-trixie-slim (latest eligible)\n"
             "bun: 1.4.2-slim (latest eligible)\n"
             "victoriametrics: v1.152.0 (latest eligible)\n"
             "grafana: 13.2.2 (latest eligible)\n"
@@ -363,14 +363,14 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(
                 checkpins.check("dcgm-exporter", PINS), "dcgm-exporter: 4.6.1-4.8.4 (no resolver; look it up by hand)\n"
             )
-        resolvers = {"NODE_TAG": mock.Mock(return_value=current("NODE_TAG", "24.21.0-bookworm-slim"))}
+        resolvers = {"NODE_TAG": mock.Mock(return_value=current("NODE_TAG", "24.21.0-trixie-slim"))}
         with mock.patch.dict(checkpins.RESOLVERS, resolvers, clear=True):
             output = checkpins.check(
-                "all", {"NODE_TAG": "24.21.0-bookworm-slim", "NODE_DIGEST": "b" * 64, "CUDA_MIN_DRIVER_MAJOR": "580"}
+                "all", {"NODE_TAG": "24.21.0-trixie-slim", "NODE_DIGEST": "b" * 64, "CUDA_MIN_DRIVER_MAJOR": "580"}
             )
         self.assertEqual(
             output,
-            "node: 24.21.0-bookworm-slim (latest eligible)\n"
+            "node: 24.21.0-trixie-slim (latest eligible)\n"
             "cuda-min-driver-major: 580 (no resolver; look it up by hand)\n"
             "The resolved pins are the latest eligible.\n",
         )
@@ -401,18 +401,18 @@ class ReportTests(unittest.TestCase):
             "pins.env has the latest eligible pins.\n",
         )
         # The wait concerns the llama.cpp pin only.
-        resolvers = {"NODE_TAG": mock.Mock(return_value=current("NODE_TAG", "24.21.0-bookworm-slim"))}
+        resolvers = {"NODE_TAG": mock.Mock(return_value=current("NODE_TAG", "24.21.0-trixie-slim"))}
         with mock.patch.dict(checkpins.RESOLVERS, resolvers, clear=True):
             self.assertNotIn("model set", checkpins.check("node", PINS, waits=waits))
 
     def test_reports_latest_eligible_pins_without_a_paste_block(self) -> None:
-        resolver = mock.Mock(return_value=current("NODE_TAG", "24.21.0-bookworm-slim"))
+        resolver = mock.Mock(return_value=current("NODE_TAG", "24.21.0-trixie-slim"))
         with mock.patch.dict(checkpins.RESOLVERS, {"NODE_TAG": resolver}, clear=True):
             output = checkpins.check("node", PINS)
         resolver.assert_called_once_with(PINS)
         self.assertEqual(
             output,
-            "node: 24.21.0-bookworm-slim (latest eligible)\npins.env has the latest eligible pins.\n",
+            "node: 24.21.0-trixie-slim (latest eligible)\npins.env has the latest eligible pins.\n",
         )
 
     def test_a_failing_source_is_one_row_and_the_report_is_raised(self) -> None:
@@ -435,7 +435,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("pins check could not read the source of: node", str(raised.exception))
         report = raised.exception.report
         self.assertIn("pi: 0.85.1 -> 0.86.0\n", report)
-        self.assertIn("node: 24.21.0-bookworm-slim (lookup failed: later source failed)\n", report)
+        self.assertIn("node: 24.21.0-trixie-slim (lookup failed: later source failed)\n", report)
         self.assertIn("Paste into pins.env:\nPI_VERSION=0.86.0\n", report)
 
     def test_docker_hub_is_read_newest_first_and_stops_behind_the_latest(self) -> None:
