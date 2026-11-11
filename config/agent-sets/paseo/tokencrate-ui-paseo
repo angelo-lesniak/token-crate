@@ -75,8 +75,9 @@ copy_identity "$STATE" "$PASEO_HOME"
 # Paseo's create-agent form takes its provider and model from what the
 # browser saved the last time, never from the daemon, so the first start
 # seeds what the daemon can do: the providers whose command lines are not
-# in this image are turned off (pi is the only one left to pick), the
-# preset the session was started with is the pi provider's default model
+# in this image are turned off (pi is the only one left to pick), and so
+# are the usage sources (docs/privacy.md); the preset the session was
+# started with is the pi provider's default model
 # at the terminal's thinking level, and an agent profile (Paseo's saved
 # provider-and-model choice) starts an agent with one click. The daemon
 # keeps the file afterwards, so a later edit in Paseo's settings stays.
@@ -87,13 +88,13 @@ const crypto = require("crypto");
 const preset = process.argv[2];
 const file = process.argv[3];
 const model = `tokencrate/${preset}`;
-const providers = Object.fromEntries(["claude", "codex", "copilot", "opencode", "omp"].map((id) => [id, { enabled: false }]));
+const providers = Object.fromEntries(["claude", "codex", "copilot", "opencode", "omp", "antigravity", "hoplite", "muse"].map((id) => [id, { enabled: false }]));
 providers.pi = { additionalModels: [{ id: model, label: model, isDefault: true, defaultThinkingOptionId: "xhigh" }] };
 const profile = {
   id: `tokencrate-${preset}`, name: `TokenCrate ${preset}`, provider: "pi", model, thinkingOptionId: "xhigh",
   notes: "Seeded by TokenCrate for the preset the session was started with.",
 };
-const config = { version: 1, daemon: { agentProfiles: [profile] }, agents: { providers } };
+const config = { version: 1, daemon: { agentProfiles: [profile], usage: { enabled: false } }, agents: { providers } };
 const temporary = `${file}.${crypto.randomUUID()}.tmp`;
 try {
   fs.writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", { flag: "wx", mode: 0o600 });
@@ -107,7 +108,9 @@ readonly HEALTH="http://$address:$PORT/api/health"
 echo "TokenCrate UI: Paseo listens on $address:$PORT inside the container"
 # Paseo runs as a runner, a supervisor, and the daemon; a signal to the
 # runner leaves the other two behind, so the stop goes through Paseo.
-paseo daemon start --foreground &
+# `daemon run` is the foreground start that keeps the PASEO_* settings
+# above; `daemon start` drops them.
+paseo daemon run &
 daemon=$!
 trap 'paseo daemon stop --force --timeout 8 >/dev/null 2>&1; wait "$daemon"' TERM INT
 ready=false

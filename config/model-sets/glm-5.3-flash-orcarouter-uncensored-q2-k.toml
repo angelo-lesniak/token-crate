@@ -1,5 +1,5 @@
 schema = 1
-description = "GLM-5.3-Flash uncensored (orcarouter's refusal removal), plain Q2_K in 3 parts (116.9 GB), MIT, gated repository: fits 96 GB of RAM with no margin; needs a llama.cpp build with glm5next"
+description = "GLM-5.3-Flash uncensored (orcarouter's refusal removal), plain Q2_K in 3 parts (116.9 GB), MIT, gated repository: fits 96 GB of RAM with no margin; waits for files converted for llama.cpp's glm5-next"
 upstream_model = "zai-org/GLM-5.3-Flash"
 model_card = "https://huggingface.co/orcarouter/GLM-5.3-Flash-Uncensored-GGUF/blob/47be41dfee785dd4247b9b0ecf765137fb9f5f7e/README.md"
 # Chosen for the method: orcarouter's technique placed first of eight in a

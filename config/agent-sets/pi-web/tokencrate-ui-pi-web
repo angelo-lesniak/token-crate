@@ -17,9 +17,9 @@ export PI_WEB_PORT=$PORT PI_WEB_DATA_DIR=$DATA_DIR PI_WEB_SESSIOND_SOCKET=$SOCKE
 # failures would only fill the log.
 export PI_WEB_OFFLINE=1 PI_WEB_SKIP_VERSION_CHECK=1
 # Keep the model's tool vocabulary the same as in the terminal: no
-# PI WEB session-spawning tools (the coding set has a subagent tool) and
-# no PI WEB environment facts in the system prompt.
-export PI_WEB_SPAWN_SESSIONS=false PI_WEB_SUBSESSIONS=false PI_WEB_ENVIRONMENT_FACTS=false
+# PI WEB session-spawning or session-messaging tools (the coding set has a
+# subagent tool) and no PI WEB environment facts in the system prompt.
+export PI_WEB_SPAWN_SESSIONS=false PI_WEB_SUBSESSIONS=false PI_WEB_SESSION_MESSAGES=false PI_WEB_ENVIRONMENT_FACTS=false
 # The address the daemon listens on: the container's address on the UI
 # network, where the forwarder reaches it by name. A UI started with
 # --egress or --cloud has a second interface, on the default network,
@@ -51,10 +51,11 @@ ui_address() {
 }
 
 mkdir -p "$DATA_DIR"
-# The project directory is the only project; PI WEB lists it at once. The
-# bundled relay package is recorded as dismissed so the daemon does not
-# add it to pi's package list at every start (the entrypoint would remove
-# it again).
+# The project directory is the only project; PI WEB lists it at once. Of
+# the pi packages PI WEB bundles, only session naming (one short title
+# request to the session's model) is kept; relays and workflows are
+# recorded as dismissed so the daemon does not add them to pi's package
+# list at every start (the entrypoint would remove them again).
 node - "$DATA_DIR" "$PWD" "$HOME/.pi/agent" <<'JS'
 const fs = require("fs");
 const path = require("path");
@@ -85,8 +86,10 @@ if (!projects.projects.some((entry) => entry && entry.path === project)) {
 }
 const dismissals = read(dismissalsFile, { dismissals: [] });
 if (!Array.isArray(dismissals.dismissals)) dismissals.dismissals = [];
-if (!dismissals.dismissals.some((entry) => entry && entry.packageId === "@jmfederico/pi-relay" && entry.profileDir === profileDir)) {
-  dismissals.dismissals.push({ profileDir, packageId: "@jmfederico/pi-relay", dismissedAt: now });
+const dismissed = ["@jmfederico/pi-relay", "@jmfederico/pi-web-workflows"];
+const missing = dismissed.filter((packageId) => !dismissals.dismissals.some((entry) => entry && entry.packageId === packageId && entry.profileDir === profileDir));
+if (missing.length > 0) {
+  for (const packageId of missing) dismissals.dismissals.push({ profileDir, packageId, dismissedAt: now });
   write(dismissalsFile, dismissals);
 }
 JS

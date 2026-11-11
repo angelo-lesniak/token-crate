@@ -54,7 +54,7 @@ class CliTests(unittest.TestCase):
         for preset in presets.load(self.scratch.root / "config", PINNED_BUILD).presets:
             self.assertIn(f"{preset.name} [{preset.model_set}] needs ", preset_list)
         self.assertIn(
-            f"waits for an unreleased llama.cpp build (pinned: {PINNED_BUILD}) - GLM-5.3-Flash UD-Q2_K_XL",
+            f"waits for an unreleased llama.cpp build (pinned: {PINNED_BUILD}) - GLM-5.3-Flash uncensored",
             preset_list,
         )
         skill_sets = self.succeed("skills", "list", PATH="/usr/bin:/bin")

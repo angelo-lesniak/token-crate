@@ -2,18 +2,19 @@ schema = 1
 description = "Chrome DevTools tools for pi against Debian's Chromium, started headless without its own sandbox (the container is the sandbox)"
 apt = ["chromium", "fonts-liberation"]
 pi_packages = ["node_modules/@narumitw/pi-chrome-devtools"]
-build = ["install -m 0755 tokencrate-chromium /usr/local/bin/tokencrate-chromium"]
+# The extension's settings: the browser path, and lazy tool mode, because
+# the default (codemode) needs pi's codemode tool, which the shared pi
+# settings leave off.
+build = [
+  "install -m 0755 tokencrate-chromium /usr/local/bin/tokencrate-chromium",
+  "install -D -m 0644 pi-chrome-devtools.json /opt/tokencrate/home-seed/.pi/agent/pi-chrome-devtools.json",
+]
 check = [
   "tokencrate-chromium --version >/dev/null",
+  "grep -q '\"toolMode\": \"lazy\"' \"$HOME/.pi/agent/pi-chrome-devtools.json\"",
   'echo "$(tokencrate-chromium --version | head -1) answers --version"',
 ]
 note = "chromium (headless) is available to the chrome devtools tools."
 
 [npm]
 omit_peer = true
-
-# The extension reads the browser path from this variable. Its author
-# prefers pi's browser.executablePath setting, which a set cannot write
-# (CONTRIBUTING.md, "Shared pi configuration").
-[env]
-PI_CHROME_DEVTOOLS_BROWSER = "/usr/local/bin/tokencrate-chromium"

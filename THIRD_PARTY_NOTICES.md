@@ -25,7 +25,7 @@ upstream software under its own licenses:
 | `dotnet` | csharp-ls, netcoredbg | MIT |
 | `dotnet` | NuGet packages of the warmed cache | Their own licenses |
 | `web` | TypeScript, typescript-language-server | Apache-2.0 |
-| `web` | Vue language tools, js-debug | MIT |
+| `web` | Vue language tools | MIT |
 | `odin` | Odin compiler and its vendor libraries | zlib and the vendor libraries' own licenses |
 | `odin` | OLS | MIT |
 | `odin` | Debian's LLVM, SDL2, Vulkan, and shaderc packages | Their own licenses |

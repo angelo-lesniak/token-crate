@@ -10,8 +10,9 @@ model_card = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/blob/38bb39
 # Header read at the pinned commit: architecture qwen4exp (in llama.cpp since
 # 2026-08-27, so the pinned build loads it), and the embedded chat template
 # is byte for byte the 27B's (9,993 characters, the same digest), so the
-# shipped patched template applies. The MTP layer needs an open llama.cpp
-# pull request (28243) and separate draft files, so mtp stays false.
+# shipped patched template applies. The pinned build drafts with this
+# model's MTP layer, but whether these files carry it, and what it gains
+# with most experts in system memory, is unmeasured, so mtp stays false.
 mtp = false
 chat_template_file = "qwen3.8-27b-agent.jinja"
 

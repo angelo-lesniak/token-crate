@@ -102,7 +102,7 @@ class UiLauncherTests(unittest.TestCase):
         self.assertIn("readonly IDENTITY=(daemon-keypair.json server-id)\n", source)
         copy_in, start, copy_out = (
             source.index('copy_identity "$STATE" "$PASEO_HOME"'),
-            source.index("paseo daemon start --foreground"),
+            source.index("paseo daemon run &"),
             source.index('copy_identity "$PASEO_HOME" "$STATE"'),
         )
         self.assertLess(copy_in, start)

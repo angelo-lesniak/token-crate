@@ -1,0 +1,6 @@
+{
+  "toolMode": "lazy",
+  "browser": {
+    "executablePath": "/usr/local/bin/tokencrate-chromium"
+  }
+}

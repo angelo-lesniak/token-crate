@@ -227,8 +227,8 @@ def run(root: Path, project: Path) -> None:
         answer = until(web_answer)
         print("PI WEB assistant:", answer, flush=True)
         assert answer.get("model") == "ci-small", answer
-        # Title generation uses a separate request, outside isStreaming.
-        # The pinned UI assigns a name only when it finishes (or falls back).
+        # Title generation uses a separate request, outside isStreaming; PI
+        # WEB's session-naming package assigns a name when it finishes.
         until(lambda: any(s["id"] == sid and s.get("name") for s in request(base + "/api/sessions" + query)))
         until(lambda: not request(base + route + "/status" + query)["isStreaming"])
         # Paseo's daemon listens on the container's `ui` address, which the

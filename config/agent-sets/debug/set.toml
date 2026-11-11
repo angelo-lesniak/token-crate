@@ -1,5 +1,5 @@
 schema = 1
-description = "The PieX debug extension: one debug tool over the debug adapters other sets ship (netcoredbg, js-debug, lldb-dap)"
+description = "The PieX debug extension: one debug tool over the debug adapters other sets ship (netcoredbg, lldb-dap)"
 pi_packages = ["piex-dap"]
 # An extension, not a binary; the tools note and the package count cover it.
 check = []
@@ -7,7 +7,7 @@ check = []
 # upstream diff of extensions/dap before moving it).
 build = [
   "git init -q /tmp/piex",
-  "git -C /tmp/piex fetch -q --depth 1 https://github.com/piex-dev/piex 5cd4467cbc89ff5dd5dd600f1310c75d71ab1e02",
+  "git -C /tmp/piex fetch -q --depth 1 https://github.com/piex-dev/piex 58303457bc14af064dca43322f4570f591bf66bf",
   "git -C /tmp/piex checkout -q FETCH_HEAD -- extensions/dap",
   "mv /tmp/piex/extensions/dap piex-dap",
   "rm -rf /tmp/piex",
