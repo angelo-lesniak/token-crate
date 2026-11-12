@@ -66,7 +66,7 @@ compaction can fail with `Summarization failed: generation hit the
 token cap and the summary is incomplete`; the agent then stays busy and
 refuses the next prompt. In PI WEB, reopen the conversation: it
 compacts and continues. No recovery in terminal pi is known; start a
-new session on a `-long` preset, which gives a 128K slot.
+new session, on a preset with a larger slot if the slot fills often.
 
 ## A reply ends with `length` and no answer
 

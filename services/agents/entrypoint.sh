@@ -97,17 +97,35 @@ case "$agent" in
     cp "$GENERATED_CONFIG/models.json" "$config_dir/models.json"
     # The package list is the list the image ships: local directories, never
     # a registry.
+    # The compaction values in the settings are sized for a 128K slot; a
+    # smaller slot gets a quarter of its context for each, so a compaction
+    # still leaves something to summarize and room to write the summary. An
+    # entry the settings name in compaction.modelOverrides stays as written.
     node -e '
       const fs = require("fs");
-      const [seed, preset, packagesFile, target] = process.argv.slice(1);
+      const [seed, preset, packagesFile, modelsFile, target] = process.argv.slice(1);
       const settings = JSON.parse(fs.readFileSync(seed, "utf8"));
       settings.defaultProvider = "tokencrate";
       settings.defaultModel = preset;
+      const { reserveTokens, keepRecentTokens } = settings.compaction;
+      const models = JSON.parse(fs.readFileSync(modelsFile, "utf8")).providers.tokencrate.models;
+      settings.compaction.modelOverrides = {
+        ...Object.fromEntries(
+          models.map((model) => [
+            "tokencrate/" + model.id,
+            {
+              reserveTokens: Math.min(reserveTokens, Math.floor(model.contextWindow / 4)),
+              keepRecentTokens: Math.min(keepRecentTokens, Math.floor(model.contextWindow / 4)),
+            },
+          ])
+        ),
+        ...settings.compaction.modelOverrides,
+      };
       settings.packages = fs.existsSync(packagesFile)
         ? fs.readFileSync(packagesFile, "utf8").split("\n").filter(Boolean)
         : [];
       fs.writeFileSync(target, JSON.stringify(settings, null, 2) + "\n");
-    ' "$STATIC_CONFIG/settings.json" "$preset" "$IMAGE_PACKAGES" "$config_dir/settings.json"
+    ' "$STATIC_CONFIG/settings.json" "$preset" "$IMAGE_PACKAGES" "$config_dir/models.json" "$config_dir/settings.json"
     ;;
   omp)
     config_dir="$home/.omp/agent"

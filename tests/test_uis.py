@@ -40,7 +40,9 @@ class UiTests(unittest.TestCase):
     def setUp(self):
         self.scratch = Scratch()
         self.addCleanup(self.scratch.close)
-        self.settings = env.load(self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4"))
+        self.settings = env.load(
+            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
+        )
         self.engine = engine.Engine("docker", self.settings)
 
     def test_the_host_port_is_the_manifests_unless_port_names_one(self):

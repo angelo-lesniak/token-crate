@@ -1,10 +1,13 @@
 schema = 1
-description = "gpt-oss-20b MXFP4: fast chat and a tool-calling fallback with two 64K slots"
+description = "gpt-oss-20b MXFP4: fast chat and a tool-calling fallback with two 128K slots"
 model_set = "gpt-oss-20b-mxfp4"
 
+# Each slot at the model's trained context (131,072 tokens). Half of the
+# 24 layers attend over a 128-token window, so the cache of the other 12
+# grows by about 1.5 GiB per 64K in f16.
 [server]
-ctx_size = 131072
-n_predict = 16384
+ctx_size = 262144
+n_predict = 32768
 parallel = 2
 gpu_layers = 99
 flash_attn = "auto"
@@ -26,4 +29,4 @@ top_k = 0
 min_p = 0.0
 
 [requires]
-vram_gib = 20
+vram_gib = 23

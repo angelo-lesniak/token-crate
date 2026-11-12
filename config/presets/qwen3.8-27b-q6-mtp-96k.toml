@@ -1,10 +1,12 @@
 schema = 1
-description = "Qwen3.8-27B Q6 quality tier: one 48K slot with MTP, about 7 GiB more GPU memory than Q4"
+description = "Qwen3.8-27B Q6 quality tier: one 96K slot with MTP"
 model_set = "qwen3.8-27b-ud-q6-k-xl"
 
+# The weights are about 7 GiB larger than Q4's, so the slot is 96K where
+# Q4 fits 256K on the same card.
 [server]
-ctx_size = 49152
-n_predict = 16384
+ctx_size = 98304
+n_predict = 32768
 parallel = 1
 gpu_layers = 99
 flash_attn = "auto"
@@ -12,7 +14,7 @@ cache_type_k = "q8_0"
 cache_type_v = "q8_0"
 spec_type = "draft-mtp"
 spec_draft_n_max = 2
-ctx_checkpoints = 8
+ctx_checkpoints = 12
 reasoning_effort = "xhigh"
 reasoning_efforts = ["low", "medium", "xhigh"]
 
@@ -24,4 +26,4 @@ min_p = 0.0
 presence_penalty = 0.0
 
 [requires]
-vram_gib = 30
+vram_gib = 31
