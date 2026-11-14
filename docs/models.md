@@ -42,27 +42,37 @@ context per slot, in units of 1,024 tokens, with the slot count in
 front when there is more than one: `-128k` is one 128K slot, `-2x128k`
 two.
 
-| Preset | Context | Slots | `[requires]` | Generation (tokens/s) | Use it for |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `qwen3.8-27b-q4-mtp-128k` (default) | 128K | 1 | 28 GiB | ~140 | a single agent |
-| `qwen3.8-27b-q4-mtp-256k` | 256K | 1 | 31 GiB | not measured | the longest sessions, at the model's trained context |
-| `qwen3.8-27b-q4-2x128k` | 256K total, 128K per slot | 2 | 31 GiB | ~80 | two clients, such as the built-in chat UI and an agent, on one loaded model |
-| `qwen3.8-27b-q4-mtp-f16kv-128k` | 128K | 1 | 30 GiB | ~140 | the default with an unquantized KV cache, for long documents and tool calls |
-| `qwen3.8-27b-q6-mtp-96k` | 96K | 1 | 31 GiB | ~110 | the larger Q6 quantization |
-| `qwen3.8-27b-q3-32k` | 32K | 1 | 15 GiB | ~90 | smaller cards with the 27B; answer quality is not measured |
-| `gpt-oss-20b-2x128k` | 256K total, 128K per slot | 2 | 23 GiB | ~340 | fast chat and a tool-calling fallback |
-| `gpt-oss-20b-32k` | 32K | 1 | 15 GiB | ~340 | [smaller cards](#write-a-preset-for-another-card) |
-| `qwen3.8-27b-q4-uncensored-mtp-128k` | 128K | 1 | 28 GiB | ~140 | the default, [uncensored](#uncensored-presets) |
-| `qwen3.8-27b-q4-uncensored-mtp-256k` | 256K | 1 | 31 GiB | not measured | the 256K preset, uncensored |
-| `glm-5.3-flash-q2-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~20 | the [96 GB RAM tier](#the-96-gb-ram-tier) |
-| `glm-5.3-flash-q2-uncensored-64k` | 64K | 1 | 30 GiB and 96 GiB RAM | not measured | uncensored, no memory margin; waits behind the [build gate](#build-gate) |
-| `qwen3.8-flash-next-q4-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~30 | the 96 GB RAM tier |
-| `qwen3.8-flash-next-q4-uncensored-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~30 | the 96 GB RAM tier, uncensored |
+| Preset | Context | Slots | `[requires]` | Generation (tokens/s) | Generation in a full slot (tokens/s) | Use it for |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `qwen3.8-27b-q4-mtp-128k` (default) | 128K | 1 | 28 GiB | ~140 | ~80 | a single agent |
+| `qwen3.8-27b-q4-mtp-256k` | 256K | 1 | 31 GiB | ~140 | ~50 | the longest sessions, at the model's trained context |
+| `qwen3.8-27b-q4-2x128k` | 256K total, 128K per slot | 2 | 31 GiB | ~80 | ~50 | two clients, such as the built-in chat UI and an agent, on one loaded model |
+| `qwen3.8-27b-q4-mtp-f16kv-128k` | 128K | 1 | 30 GiB | ~140 | ~110 | the default with an unquantized KV cache, for long documents and tool calls; keeps more speed in a full slot |
+| `qwen3.8-27b-q6-mtp-96k` | 96K | 1 | 31 GiB | ~110 | ~70 | the larger Q6 quantization |
+| `qwen3.8-27b-q3-32k` | 32K | 1 | 15 GiB | ~90 | ~80 | smaller cards with the 27B; answer quality is not measured |
+| `gpt-oss-20b-2x128k` | 256K total, 128K per slot | 2 | 23 GiB | ~340 | ~170 | fast chat and a tool-calling fallback |
+| `gpt-oss-20b-32k` | 32K | 1 | 15 GiB | ~340 | ~230 | [smaller cards](#write-a-preset-for-another-card) |
+| `qwen3.8-27b-q4-uncensored-mtp-128k` | 128K | 1 | 28 GiB | ~140 | ~80 | the default, [uncensored](#uncensored-presets) |
+| `qwen3.8-27b-q4-uncensored-mtp-256k` | 256K | 1 | 31 GiB | ~140 | ~60 | the 256K preset, uncensored |
+| `glm-5.3-flash-q2-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~20 | ~20 | the [96 GB RAM tier](#the-96-gb-ram-tier) |
+| `glm-5.3-flash-q2-uncensored-64k` | 64K | 1 | 30 GiB and 96 GiB RAM | not measured | not measured | uncensored, no memory margin; waits behind the [build gate](#build-gate) |
+| `qwen3.8-flash-next-q4-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~30 | ~30 | the 96 GB RAM tier |
+| `qwen3.8-flash-next-q4-uncensored-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~40 | not measured | the 96 GB RAM tier, uncensored |
 
 The generation speeds are estimates from a short and a long prompt on
-an RTX 5090, rounded to the nearest ten. A declared `[requires]` value
-is a ceiling with a few GiB of headroom: llama-server allocates the KV cache when the preset loads,
-so a full slot holds no more than an empty one.
+an RTX 5090, rounded to the nearest ten; the full-slot column is a reply
+of several hundred tokens with the slot 97 percent full. A prompt that
+fills the slot and shares no prefix with the previous request takes
+about 70 seconds at 128K and 3.5 minutes at 256K before the first token;
+an agent's next request reuses the cached prefix and processes only its
+new part. In a nearly full slot, the Qwen3.8-27B presets and
+Flash-Next found every fact placed at any depth, GLM missed one of
+eight, and gpt-oss one in five, so prefer the Qwen presets for work
+that relies on a long prompt.
+
+A declared `[requires]` value is a ceiling with a few GiB of headroom:
+llama-server allocates the KV cache when the preset loads, so a full
+slot holds no more than an empty one.
 
 The default preset gives a single agent one 128K slot with MTP
 drafting, which works with one slot only: a second client waits for the
@@ -136,7 +146,9 @@ presets need a host with 96 GB of RAM besides a 32 GB card.
 The weights in system memory are memory-mapped, so the host counts them
 as page cache, not as used memory. The first Flash-Next request after a
 load waits for the page faults of the memory map before the first word,
-an estimated 25 to 45 seconds on an RTX 5090 host. The preset comments
+an estimated 25 to 45 seconds on an RTX 5090 host. Prompts are slow on
+this tier: a 128K prompt with no cached prefix takes about 3 minutes on
+Flash-Next and 16 minutes on GLM. The preset comments
 ([Flash-Next](../config/presets/qwen3.8-flash-next-q4-128k.toml),
 [GLM](../config/presets/glm-5.3-flash-q2-128k.toml)) break down the memory
 on the card and in system memory, and say what `load-mode` does to each.

@@ -9,9 +9,9 @@ on the date.
 
 | Procedure | GPU host, rootless Podman | Virtual machine, rootless Podman | Virtual machine, Docker Engine |
 | --- | --- | --- | --- |
-| [Static gate](#static-gate-and-cpu-integration-check) | not run (no Node.js) | 2026-11-09 in strict mode | does not apply |
+| [Static gate](#static-gate-and-cpu-integration-check) | not run (no Node.js) | 2026-11-13 in strict mode | does not apply |
 | [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-11-09, `LLM_GPU=true` | 2026-11-09 | 2026-11-09, Engine 29.9.2 with Docker Compose 5.6.1 |
-| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-11-07, scripted part, for every preset the pinned build loads, `glm-5.3-flash-q2-128k` on 2026-11-08 (driver 615.78.08, Podman 6.1.4); 2026-11-09 for its hands-on checks | does not apply | does not apply |
+| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-11-13 and 2026-11-14, scripted part, for every preset the pinned build loads (driver 615.78.08, Podman 6.1.4); 2026-11-09 for its hands-on checks | does not apply | does not apply |
 | [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-11-09 for `coding`, `coding,metrics`, `coding,web`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, and oh-my-pi, and for `coding` with both browser UIs running, with and without `--egress`; 2026-09-20 for `coding,pi-web` and `coding,paseo` | 2026-11-09 for `coding`, `coding,metrics`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, and oh-my-pi; 2026-09-20 for `coding,pi-web` and `coding,paseo` | 2026-11-09 for the same selections as the virtual machine with Podman; 2026-09-20 for `coding,pi-web` and `coding,paseo` |
 | [Agent home check](#agent-home-check) | 2026-11-09 | 2026-11-09 | 2026-11-09 |
 | [Cross-project containment check](#cross-project-containment-check) | 2026-11-09, with both UIs running and with an `--egress` PI WEB | 2026-09-20, with a `--cloud` UI | 2026-09-20, with a `--cloud` UI, Engine 29.8.1 |
