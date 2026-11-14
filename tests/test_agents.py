@@ -302,7 +302,9 @@ class LaunchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.scratch = Scratch()
         self.addCleanup(self.scratch.close)
-        self.settings = env.load(self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4"))
+        self.settings = env.load(
+            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
+        )
         self.engine = mock.MagicMock()
         self.engine.name = "docker"
         self.engine.command.return_value.returncode = 0
@@ -382,7 +384,7 @@ class LaunchTests(unittest.TestCase):
         keys.chmod(0o600)
         settings = env.load(
             self.scratch.root,
-            self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4", LLM_CLOUD_KEYS_FILE=str(keys)),
+            self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k", LLM_CLOUD_KEYS_FILE=str(keys)),
         )
         with contextlib.redirect_stderr(io.StringIO()) as stderr:
             launch = session.plan(settings, self.engine, None, "pi", "", self.scratch.project, cloud=True)
@@ -431,7 +433,7 @@ class CloudSessionTests(unittest.TestCase):
     which prints the credential variables it sees and the keys file's path
     (from the `-v` of the `run`)."""
 
-    PRESET = "qwen3.8-27b-q4"
+    PRESET = "qwen3.8-27b-q4-2x128k"
 
     def setUp(self) -> None:
         self.scratch = Scratch()

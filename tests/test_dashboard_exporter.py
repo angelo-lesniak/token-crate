@@ -135,14 +135,18 @@ class ExporterTests(unittest.TestCase):
             text=True,
         )
         self.addCleanup(self.stop)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
-                    return
-            except OSError:
-                time.sleep(0.05)
-        raise AssertionError("the exporter did not listen")
+        # The exporter opens its two ports one after the other; the query
+        # tests need the second.
+        for port in (self.port, self.query_port):
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise AssertionError(f"the exporter did not listen on {port}") from None
+                    time.sleep(0.05)
 
     def stop(self) -> None:
         self.process.terminate()

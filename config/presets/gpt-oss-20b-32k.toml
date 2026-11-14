@@ -2,7 +2,7 @@ schema = 1
 description = "gpt-oss-20b MXFP4, one 32K slot: the smallest preset, for a 16 GB card"
 model_set = "gpt-oss-20b-mxfp4"
 
-# The smallest shipped preset: the file gpt-oss-20b-fast loads, in its native
+# The smallest shipped preset: the file gpt-oss-20b-2x128k loads, in its native
 # MXFP4, with a smaller cache. Held 12.7 GiB (the preset table in
 # docs/models.md holds the speed and the requirement).
 [server]

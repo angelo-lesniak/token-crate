@@ -38,8 +38,8 @@ The model is still loading, the model server exited after the agent
 started, or the request does not fit the preset's slot and the model
 server answers `400 ... exceeds the available context size`. Check
 `bash bin/tokencrate status` and `bash bin/tokencrate logs`. For a
-larger slot, choose a preset with a `-long` suffix from [Included
-presets](models.md#included-presets).
+larger slot, choose a preset whose id ends in a larger context from
+[Included presets](models.md#included-presets).
 
 ## The browser UI answers `403` with `refused a request for host`
 
@@ -66,7 +66,18 @@ compaction can fail with `Summarization failed: generation hit the
 token cap and the summary is incomplete`; the agent then stays busy and
 refuses the next prompt. In PI WEB, reopen the conversation: it
 compacts and continues. No recovery in terminal pi is known; start a
-new session on a `-long` preset, which gives a 128K slot.
+new session, on a preset with a larger slot if the slot fills often.
+
+## pi compacts after almost every tool call on a 32K preset
+
+On a 32K slot, pi's system prompt and tools, its summary, and the 8K of
+conversation it keeps fill about 17K after a compaction, and pi
+compacts again at 24K, so each larger file read starts another
+compaction and a task advances slowly. pi cannot compact between the
+tool calls of one turn: when they return more than the slot holds, the
+turn ends with `exceeds the available context size`. Use a preset with
+a 128K slot for agent work that reads files; the 32K presets suit short
+tasks.
 
 ## A reply ends with `length` and no answer
 

@@ -138,10 +138,10 @@ class EvaluateTests(unittest.TestCase):
             self.assertIn(expected, lines)
 
     def test_findings_follow_the_report_order(self) -> None:
-        lines = evaluate(healthy_facts(), preset="qwen3.8-27b-q4", required_vram_gib=24, required_ram_gib=1)
+        lines = evaluate(healthy_facts(), preset="qwen3.8-27b-q4-2x128k", required_vram_gib=24, required_ram_gib=1)
         order = [
             "[ok] checking the GPU path (LLM_GPU=true)",
-            "[ok] checking host requirements of preset qwen3.8-27b-q4",
+            "[ok] checking host requirements of preset qwen3.8-27b-q4-2x128k",
             "[ok] git is available",
             "[ok] podman version 6.1.0-fake",
             "[ok] NVIDIA GPU: Fake RTX 5090, driver 610.57.04, 32607 MiB",
@@ -485,7 +485,7 @@ class RunTests(unittest.TestCase):
             status = doctor.run(
                 settings,
                 min_driver_major=MIN_DRIVER_MAJOR,
-                preset="qwen3.8-27b-q4",
+                preset="qwen3.8-27b-q4-2x128k",
                 required_vram_gib=24,
                 required_ram_gib=1,
             )
@@ -517,7 +517,7 @@ class RunTests(unittest.TestCase):
         lines = output.splitlines()
         self.assertEqual(lines[0], "== TokenCrate host doctor ==")
         self.assertEqual(lines[1], "[ok] checking the GPU path (LLM_GPU=true)")
-        self.assertEqual(lines[2], "[ok] checking host requirements of preset qwen3.8-27b-q4")
+        self.assertEqual(lines[2], "[ok] checking host requirements of preset qwen3.8-27b-q4-2x128k")
         self.assertIn(NOTE, lines)
         self.assertEqual(lines[-2], "")
         self.assertEqual(lines[-1], "Doctor completed with 0 failure(s) and 0 warning(s).")

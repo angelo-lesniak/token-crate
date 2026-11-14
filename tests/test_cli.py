@@ -99,8 +99,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("HIJACKED", result.stdout + result.stderr)
 
     def test_doctor_reads_the_preset_requirements_from_the_preset_file(self) -> None:
-        output = self.succeed("doctor", "--preset", "qwen3.8-27b-q4", CONTAINER_ENGINE="podman", LLM_GPU="false")
-        self.assertIn("checking host requirements of preset qwen3.8-27b-q4", output)
+        output = self.succeed("doctor", "--preset", "qwen3.8-27b-q4-2x128k", CONTAINER_ENGINE="podman", LLM_GPU="false")
+        self.assertIn("checking host requirements of preset qwen3.8-27b-q4-2x128k", output)
         self.assertIn("LLM_GPU=false", output)
         self.assertIn("podman version 6.1.0-fake", output)
         self.assertIn("Doctor completed with 0 failure(s)", output)
@@ -115,29 +115,29 @@ class CliTests(unittest.TestCase):
         wait = self.gate_the_gpt_oss_set()
         listing = self.succeed("presets", "list", PATH="/usr/bin:/bin")
         self.assertRegex(
-            listing, rf"gpt-oss-20b-fast \[gpt-oss-20b-mxfp4\] needs [0-9]+ GiB GPU memory; {re.escape(wait)} - "
+            listing, rf"gpt-oss-20b-2x128k \[gpt-oss-20b-mxfp4\] needs [0-9]+ GiB GPU memory; {re.escape(wait)} - "
         )
-        self.assertRegex(listing, r"qwen3.8-27b-q4 \[qwen3.8-27b-ud-q4-k-xl\] needs [0-9]+ GiB GPU memory - ")
+        self.assertRegex(listing, r"qwen3.8-27b-q4-2x128k \[qwen3.8-27b-ud-q4-k-xl\] needs [0-9]+ GiB GPU memory - ")
         validated = self.succeed("presets", "check", PATH="/usr/bin:/bin")
-        self.assertIn(f"gpt-oss-20b-fast: {wait}\n", validated)
+        self.assertIn(f"gpt-oss-20b-2x128k: {wait}\n", validated)
         self.assertIn(VALIDATED, validated)
-        checked = self.succeed("doctor", "--preset", "gpt-oss-20b-fast", CONTAINER_ENGINE="podman", LLM_GPU="false")
-        self.assertIn(f"[warn] preset gpt-oss-20b-fast {wait}; up leaves it out of the router", checked)
+        checked = self.succeed("doctor", "--preset", "gpt-oss-20b-2x128k", CONTAINER_ENGINE="podman", LLM_GPU="false")
+        self.assertIn(f"[warn] preset gpt-oss-20b-2x128k {wait}; up leaves it out of the router", checked)
         self.assertIn("Doctor completed with 0 failure(s) and 2 warning(s).", checked)
         # up refuses the gated default before the stack starts, and before
         # the download a model-set argument asks for.
         for arguments in (("up",), ("up", "--model-sets", "gpt-oss-20b-mxfp4")):
-            refused = self.scratch.run(*arguments, LLM_DEFAULT_PRESET="gpt-oss-20b-fast", LLM_GPU="false")
+            refused = self.scratch.run(*arguments, LLM_DEFAULT_PRESET="gpt-oss-20b-2x128k", LLM_GPU="false")
             self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
-            self.assertIn(f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list", refused.stderr)
+            self.assertIn(f"preset gpt-oss-20b-2x128k {wait}; bash bin/tokencrate presets list", refused.stderr)
             self.assertNotIn("Downloading", refused.stdout + refused.stderr)
             self.assertNotIn("huggingface.co", refused.stdout + refused.stderr)
         # A session or a probe on the waiting preset names the wait, not a fetch.
-        named = f"preset gpt-oss-20b-fast {wait}; bash bin/tokencrate presets list shows the loadable ones"
+        named = f"preset gpt-oss-20b-2x128k {wait}; bash bin/tokencrate presets list shows the loadable ones"
         running = {"FAKE_ENGINE_LLAMA_RUNNING": "true"}
-        self.expect_failure(named, "smoke", "--preset", "gpt-oss-20b-fast", **running)
-        self.expect_failure(named, "bench", "--presets", "gpt-oss-20b-fast", **running)
-        self.expect_failure(named, "smoke", "--agent", "pi", "--preset", "gpt-oss-20b-fast", **running)
+        self.expect_failure(named, "smoke", "--preset", "gpt-oss-20b-2x128k", **running)
+        self.expect_failure(named, "bench", "--presets", "gpt-oss-20b-2x128k", **running)
+        self.expect_failure(named, "smoke", "--agent", "pi", "--preset", "gpt-oss-20b-2x128k", **running)
 
     def test_presets_check_validates_without_an_engine_and_writes_nothing(self) -> None:
         output = self.succeed("presets", "check", PATH="/usr/bin:/bin")
@@ -196,7 +196,7 @@ class CliTests(unittest.TestCase):
     def test_up_runs_the_host_checks_first_and_stops_on_a_failure(self) -> None:
         # The scratch host has no GPU: with the GPU wanted, doctor fails and
         # up stops before the download and the stack start.
-        result = self.scratch.run("up", LLM_DEFAULT_PRESET="gpt-oss-20b-fast")
+        result = self.scratch.run("up", LLM_DEFAULT_PRESET="gpt-oss-20b-2x128k")
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("[fail] nvidia-smi found no NVIDIA GPU", output)
@@ -210,7 +210,7 @@ class CliTests(unittest.TestCase):
         )
 
     def test_up_refuses_a_default_preset_without_files_and_traces_the_stack_start(self) -> None:
-        self.expect_failure("is not loadable", "up", LLM_DEFAULT_PRESET="gpt-oss-20b-fast", LLM_GPU="false")
+        self.expect_failure("is not loadable", "up", LLM_DEFAULT_PRESET="gpt-oss-20b-2x128k", LLM_GPU="false")
         # Nothing listens on the scratch port, so the readiness wait times out
         # after the stack start was traced through the fake engine.
         result = self.scratch.run(
@@ -275,18 +275,18 @@ class CliTests(unittest.TestCase):
 
     def test_agent_refuses_dangerous_or_unprepared_sessions(self) -> None:
         project = str(self.scratch.project)
-        self.scratch.render_fixture("qwen3.8-27b-q4")
+        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
         # The project rules are tested in tests/test_agents.py; one case here
         # proves the refusal precedes the pre-flight and the engine.
         self.expect_failure(
-            "refusing to mount the root filesystem", "agent", "pi", "--preset", "qwen3.8-27b-q4", "--dir", "/"
+            "refusing to mount the root filesystem", "agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", "/"
         )
         self.expect_failure("no preset selected", "agent", "pi", "--dir", project)
         self.expect_failure("unsupported agent", "agent", "claude")
         self.expect_failure(
-            "is not rendered as loadable", "agent", "pi", "--preset", "qwen3.8-27b-q4-mtp", "--dir", project
+            "is not rendered as loadable", "agent", "pi", "--preset", "qwen3.8-27b-q4-mtp-128k", "--dir", project
         )
-        self.expect_failure("is not running", "agent", "pi", "--preset", "qwen3.8-27b-q4", "--dir", project)
+        self.expect_failure("is not running", "agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project)
         for command in (
             ("agent", "pi", "--dir", project),
             ("ui", "pi-web", "--dir", project),
@@ -298,7 +298,7 @@ class CliTests(unittest.TestCase):
                         "running llama configuration differs",
                         *command,
                         "--preset",
-                        "qwen3.8-27b-q4",
+                        "qwen3.8-27b-q4-2x128k",
                         FAKE_ENGINE_LLAMA_RUNNING="true",
                         FAKE_ENGINE_CONFIG_SHA256=digest,
                     )
@@ -309,7 +309,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             project,
             FAKE_ENGINE_LLAMA_RUNNING="true",
@@ -326,7 +326,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             project,
             LLM_SKILL_SETS="pocock-core",
@@ -339,7 +339,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             project,
             LLM_SKILL_SETS="pocock-core",
@@ -350,19 +350,19 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
         )
 
     def test_agent_session_joins_the_internal_network_unless_egress_is_requested(self) -> None:
         project = str(self.scratch.project)
-        self.scratch.render_fixture("qwen3.8-27b-q4")
+        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
         session = self.succeed(
             "agent",
             "omp",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             project,
             "--egress",
@@ -380,7 +380,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--sets",
             "debug",
             "--dir",
@@ -395,7 +395,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "omp",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--sets",
             "",
             "--dir",
@@ -407,7 +407,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--sets",
             "nope",
             "--dir",
@@ -419,10 +419,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("coding - ", listing)
         self.assertIn("odin - ", listing)
         plain = self.succeed(
-            "agent", "pi", "--preset", "qwen3.8-27b-q4", "--dir", project, FAKE_ENGINE_LLAMA_RUNNING="true"
+            "agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, FAKE_ENGINE_LLAMA_RUNNING="true"
         )
         self.assertNotIn("compose.agent-egress.yaml", plain)
-        self.assertIn("preset=qwen3.8-27b-q4", plain)
+        self.assertIn("preset=qwen3.8-27b-q4-2x128k", plain)
         self.assertIn(f"home={self.scratch.storage / 'agents' / 'pi' / 'project-'}", plain)
         # The skill sets pre-flight checked are the ones the container mounts:
         # the value reaches the engine even when no setting names it.
@@ -434,7 +434,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             project,
             FAKE_ENGINE_LLAMA_RUNNING="true",
@@ -444,7 +444,7 @@ class CliTests(unittest.TestCase):
 
     def test_ui_starts_the_ui_set_detached_behind_the_forwarder(self) -> None:
         project = str(self.scratch.project)
-        self.scratch.render_fixture("qwen3.8-27b-q4")
+        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
         # The manifests' host ports are taken on a developer host; the
         # launches name the scratch port the fake engine and the listener use.
         port = str(self.scratch.ui_port)
@@ -453,9 +453,11 @@ class CliTests(unittest.TestCase):
             "FAKE_ENGINE_UI_SET": "pi-web",
             "FAKE_ENGINE_UI_PORT": str(self.scratch.ui_port),
         }
-        self.expect_failure("is not a UI set", "ui", "coding", "--preset", "qwen3.8-27b-q4", "--dir", project, **common)
         self.expect_failure(
-            "unknown agent set: nope", "ui", "nope", "--preset", "qwen3.8-27b-q4", "--dir", project, **common
+            "is not a UI set", "ui", "coding", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, **common
+        )
+        self.expect_failure(
+            "unknown agent set: nope", "ui", "nope", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, **common
         )
         self.expect_failure("unsafe agent set name", "ui", "../x", **common)
         self.expect_failure("no preset selected", "ui", "pi-web", "--dir", project, **common)
@@ -467,7 +469,7 @@ class CliTests(unittest.TestCase):
             "ui",
             "pi-web",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             project,
             FAKE_ENGINE_STATE="exited",
@@ -475,7 +477,7 @@ class CliTests(unittest.TestCase):
         )
         with self.scratch.ui_listener():
             started = self.succeed(
-                "ui", "pi-web", "--preset", "qwen3.8-27b-q4", "--dir", project, "--port", port, **common
+                "ui", "pi-web", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, "--port", port, **common
             )
         # The UI set is appended to LLM_AGENT_SETS, the image is built for
         # that selection, and the UI and its forwarder start detached under
@@ -504,7 +506,7 @@ class CliTests(unittest.TestCase):
                 "ui",
                 "paseo",
                 "--preset",
-                "qwen3.8-27b-q4",
+                "qwen3.8-27b-q4-2x128k",
                 "--sets",
                 "paseo",
                 "--dir",
@@ -517,7 +519,16 @@ class CliTests(unittest.TestCase):
         # --egress puts the UI container alone under the overlay.
         with self.scratch.ui_listener():
             egress = self.succeed(
-                "ui", "pi-web", "--preset", "qwen3.8-27b-q4", "--dir", project, "--port", port, "--egress", **common
+                "ui",
+                "pi-web",
+                "--preset",
+                "qwen3.8-27b-q4-2x128k",
+                "--dir",
+                project,
+                "--port",
+                port,
+                "--egress",
+                **common,
             )
         ui_run, forward_run = (line for line in egress.splitlines() if " run --detach " in line)
         self.assertIn("--file compose.agent-egress.yaml --profile ui", ui_run)
@@ -533,7 +544,7 @@ class CliTests(unittest.TestCase):
                 "ui",
                 "pi-web",
                 "--preset",
-                "qwen3.8-27b-q4",
+                "qwen3.8-27b-q4-2x128k",
                 "--dir",
                 project,
                 "--port",
@@ -559,7 +570,7 @@ class CliTests(unittest.TestCase):
             ),
             self.succeed("status", **marked),
         )
-        check = self.succeed("smoke", "--agent", "pi", "--preset", "qwen3.8-27b-q4", "--egress", **marked)
+        check = self.succeed("smoke", "--agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--egress", **marked)
         self.assertIn(
             "-e 'TOKENCRATE_UI_TARGETS=egress:tokencrate-ui-pi-web:8504 tokencrate-ui-forward-pi-web:8080'", check
         )
@@ -581,12 +592,12 @@ class CliTests(unittest.TestCase):
             "--agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-mtp",
+            "qwen3.8-27b-q4-mtp-128k",
             FAKE_ENGINE_LLAMA_RUNNING="true",
         )
-        self.scratch.render_fixture("qwen3.8-27b-q4-mtp")
+        self.scratch.render_fixture("qwen3.8-27b-q4-mtp-128k")
         check = self.succeed(
-            "smoke", "--agent", "pi", "--preset", "qwen3.8-27b-q4-mtp", FAKE_ENGINE_LLAMA_RUNNING="true"
+            "smoke", "--agent", "pi", "--preset", "qwen3.8-27b-q4-mtp-128k", FAKE_ENGINE_LLAMA_RUNNING="true"
         )
         self.assertIn("tokencrate-agent-check", check)
         # The gateway of the agents network, as the engine reports it, goes
@@ -596,7 +607,7 @@ class CliTests(unittest.TestCase):
             r"-e TOKENCRATE_ENGINE=docker -e TOKENCRATE_AGENTS_GATEWAY= -e TOKENCRATE_UI_TARGETS= "
             r"-e TOKENCRATE_EGRESS= --name tokencrate-agent-check-[0-9a-f]{12} agent-pi ",
         )
-        self.assertIn("preset=qwen3.8-27b-q4-mtp", check)
+        self.assertIn("preset=qwen3.8-27b-q4-mtp-128k", check)
         self.assertNotIn("compose.agent-egress.yaml", check)
         self.assertNotIn(f"project={self.scratch.root / 'build'}", check)
         self.assertNotIn(f"home={self.scratch.storage / 'agents'}", check)
@@ -613,18 +624,18 @@ class CliTests(unittest.TestCase):
             "--agent",
             "pi",
             "--basic",
-            LLM_DEFAULT_PRESET="qwen3.8-27b-q4",
+            LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k",
         )
 
     def test_relative_storage_paths_resolve_from_the_repository_not_the_caller(self) -> None:
-        self.scratch.render_fixture("qwen3.8-27b-q4")
+        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
         foreign = self.scratch.tmp / "foreign-cwd"
         foreign.mkdir(exist_ok=True)
         output = self.succeed(
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4",
+            "qwen3.8-27b-q4-2x128k",
             "--dir",
             str(self.scratch.project),
             cwd=foreign,

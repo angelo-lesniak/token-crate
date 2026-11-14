@@ -10,7 +10,7 @@ model_set = "glm-5.3-flash-ud-q2-k-xl"
 # swaps a 96 GB host to a standstill.
 [server]
 ctx_size = 131072
-n_predict = 16384
+n_predict = 32768
 parallel = 1
 gpu_layers = 99
 # The weights are 108.7 GB and experts are about 2.2 GB per layer at this

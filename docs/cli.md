@@ -60,7 +60,7 @@ compared with `ram_gib` with 5 percent of slack for what the firmware
 and kernel reserve (a 96 GB machine reports about 93 GiB).
 
 ```bash
-bash bin/tokencrate doctor --preset qwen3.8-27b-q4-mtp
+bash bin/tokencrate doctor --preset qwen3.8-27b-q4-mtp-128k
 ```
 
 ## up
@@ -197,7 +197,7 @@ written to `reports/bench-<timestamp>.md`, with the per-iteration
 measurements in `reports/bench-<timestamp>.json`.
 
 ```bash
-bash bin/tokencrate bench --presets qwen3.8-27b-q4,qwen3.8-27b-q4-mtp
+bash bin/tokencrate bench --presets qwen3.8-27b-q4-2x128k,qwen3.8-27b-q4-mtp-128k
 ```
 
 ## stats
@@ -319,7 +319,7 @@ and cannot touch.
 
 ```bash
 bash bin/tokencrate agent pi --dir ~/src/my-project
-bash bin/tokencrate agent omp --preset qwen3.8-27b-q4-mtp --egress --dir ~/src/my-project
+bash bin/tokencrate agent omp --preset qwen3.8-27b-q4-mtp-128k --egress --dir ~/src/my-project
 bash bin/tokencrate agent pi --dir ~/src/my-project -- -p "Summarize this repository"
 ```
 
