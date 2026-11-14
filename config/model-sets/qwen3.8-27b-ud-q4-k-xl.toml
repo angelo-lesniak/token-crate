@@ -1,7 +1,7 @@
 schema = 1
-description = "Qwen3.8-27B, Unsloth UD-Q4_K_XL (17.6 GB) with MTP heads"
+description = "Qwen3.8-27B, Unsloth Dynamic 3.1 UD-Q4_K_XL (17.7 GB) with MTP heads"
 upstream_model = "Qwen/Qwen3.8-27B"
-model_card = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/4ca720788d1e01f1bff70c033e0d0028fd02e502/README.md"
+model_card = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/4af51b3542f775b0a8e4b310bfb3f17e01c306c9/README.md"
 # Qwen3.8 mixes Gated DeltaNet layers with full attention; llama-server cannot
 # reuse cache chunks by KV shifting on it, so presets use ctx_checkpoints.
 mtp = true
@@ -16,7 +16,7 @@ url = "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa527
 [[file]]
 role = "weights"
 repository = "unsloth/Qwen3.8-27B-GGUF"
-revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502"
+revision = "4af51b3542f775b0a8e4b310bfb3f17e01c306c9"
 source = "Qwen3.8-27B-UD-Q4_K_XL.gguf"
-size = 17559178144
-sha256 = "3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e"
+size = 17659407264
+sha256 = "2a5f3565f39cf885103da591182c1266da64745737b42b452fd3e675369f1211"

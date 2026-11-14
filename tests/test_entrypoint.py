@@ -40,7 +40,8 @@ class EntrypointTests(unittest.TestCase):
         shutil.copy(PI_SETTINGS, self.static / "settings.json")
         shutil.copy(SOURCE_ROOT / "config" / "agents" / "omp" / "config.yml", self.static / "config.yml")
         (self.generated / "models.json").write_text(
-            '{"providers":{"tokencrate":{"models":[{"id":"fixture-preset"}]}}}\n'
+            '{"providers":{"tokencrate":{"models":[{"id":"fixture-preset","contextWindow":131072},'
+            '{"id":"small-preset","contextWindow":32768}]}}}\n'
         )
         (self.generated / "models.yml").write_text(
             '{"providers": {"tokencrate": {"models": [{"id": "fixture-preset"}]}}}\n'
@@ -111,10 +112,26 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = json.loads(PI_SETTINGS.read_text())
         expected.update(defaultProvider="tokencrate", defaultModel="fixture-preset", packages=packages)
+        # A 128K slot keeps the repository's values; a 32K slot gets a quarter
+        # of its context for each.
+        expected["compaction"]["modelOverrides"] = {
+            "tokencrate/fixture-preset": {"reserveTokens": 20480, "keepRecentTokens": 20000},
+            "tokencrate/small-preset": {"reserveTokens": 8192, "keepRecentTokens": 8192},
+        }
         self.assertEqual(self.settings(), expected)
         self.assertEqual((self.home / ".pi" / "agent" / "AGENTS.md").read_text(), "tools note\n")
         self.assertEqual((self.home / ".pi" / "agent" / "agents" / "scout.md").read_text(), "---\nname: scout\n---\n")
         self.assertTrue((self.home / ".nuget" / "NuGet" / "NuGet.Config").is_file())
+
+    def test_a_compaction_override_in_the_settings_wins_over_the_slot_cap(self) -> None:
+        settings = json.loads(PI_SETTINGS.read_text())
+        written = {"reserveTokens": 8192, "keepRecentTokens": 12000}
+        settings["compaction"]["modelOverrides"] = {"tokencrate/small-preset": written}
+        (self.static / "settings.json").write_text(json.dumps(settings))
+        self.assertEqual(self.run_entrypoint("pi", "true").returncode, 0)
+        overrides = self.settings()["compaction"]["modelOverrides"]
+        self.assertEqual(overrides["tokencrate/small-preset"], written)
+        self.assertEqual(overrides["tokencrate/fixture-preset"], {"reserveTokens": 20480, "keepRecentTokens": 20000})
 
     def test_without_an_image_package_list_no_package_is_configured(self) -> None:
         self.assertEqual(self.run_entrypoint("pi", "true").returncode, 0)

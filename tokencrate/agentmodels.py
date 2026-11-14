@@ -87,7 +87,16 @@ def pi_model_entry(model: dict) -> dict:
         if model["thinking_toggle"]:
             kwargs["enable_thinking"] = {"$var": "thinking.enabled"}
         kwargs["reasoning_effort"] = {"$var": "thinking.effort", "omitWhenOff": True}
-        entry["compat"] = {"thinkingFormat": "chat-template", "chatTemplateKwargs": kwargs}
+        # llama-server ends the reasoning after the budget pi sends per level
+        # (16,384 tokens at xhigh), which pi caps to leave at least 1,024
+        # tokens of the turn for the answer: without it a turn near the end
+        # of the slot, or a compaction summary, can end in `length` with no
+        # answer.
+        entry["compat"] = {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": kwargs,
+            "thinkingTokenBudgetField": "thinking_budget_tokens",
+        }
         entry["thinkingLevelMap"] = thinking_level_map(model, hide_unsupported=True)
     return entry
 

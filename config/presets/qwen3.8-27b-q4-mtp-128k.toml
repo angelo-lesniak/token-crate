@@ -1,0 +1,39 @@
+schema = 1
+description = "Qwen3.8-27B Q4 with MTP speculative decoding, one 128K slot for a single agent: the default"
+model_set = "qwen3.8-27b-ud-q4-k-xl"
+
+# Only the 16 full-attention layers of the 64 hold a KV cache (4 KV heads,
+# head size 256; the 48 Gated DeltaNet layers keep a recurrent state the
+# cache type does not touch): about 2.1 GiB per 64K in q8_0, plus about 6
+# percent for the MTP layer.
+[server]
+ctx_size = 131072
+# One turn's reasoning, answer, and tool calls: the max_tokens of the model
+# card's coding benchmark (32,768 at a 256K context; the card's own advice,
+# 262,144 for reasoning alone, does not fit these slots). pi shortens a turn
+# near the end of the slot to what fits. The presets with a slot of 96K or
+# more use it; the smaller ones keep 16,384, half of a 32K slot.
+n_predict = 32768
+# MTP drafting works with one slot only; a second client queues behind the
+# first.
+parallel = 1
+gpu_layers = 99
+flash_attn = "auto"
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+spec_type = "draft-mtp"
+spec_draft_n_max = 3
+ctx_checkpoints = 16
+reasoning_effort = "xhigh"
+reasoning_efforts = ["low", "medium", "xhigh"]
+
+[sampling]
+# Qwen's recommended thinking-mode sampling.
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+
+[requires]
+vram_gib = 28

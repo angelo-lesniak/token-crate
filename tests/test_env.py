@@ -38,7 +38,7 @@ class SettingsTests(unittest.TestCase):
         # Deleting a line from .env changes nothing: the value comes from
         # .env.example, and a checkout without that file is refused.
         settings = env.load(self.tmp, {})
-        self.assertEqual(settings.default_preset, "qwen3.8-27b-q4-mtp")
+        self.assertEqual(settings.default_preset, "qwen3.8-27b-q4-mtp-128k")
         self.assertEqual(settings.get("LLM_SKILL_SETS"), "pocock-core,skill-crate")
         self.assertEqual(settings.get("CONTAINER_ENGINE"), "")
         self.assertTrue(settings.gpu)

@@ -7,9 +7,10 @@ and gives agents no route to the internet by default.
 
 ## Start here
 
-The example below downloads a 17.6 GB model set and the llama.cpp server
+The example below downloads a 17.7 GB model set and the llama.cpp server
 image: allow about 25 GB of disk and tens of minutes. The default preset
-needs 24 GiB of GPU memory; a 16 GB card option follows.
+needs 28 GiB of GPU memory, a 32 GB card; an option for smaller cards
+follows.
 
 Install these host tools:
 
@@ -44,9 +45,10 @@ bash bin/tokencrate init
 change a setting, copy its line from `.env.example` into `.env`. Set
 `LLM_MODELS_DIR` to store models on another disk. If both engines are
 installed, TokenCrate uses Podman; `CONTAINER_ENGINE=docker` selects
-Docker. On a 16 GB card, set `LLM_DEFAULT_PRESET=qwen3.8-27b-q3-small`
-and pass `--model-sets qwen3.8-27b-ud-q3-k-xl` below; that preset is
-untested on a 16 GB card ([Known gaps](docs/validation.md#known-gaps)).
+Docker. On a 16 or 24 GB card, set
+`LLM_DEFAULT_PRESET=qwen3.8-27b-q3-32k` and pass `--model-sets
+qwen3.8-27b-ud-q3-k-xl` below; that preset is untested on a card that
+small ([Known gaps](docs/validation.md#known-gaps)).
 
 Check the host, then download and start the model and test its API.
 `up --model-sets` prints the model's license and starts the download

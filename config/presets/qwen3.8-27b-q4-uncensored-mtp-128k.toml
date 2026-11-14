@@ -2,16 +2,17 @@ schema = 1
 description = "Qwen3.8-27B Q4 uncensored (abliterated by huihui-ai), refusals removed at the weight level, with MTP and one 128K slot"
 model_set = "qwen3.8-27b-huihui-abliterated-ud-q4-k-xl"
 
-# The settings of qwen3.8-27b-q4-mtp-long on the abliterated file, as
-# qwen3.8-27b-q4-uncensored-mtp is the default preset's settings on it.
-# The same quality risk holds: that preset's comment names the benchmark
-# in which every uncensored Qwen3.8-27B variant looped in its reasoning in
-# 30 to 45 percent of runs, and a 128K slot gives a loop more room before
-# n_predict ends it. The "reply terminates" check of `smoke` shows a loop
-# when one of its two completions hits it, so run `smoke` more than once.
+# The settings of qwen3.8-27b-q4-mtp-128k on the abliterated file. Known
+# quality risk: in a benchmark of eight uncensored Qwen3.8-27B variants
+# (https://nathan.sapwell.net/posts/qwen38-27b-abliteration/, 2026-09-06)
+# huihui's placed third (76 percent compliance, KL about 0.07 against the
+# original) and every variant looped in its reasoning in 30 to 45 percent
+# of runs; n_predict ends such a loop. The "reply terminates" check of
+# `smoke` shows a loop when one of its two completions hits it, so run
+# `smoke` more than once.
 [server]
 ctx_size = 131072
-n_predict = 16384
+n_predict = 32768
 parallel = 1
 gpu_layers = 99
 flash_attn = "auto"

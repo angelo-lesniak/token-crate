@@ -7,8 +7,8 @@
   "collapseChangelog": true,
   "compaction": {
     "enabled": true,
-    "reserveTokens": 8192,
-    "keepRecentTokens": 12000
+    "reserveTokens": 20480,
+    "keepRecentTokens": 20000
   },
   "retry": {
     "enabled": true,

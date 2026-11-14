@@ -13,7 +13,7 @@ model_set = "qwen3.8-flash-next-ud-q4-k-xl"
 # Only the 12 sparse-attention layers of the 48 hold a KV cache (2 KV heads,
 # head size 256): about 1.6 GiB at 128K in q8_0, so the long slot is cheap.
 ctx_size = 131072
-n_predict = 16384
+n_predict = 32768
 parallel = 1
 gpu_layers = 99
 # The transformer weights are about 82 GB after the 29 GB n-gram table,

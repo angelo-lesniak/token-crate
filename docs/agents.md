@@ -18,6 +18,19 @@ the [build gate](models.md#build-gate). After you download a model set
 or open the gate for a preset, run `up` again to add it to the list.
 The preset in `LLM_DEFAULT_PRESET` is the model they start with.
 
+pi compacts a conversation when less than `compaction.reserveTokens`
+of the slot is left, and keeps the last `keepRecentTokens` of it
+verbatim. [The settings](../config/agents/pi/settings.json) size both
+for a 128K slot: the reserve holds a 16K reply plus the margin pi keeps,
+and pi shortens a longer reply near the end of the slot to what fits.
+The entrypoint caps each at a quarter of a smaller slot, unless
+`compaction.modelOverrides` names the preset (`tokencrate/<preset>`).
+pi also sends a reasoning budget with every request (pi's
+`thinkingBudgets`, 16,384 tokens at `xhigh`), which llama-server ends
+the reasoning at; pi lowers it to leave at least 1,024 tokens for the
+answer, so a reply or a compaction summary near the end of the slot
+keeps room for its answer.
+
 When compaction becomes frequent, run [`stats`](cli.md#stats): its
 Preset fit table compares the context of each request in your sessions,
 tool schemas and global context included, with the slot of every

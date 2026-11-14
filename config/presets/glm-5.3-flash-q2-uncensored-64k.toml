@@ -2,7 +2,7 @@ schema = 1
 description = "GLM-5.3-Flash uncensored (abliterated by orcarouter), plain 2-bit: the 96 GB RAM tier, tight, unverified"
 model_set = "glm-5.3-flash-orcarouter-uncensored-q2-k"
 
-# glm-5.3-flash-q2 on the orcarouter file, with its flash attention and
+# glm-5.3-flash-q2-128k on the orcarouter file, with its flash attention and
 # micro-batch. Three settings differ: the slot and n_cpu_moe, because the
 # file is 8 GB larger, and no MTP drafting, because orcarouter's GGUFs drop
 # the draft head (their card). Its first run waits for files that declare
