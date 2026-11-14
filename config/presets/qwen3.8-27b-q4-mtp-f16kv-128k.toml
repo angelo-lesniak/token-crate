@@ -1,5 +1,5 @@
 schema = 1
-description = "Qwen3.8-27B Q4 with MTP and an unquantized (f16) KV cache in one 128K slot, about 4 GiB more GPU memory than the default"
+description = "Qwen3.8-27B Q4 with MTP and an unquantized (f16) KV cache in one 128K slot, about 3 GiB more GPU memory than the default"
 model_set = "qwen3.8-27b-ud-q4-k-xl"
 
 # qwen3.8-27b-q4-mtp-128k with cache_type_k/v = f16 instead of q8_0: the
@@ -12,10 +12,11 @@ model_set = "qwen3.8-27b-ud-q4-k-xl"
 # bf16 buys nothing over f16 on the pinned build: the CUDA flash-attention
 # vector kernel (single-token generation) has a bf16 path, the mma kernel
 # that processes prompts converts K and V to f16 first
-# (ggml/src/ggml-cuda/fattn.cu at b10920: bf16 is in the vector kernel's
-# type list, fattn-mma-f16.cuh has no bf16 path).
-# The preset table in docs/models.md holds the measured memory and speed
-# against q8_0; the quality difference is unmeasured.
+# (ggml/src/ggml-cuda/fattn.cu lists bf16 among the vector kernel's K/V
+# types and converts them to f16 for the other kernels;
+# fattn-mma-f16.cuh has no bf16 path).
+# The preset table in docs/models.md holds the measured speed against
+# q8_0, higher in a full slot; the quality difference is unmeasured.
 [server]
 ctx_size = 131072
 n_predict = 32768
