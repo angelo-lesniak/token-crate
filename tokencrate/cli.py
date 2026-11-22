@@ -117,6 +117,7 @@ AGENT = Flag("pi or omp", agenthome.AGENTS.__contains__)
 SETS = Flag("a comma-separated list of agent sets (or an empty string)")
 DIRECTORY = Flag("a directory", bool)
 SINCE = Flag("a duration (30m, 12h, 7d, 2w) or an ISO date or date-time")
+MEMORY = Flag("project or global", ("project", "global").__contains__)
 
 
 # -- Parsing -------------------------------------------------------------------
@@ -425,6 +426,8 @@ def cmd_agent(context: Context, options: Options, names: list[str]) -> int:
         raise TokenCrateError(session.SETS_ARE_PI_ONLY)
     if "--cloud" in options and agent != "pi":
         raise TokenCrateError(session.CLOUD_IS_PI_ONLY)
+    if "--memory" in options and agent != "pi":
+        raise TokenCrateError(session.MEMORY_IS_PI_ONLY)
     settings = context.settings
     return agents.run_agent(
         settings,
@@ -437,6 +440,7 @@ def cmd_agent(context: Context, options: Options, names: list[str]) -> int:
         arguments=options.get("--", []),
         sets=options.get("--sets"),
         cloud="--cloud" in options,
+        memory=options.get("--memory", ""),
     )
 
 
@@ -597,15 +601,17 @@ COMMANDS = (
     ),
     Command(
         "agent",
-        "<pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [-- args]",
+        "<pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [--memory project|global] [-- args]",
         "Open a coding agent in the current (or named) project directory; "
-        "--cloud (pi only) mounts LLM_CLOUD_KEYS_FILE.",
+        "--cloud (pi only) mounts LLM_CLOUD_KEYS_FILE; --memory (pi only) keeps the memory sets' store for the project "
+        "or for all projects.",
         {
             "--preset": PRESET,
             "--sets": SETS,
             "--dir": DIRECTORY,
             "--egress": SWITCH,
             "--cloud": SWITCH,
+            "--memory": MEMORY,
             "--": SWITCH,
         },
         cmd_agent,

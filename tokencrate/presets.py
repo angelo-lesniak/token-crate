@@ -243,11 +243,12 @@ def read_preset(path: Path, model_sets: dict) -> Preset:
     expect_int(requires, "vram_gib", context, minimum=1)
     expect_int(requires, "ram_gib", context, minimum=1)
 
-    if server.get("spec_type", "none") == "draft-mtp":
-        if not model_sets[model_set].mtp:
-            raise TokenCrateError(f"{context}: draft-mtp needs a model set with mtp = true")
-        if server.get("parallel", 1) != 1:
-            raise TokenCrateError(f"{context}: draft-mtp requires parallel = 1")
+    # MTP drafting works with several slots only when each slot keeps its
+    # own KV cache; with one unified cache every request fails. llama-server
+    # turns the unified cache on only for an automatic slot count, and the
+    # renderer always writes `parallel`, so no preset can reach it.
+    if server.get("spec_type", "none") == "draft-mtp" and not model_sets[model_set].mtp:
+        raise TokenCrateError(f"{context}: draft-mtp needs a model set with mtp = true")
     if (server.get("spec_type", "none") != "none") and "spec_draft_n_max" not in server:
         raise TokenCrateError(f"{context}: a spec_type other than none needs spec_draft_n_max")
     if server.get("cache_type_v") not in (None, "f16", "bf16") and server.get("flash_attn") == "off":

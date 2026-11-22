@@ -35,8 +35,12 @@ from .engine import (
 )
 from .env import HostPath, Settings
 from .names import parse_list
+from .runtime import JUDGE_VRAM_GIB
 
 DEFAULT_GPU_DEVICE = "nvidia.com/gpu=all"
+# What the driver's reserve and a desktop take of an idle card, rounded up:
+# 1.2 to 1.6 GiB on the RTX 5090.
+IDLE_GPU_MIB = 2048
 # Gateway mode `isolated` (compose.docker.yaml) keeps host services off the
 # internal networks; older Engines cannot create such a network.
 DOCKER_MIN_MAJOR = 28
@@ -47,6 +51,10 @@ DOCKER_MIN_MAJOR = 28
 # cannot reach an internal peer. `smoke --agent <pi|omp> --egress` is what
 # proves that on a given host.
 PODMAN_MIN_MAJOR = 6
+# The memory server's embedded PostgreSQL refuses to initialise as a user
+# its image's passwd lacks, and the image names one (UID 1000). Podman adds
+# the caller to the container's passwd; Docker does not.
+MEMORY_SERVER_UID = 1000
 # Where nvidia-ctk writes CDI specifications; a spec names the driver's libcuda.
 CDI_DIRECTORIES = ("/etc/cdi", "/var/run/cdi")
 LIBCUDA_RE = re.compile(r"libcuda\.so\.([0-9]+\.[0-9.]+)")
@@ -114,6 +122,14 @@ class HostFacts:
     port: str = "4207"
     port_in_use: bool = False
     own_container_holds_port: bool = False
+    # This project's llama or judge container runs, so part of the card's
+    # memory is the stack's own and the free-memory check does not apply.
+    own_gpu_service_running: bool = False
+    # LLM_MEMORY_SERVER, and the calling user the containers run as.
+    memory_server: bool = False
+    uid: int = MEMORY_SERVER_UID
+    # LLM_JUDGE_SERVER: the judge service shares the card with the preset.
+    judge_server: bool = False
 
     @property
     def selection(self) -> Selection:
@@ -220,17 +236,18 @@ def _set_problems(settings: Settings) -> list[SetProblem]:
     return problems
 
 
-def _own_container_holds_port(engine: EngineFacts | None, settings: Settings) -> bool:
-    """Whether this project's llama publishes the requested loopback port."""
+def _running_containers(engine: EngineFacts | None, settings: Settings) -> list[dict]:
+    """This project's running containers, or none when the engine cannot list them."""
     if engine is None or not engine.reachable:
-        return False
+        return []
     try:
-        return any(
-            (item["Config"].get("Labels") or {}).get(SERVICE_LABEL) == "llama" and publishes(item, settings.port)
-            for item in Engine(engine.name, settings).containers(all_states=False)
-        )
+        return Engine(engine.name, settings).containers(all_states=False)
     except (TokenCrateError, OSError):
-        return False
+        return []
+
+
+def _service(container: dict) -> str:
+    return (container["Config"].get("Labels") or {}).get(SERVICE_LABEL, "")
 
 
 def gather(settings: Settings) -> HostFacts:
@@ -241,6 +258,7 @@ def gather(settings: Settings) -> HostFacts:
     env = settings.subprocess_env()
     path = env.get("PATH")
     selection = select(env, requested_engine(settings))
+    running = _running_containers(selection.chosen, settings)
     facts = HostFacts(
         git_present=shutil.which("git", path=path) is not None,
         uname=(tool_output(["uname", "-sm"], env) or "").strip(),
@@ -252,7 +270,11 @@ def gather(settings: Settings) -> HostFacts:
         set_problems=_set_problems(settings),
         port=settings.port,
         port_in_use=bool(loopback_bind_error(settings.port)),
-        own_container_holds_port=_own_container_holds_port(selection.chosen, settings),
+        own_container_holds_port=any(_service(item) == "llama" and publishes(item, settings.port) for item in running),
+        own_gpu_service_running=any(_service(item) in ("llama", "judge") for item in running),
+        memory_server=settings.memory_server,
+        uid=os.getuid(),
+        judge_server=settings.judge_server,
     )
     if settings.gpu:
         gpu_output, facts.gpu_error = run_tool(NVIDIA_SMI_QUERY, env)
@@ -392,22 +414,29 @@ def _gpu_findings(facts: HostFacts, min_driver_major: int, required_vram_gib: in
     # A "24 GB" card reports about 24564 MiB: compare in MiB with half a GiB
     # of slack and print the nearest GiB.
     if required_vram_gib is not None and gpu.total_mib is not None:
+        requirement, remedy = f"{required_vram_gib} GiB", "choose a smaller preset"
         needed_mib = required_vram_gib * 1024 - 512
+        if facts.judge_server:
+            requirement += f" plus {JUDGE_VRAM_GIB} GiB for the judge server"
+            remedy += " or set LLM_JUDGE_SERVER=false"
+            needed_mib += JUDGE_VRAM_GIB * 1024
         total_gib = (gpu.total_mib + 512) // 1024
         findings.append(
             _check(
                 gpu.total_mib >= needed_mib,
-                f"GPU memory {total_gib} GiB covers the preset requirement of {required_vram_gib} GiB",
-                f"GPU memory {total_gib} GiB is below the preset requirement of {required_vram_gib} GiB; "
-                "choose a smaller preset",
+                f"GPU memory {total_gib} GiB covers the preset requirement of {requirement}",
+                f"GPU memory {total_gib} GiB is below the preset requirement of {requirement}; {remedy}",
             )
         )
-        if gpu.free_mib is not None and gpu.free_mib < needed_mib:
+        # The driver and a desktop keep up to 2 GiB of an idle card, which
+        # closing programs does not free: warn only past that.
+        free_needed_mib = min(needed_mib, gpu.total_mib - IDLE_GPU_MIB)
+        if gpu.free_mib is not None and gpu.free_mib < free_needed_mib and not facts.own_gpu_service_running:
             findings.append(
                 Finding(
                     "warn",
                     f"only {(gpu.free_mib + 512) // 1024} GiB of GPU memory is free right now; "
-                    f"the preset needs {required_vram_gib} GiB (close other GPU programs)",
+                    f"the preset needs {requirement} (close other GPU programs)",
                 )
             )
     return findings
@@ -481,6 +510,19 @@ def _setting_findings(facts: HostFacts) -> list[Finding]:
     return [Finding("warn", f"{problem.setting} {problem.message}") for problem in facts.set_problems]
 
 
+def _memory_server_findings(facts: HostFacts) -> list[Finding]:
+    if not facts.memory_server or facts.engine is None or facts.engine.name != "docker":
+        return []
+    return [
+        _check(
+            facts.uid == MEMORY_SERVER_UID,
+            f"the memory server runs as your user (UID {MEMORY_SERVER_UID}) on Docker",
+            f"LLM_MEMORY_SERVER=true needs UID {MEMORY_SERVER_UID} on Docker (yours is {facts.uid}): the memory "
+            "server's embedded PostgreSQL runs only as its image's user; use Podman or set LLM_MEMORY_SERVER=false",
+        )
+    ]
+
+
 def _network_findings(facts: HostFacts) -> list[Finding]:
     if facts.port_in_use and not facts.own_container_holds_port:
         return [Finding("fail", f"host port {facts.port} is already in use")]
@@ -520,6 +562,7 @@ def evaluate(
         findings += _cdi_findings(facts, device)
     findings += _storage_findings(facts)
     findings += _setting_findings(facts)
+    findings += _memory_server_findings(facts)
     findings += _network_findings(facts)
     return findings
 

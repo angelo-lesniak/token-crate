@@ -1,0 +1,9 @@
+schema = 1
+description = "pi's MCP client, which the shared settings switch off: servers from ~/.pi/agent/mcp.json and, once the project is trusted, .pi/mcp.json"
+pi_packages = ["mcp"]
+# The package imports pi's public MCP factory, so a pi upgrade that drops
+# the export fails here instead of in a session.
+check = [
+  "node --input-type=module -e 'const m = await import(\"/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js\"); if (typeof m.createMcpExtension !== \"function\") process.exit(1)'",
+  "echo 'pi exports the MCP factory the mcp package loads'",
+]

@@ -5,7 +5,7 @@ A **model set** is what you download: one GGUF quantization of one model
 with byte sizes and SHA-256 checksums. A **preset** is how llama-server runs
 a model set: context size, slots, KV cache types, speculative decoding,
 reasoning effort, sampling, and the host memory it needs. One set can serve
-several presets. Every preset declares the GPU memory it needs in
+several presets, or none. Every preset declares the GPU memory it needs in
 `[requires] vram_gib`, and the system memory in `ram_gib` when it keeps
 expert weights there (`n_cpu_moe`); `doctor --preset` compares both with
 the host. The shipped presets declare 15 to 31 GiB; if none fits your
@@ -28,6 +28,7 @@ descriptions.
 | `glm-5.3-flash-orcarouter-uncensored-q2-k` | 116.9 GB | uncensored; 96 GB RAM tier; [gated](#hugging-face-access-and-storage); [build gate](#build-gate) |
 | `qwen3.8-flash-next-ud-q4-k-xl` | 111.3 GB | 96 GB RAM tier |
 | `qwen3.8-flash-next-orcarouter-uncensored-q4-k-s` | 111.8 GB | uncensored; 96 GB RAM tier; gated |
+| `kev-4b-q4-k-m` | 3.0 GB | no preset; the [judge service](configuration.md#memory-server-and-judge-service) serves it |
 
 `models fetch` prints every license and model card before it writes
 files; review them yourself. The repository's MIT license does not
@@ -46,7 +47,12 @@ two.
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | `qwen3.8-27b-q4-mtp-128k` (default) | 128K | 1 | 28 GiB | ~140 | ~80 | a single agent |
 | `qwen3.8-27b-q4-mtp-256k` | 256K | 1 | 31 GiB | ~140 | ~50 | the longest sessions, at the model's trained context |
-| `qwen3.8-27b-q4-2x128k` | 256K total, 128K per slot | 2 | 31 GiB | ~80 | ~50 | two clients, such as the built-in chat UI and an agent, on one loaded model |
+| `qwen3.8-27b-q4-mtp-2x128k` | 256K total, 128K per slot | 2 | 31 GiB | ~130 | ~70 | two clients, such as the built-in chat UI and an agent, on one loaded model |
+| `qwen3.8-27b-q4-mtp-2x96k` | 192K total, 96K per slot | 2 | 30 GiB | ~120 | ~90 | two clients, with more GPU memory left free |
+| `qwen3.8-27b-q4-mtp-3x88k` | 264K total, 88K per slot | 3 | 31 GiB | ~130 | ~90 | three clients |
+| `qwen3.8-27b-q4-mtp-4x64k` | 256K total, 64K per slot | 4 | 31 GiB | ~130 | ~90 | four clients |
+| `qwen3.8-27b-q4-mtp-2x88k` | 176K total, 88K per slot | 2 | 28 GiB | ~130 | ~90 | two clients beside the judge service |
+| `qwen3.8-27b-q4-mtp-3x56k` | 168K total, 56K per slot | 3 | 28 GiB | ~130 | ~110 | three clients beside the judge service |
 | `qwen3.8-27b-q4-mtp-f16kv-128k` | 128K | 1 | 30 GiB | ~140 | ~110 | the default with an unquantized KV cache, for long documents and tool calls; keeps more speed in a full slot |
 | `qwen3.8-27b-q6-mtp-96k` | 96K | 1 | 31 GiB | ~110 | ~70 | the larger Q6 quantization |
 | `qwen3.8-27b-q3-32k` | 32K | 1 | 15 GiB | ~90 | ~80 | smaller cards with the 27B; answer quality is not measured |
@@ -59,9 +65,9 @@ two.
 | `qwen3.8-flash-next-q4-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~30 | ~30 | the 96 GB RAM tier |
 | `qwen3.8-flash-next-q4-uncensored-128k` | 128K | 1 | 30 GiB and 96 GiB RAM | ~40 | not measured | the 96 GB RAM tier, uncensored |
 
-The generation speeds are estimates from a short and a long prompt on
-an RTX 5090, rounded to the nearest ten; the full-slot column is a reply
-of several hundred tokens with the slot 97 percent full. A prompt that
+The generation speeds are estimates for one request at a time on an
+RTX 5090, rounded to the nearest ten; the full-slot column is a reply
+of about 175 tokens that runs to the end of the slot. A prompt that
 fills the slot and shares no prefix with the previous request takes
 about 70 seconds at 128K and 3.5 minutes at 256K before the first token;
 an agent's next request reuses the cached prefix and processes only its
@@ -70,16 +76,28 @@ Flash-Next found every fact placed at any depth, GLM missed one of
 eight, and gpt-oss one in five, so prefer the Qwen presets for work
 that relies on a long prompt.
 
-A declared `[requires]` value is a ceiling with a few GiB of headroom:
+A declared `[requires]` value is a ceiling that includes headroom:
 llama-server allocates the KV cache when the preset loads, so a full
 slot holds no more than an empty one.
 
-The default preset gives a single agent one 128K slot with MTP
-drafting, which works with one slot only: a second client waits for the
-slot, or shares `qwen3.8-27b-q4-2x128k` without drafting. One preset is loaded at a time: a request that names another
-preset waits for the running request, then the router unloads the
-loaded model and reads the other one's file from disk, so keep one
-preset for a session.
+The default preset gives a single agent one 128K slot; a second client
+waits for it. A preset with several slots splits `ctx_size` evenly. On
+the Qwen3.8-27B ones, two, three, and four requests generating at once
+total about 240, 320, and 370 tokens/s. Long prompts are processed one
+after another, and meanwhile the other slots generate only a few
+tokens/s. A request takes the idle slot whose cached prompt matches
+best, otherwise the least recently used one. A prompt that leaves its
+slot goes to a cache in system memory (8 GiB): on `-2x128k`, prompts of
+11K to 118K returned within a second after two requests of up to 50K
+had taken both slots, so two slots can serve an orchestrator and two
+subagents it waits for. A full cache drops its oldest prompts, and a 118K prompt
+takes several GiB of it.
+
+The presets with a `[requires]` of 28 GiB or less leave room for the
+[judge service](configuration.md#memory-server-and-judge-service). One
+preset is loaded at a time: a request that names another preset waits
+for the running request, then the router unloads the loaded model and
+reads the other one's file from disk, so keep one preset for a session.
 
 Any OpenAI-compatible client on the host can use the running stack at
 `http://127.0.0.1:4207/v1` (port `LLM_PORT`). Every request names a
@@ -219,8 +237,8 @@ server.
    another option joins the list by a code change in
    `tokencrate/presets.py`. Run `presets check` after every edit; it
    names what it rejects, such as an unknown key, an option outside the
-   list, an invalid combination (MTP with two slots), or a value the
-   router would cut at a `;` or `#`.
+   list, an invalid combination (MTP drafting on a set without
+   `mtp = true`), or a value the router would cut at a `;` or `#`.
 
 3. Check, fetch, start, and measure:
 

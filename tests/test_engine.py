@@ -78,6 +78,17 @@ class EngineTests(unittest.TestCase):
         )
         self.assertNotIn("compose.gpu.yaml", trace)
         self.assertNotIn("compose.docker.yaml", trace)
+        self.assertNotIn("compose.agent-memory.yaml", trace)
+        # The memory overlay comes last: it replaces the networks the egress overlay set.
+        trace = podman.compose(
+            "ps",
+            profiles=("agent-pi",),
+            egress=True,
+            memory_network=True,
+            TOKENCRATE_MEMORY_ADDRESS="10.89.3.2",
+            capture=True,
+        ).stdout
+        self.assertIn("--file compose.agent-egress.yaml --file compose.agent-memory.yaml --profile agent-pi", trace)
 
     def test_home_tmpfs_owner_uses_the_engine_and_actual_host_identity(self) -> None:
         for name, owner in (("docker", "uid=1234,gid=2345"), ("podman", "U")):
@@ -214,6 +225,24 @@ class EngineTests(unittest.TestCase):
         )
         podman = engine.detect(self.settings(CONTAINER_ENGINE="podman", FAKE_ENGINE_FORWARDING="fail"))
         self.assertEqual(podman.bridge_forwarding("podman1"), ("", "Error: cannot join the rootless network namespace"))
+
+    def test_network_address_reads_the_projects_network_and_is_empty_otherwise(self) -> None:
+        docker = engine.detect(self.settings(CONTAINER_ENGINE="docker"))
+        networks = {"tokencrate_agents": {"IPAddress": "10.89.1.3"}, "tokencrate_default": {"IPAddress": "10.89.0.4"}}
+        cases = (
+            (subprocess.CompletedProcess([], 0, json.dumps(networks), ""), "10.89.0.4"),
+            # Another project's default network is not this one's.
+            (subprocess.CompletedProcess([], 0, json.dumps({"other_default": {"IPAddress": "10.1.0.2"}}), ""), ""),
+            (subprocess.CompletedProcess([], 0, "null", ""), ""),
+            (subprocess.CompletedProcess([], 0, "not json", ""), ""),
+            (subprocess.CompletedProcess([], 1, "", "Error: no such container"), ""),
+        )
+        for result, expected in cases:
+            with self.subTest(result=result), patch.object(docker, "command", return_value=result) as command:
+                self.assertEqual(docker.network_address("judge-id", "default"), expected)
+                command.assert_called_once_with(
+                    "inspect", "--format", "{{json .NetworkSettings.Networks}}", "judge-id", capture=True, check=False
+                )
 
     def test_inspect_engine_reads_the_docker_server_version(self) -> None:
         settings = self.settings(CONTAINER_ENGINE="docker")

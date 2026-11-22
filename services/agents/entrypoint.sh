@@ -84,7 +84,7 @@ mkdir -p "$home/.agents"
 ln -s "$SKILLS_ROOT" "$home/.agents/skills"
 
 # --- Image seeds: the files the image owns in the agent home (the tools
-# --- note, subagent definitions, NuGet configuration).
+# --- note, the agent sets' extension settings, NuGet configuration).
 [[ ! -d "$HOME_SEED" ]] || cp -R "$HOME_SEED/." "$home/"
 
 # --- Agent configuration: static settings from the repository, generated
@@ -101,12 +101,19 @@ case "$agent" in
     # smaller slot gets a quarter of its context for each, so a compaction
     # still leaves something to summarize and room to write the summary. An
     # entry the settings name in compaction.modelOverrides stays as written.
+    # In a --cloud session, where the session model can be a cloud model
+    # (`-- --model provider/id` or /model), subagents without a model of
+    # their own run on the preset, so only the roles that inherit the
+    # session model go to the cloud.
     node -e '
       const fs = require("fs");
-      const [seed, preset, packagesFile, modelsFile, target] = process.argv.slice(1);
+      const [seed, preset, packagesFile, modelsFile, target, cloud] = process.argv.slice(1);
       const settings = JSON.parse(fs.readFileSync(seed, "utf8"));
       settings.defaultProvider = "tokencrate";
       settings.defaultModel = preset;
+      if (cloud) {
+        settings.subagents = { ...settings.subagents, defaultModel: "tokencrate/" + preset };
+      }
       const { reserveTokens, keepRecentTokens } = settings.compaction;
       const models = JSON.parse(fs.readFileSync(modelsFile, "utf8")).providers.tokencrate.models;
       settings.compaction.modelOverrides = {
@@ -124,8 +131,16 @@ case "$agent" in
       settings.packages = fs.existsSync(packagesFile)
         ? fs.readFileSync(packagesFile, "utf8").split("\n").filter(Boolean)
         : [];
+      // A roles child loads no extension of the session, so the guard set
+      // (when the image ships it) is given to every child as its own; a
+      // child that lists only some tools still gets its holds and loop stop.
+      const guard = settings.packages.filter((path) => path.startsWith("/opt/tokencrate/sets/guard/"));
+      if (guard.length > 0) {
+        settings.subagents = { ...settings.subagents, defaultSubagentOnlyExtensions: guard };
+      }
       fs.writeFileSync(target, JSON.stringify(settings, null, 2) + "\n");
-    ' "$STATIC_CONFIG/settings.json" "$preset" "$IMAGE_PACKAGES" "$config_dir/models.json" "$config_dir/settings.json"
+    ' "$STATIC_CONFIG/settings.json" "$preset" "$IMAGE_PACKAGES" "$config_dir/models.json" "$config_dir/settings.json" \
+      "${TOKENCRATE_CLOUD:-}"
     ;;
   omp)
     config_dir="$home/.omp/agent"
@@ -162,8 +177,11 @@ export USER=agent LOGNAME=agent
 # --- one NAME=value line per key, matching quotes removed, nothing
 # --- expanded, blank and # lines skipped. The names this script sets
 # --- itself and the image's own settings (its telemetry and offline
-# --- switches, the Node options) are refused; every other name is the
-# --- user's choice. A UI launcher exports its own switches after this.
+# --- switches and those of the pi-web set and its Next.js server, the
+# --- Node options, the directories pi and the sets read their seeded
+# --- configuration from, the addresses pi-web's skill search and pi's
+# --- login callback use, the memory sets' store and server, which `agent
+# --- pi --memory` sets) are refused; every other name is the user's choice.
 if [[ -n "${TOKENCRATE_CLOUD:-}" || -e "$CLOUD_KEYS" ]]; then
   [[ -f "$CLOUD_KEYS" ]] || die "the cloud keys file is not mounted as a regular file at $CLOUD_KEYS"
   number=0
@@ -175,7 +193,8 @@ if [[ -n "${TOKENCRATE_CLOUD:-}" || -e "$CLOUD_KEYS" ]]; then
     [[ "$line" == *=* && "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "cloud keys file line $number is not NAME=value"
     case "$name" in
       PATH | HOME | USER | LOGNAME | IFS | BASH_ENV | ENV | TOKENCRATE_* | LD_* | GIT_CONFIG_GLOBAL | PI_CONFIG_FILES | PI_BASH_NO_LOGIN \
-        | PI_TELEMETRY | PI_SKIP_VERSION_CHECK | PI_OFFLINE | PI_LENS_* | PILENS_* | DOTNET_* | NUGET_* | NPM_CONFIG_* | NODE_OPTIONS | BUN_INSTALL)
+        | PI_CODING_AGENT_DIR | XDG_* | PI_TELEMETRY | PI_SKIP_VERSION_CHECK | PI_OFFLINE | PI_LENS_* | PILENS_* | DOTNET_* | NUGET_* | NPM_CONFIG_* | NODE_OPTIONS | BUN_INSTALL \
+        | PI_MEMORY_* | HINDSIGHT_* | PI_WEB_* | NEXT_* | SKILLS_API_URL | PI_OAUTH_CALLBACK_HOST)
         die "cloud keys file line $number sets $name, which the agent image owns" ;;
     esac
     value=${line#*=}

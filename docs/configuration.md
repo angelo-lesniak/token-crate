@@ -35,7 +35,7 @@ so select a local Docker context or Podman connection first.
 | Setting | Takes effect at |
 | --- | --- |
 | `LLM_GPU`, `GPU_DEVICE`, `LLM_TMPFS_SIZE`, `LLM_PIDS_LIMIT`, `RESTART_POLICY` | The next `up`, which recreates the llama container |
-| `LLM_DASHBOARD`, `LLM_DASHBOARD_PORT` | The next `up`; `up` with the dashboard off leaves a running one in place, and `down` removes it |
+| `LLM_DASHBOARD`, `LLM_DASHBOARD_PORT`, `LLM_MEMORY_SERVER`, `LLM_JUDGE_SERVER` | The next `up`; `up` with a service off leaves a running one in place, and `down` removes it. `agent pi --memory` reads `LLM_MEMORY_SERVER` at its start |
 | `COMPOSE_PROJECT_NAME` | The next command, which addresses a new project and leaves the old stack running on its ports; run `down` before changing it |
 | `LLM_PORT` | The next `up`; `status`, `smoke`, and `bench` use the new value at once, so run `up` first |
 | `LLM_DEFAULT_PRESET` | The next `up` for the preset loaded at start; the next command for the commands that use it without `--preset` |
@@ -54,7 +54,7 @@ does not.
 | --- | --- | --- | --- |
 | API | The model server's API and the built-in chat UI | `LLM_PORT` | `4207` |
 | Dashboard | Grafana, with `LLM_DASHBOARD=true` | `LLM_DASHBOARD_PORT`, which must differ from `LLM_PORT` | `4211` |
-| Browser UI | One UI set's forwarder | `--port` of [`ui <set>`](cli.md#ui), else the manifest's `host_port` | `4224` for `pi-web`, `4250` for `paseo` |
+| Browser UI | One UI set's forwarder | `--port` of [`ui <set>`](cli.md#ui), else the manifest's `host_port` | `4224` for `pi-web` |
 | Stats page | `stats --serve`, a host process | `--port` of [`stats`](cli.md#stats) | `4210` |
 
 ## Built-in chat UI
@@ -89,6 +89,14 @@ switches off in Grafana. Without the profile, the
 live panel of [`stats --serve`](cli.md#stats) shows the same counters
 for the last ten minutes.
 
+## Memory server and judge service
+
+`LLM_MEMORY_SERVER` and `LLM_JUDGE_SERVER` ([`.env.example`](../.env.example))
+make [`up`](cli.md#up) start these services. The memory server takes
+about 2 GB of RAM while idle and on Docker needs UID 1000, which
+`doctor` checks. [Networks](privacy.md#networks) says which sessions
+reach each service.
+
 ## Storage layout
 
 | Default path | Contents |
@@ -96,7 +104,8 @@ for the last ten minutes.
 | `data/models/<owner>/<repository>/<source>` | Model library (`LLM_MODELS_DIR`); `<source>` is the manifest's path of the file |
 | `data/models/.../<file>.tokencrate-verified` | Verification stamp of a model file ([`models`](cli.md#models) says when it is trusted) |
 | `data/agents/<agent>/<project>-<hash>/` | Retained state per agent and project; only the subdirectories listed below are mounted |
-| `data/agents/pi/<set>-state/` | Per-UI-set state shared by all projects (see below) |
+| `data/agents/pi/memory/` | The memory store of `agent pi --memory global`, shared by all projects |
+| `data/agents/hindsight/` | The [memory server](#memory-server-and-judge-service)'s database |
 | `data/skills/<set>/<skill>/` | Fetched skill sets |
 | `local/skills/<skill>/SKILL.md` | Private skills, read-only in agents |
 | `local/cloud-keys.env` | The cloud keys file (`LLM_CLOUD_KEYS_FILE`); mounted only by `agent --cloud` and `ui --cloud` |
@@ -122,9 +131,10 @@ host directory are bound read-write at the same relative paths below
 
 | Agent | Retained subdirectories | Purpose |
 | --- | --- | --- |
-| pi, terminal and UI | `.pi/agent/sessions` | Transcripts shared by terminal and browser sessions |
+| pi, terminal and UI | `.pi/agent/sessions` | Transcripts shared by terminal and browser sessions; with the `roles` set, also the child sessions and `subagent-artifacts/` |
+| pi with `--memory project` | `.pi/agent/memory` | The project's memory store |
 | oh-my-pi | `.omp/agent/sessions`, `.omp/agent/blobs`, `.omp/agent/terminal-sessions`, `.omp/agent/custom-session-files` | Transcripts, their images, and the state of session selection |
-| pi UI only | The UI set's `state` directory: `.pi-web` or `.paseo` | UI configuration and session state |
+| pi UI only | The UI set's `state` directory: `.pi-web` | pi-web's sidebar state (pins, archive, project names) |
 
 The home and the two directories above the transcript directory
 (`.pi` and `.pi/agent`, or `.omp` and `.omp/agent`) are separate
@@ -132,17 +142,15 @@ executable tmpfs mounts of 256 MiB each; `/tmp` is limited by
 `LLM_AGENT_TMPFS_SIZE`. Everything else in the home disappears when the
 container stops; save work in the project.
 
-Each UI set also has `LLM_AGENTS_DIR/pi/<set>-state/`, shared by all
-projects and mounted at `/run/tokencrate/ui-state` in that set's UI
-container ([Browser UIs](agents.md#browser-uis) says what Paseo keeps
-there). [Agent configuration](agents.md#agent-configuration) says what a
+[Agent configuration](agents.md#agent-configuration) says what a
 session can change for a later one through the retained directories.
 
 Below `LLM_AGENTS_DIR` the retained mount sources and their ancestors
 must be real paths: the wrapper refuses a symbolic link there, because a
 session writes its home. Each per-project directory is readable by your
-user only. Deleting it removes its saved sessions and UI state
-permanently.
+user only. Deleting it removes its saved sessions, UI state, and
+memory store permanently; the project's Hindsight bank stays on the
+memory server.
 
 ## Remove TokenCrate
 
@@ -214,6 +222,7 @@ images of equal pins and selections.
    | `LLAMA_CPP_TAG` | The [NVIDIA host baseline](validation.md#nvidia-host-baseline); the [router observations](../CONTRIBUTING.md#router-behavior-the-wrapper-relies-on); for a model set whose gate the new build opens, its presets' fallback ladder with `smoke` and `bench` |
    | `PI_VERSION`, `OMP_VERSION`, `NODE_TAG`, `BUN_TAG` | An agent session with a small task, then `bash bin/tokencrate smoke --agent pi` (with each `--sets` selection you use) and `bash bin/tokencrate smoke --agent omp`; for `NODE_TAG`, which also runs the UI forwarder and the dashboard's exporter, also one `ui <set>` launch and, if you use it, the dashboard |
    | `VICTORIAMETRICS_TAG`, `GRAFANA_TAG`, `DCGM_EXPORTER_TAG` | `up` with `LLM_DASHBOARD=true`, then open Grafana |
+   | `HINDSIGHT_TAG` | `up` with `LLM_MEMORY_SERVER=true`, then an `agent pi --sets hindsight --memory project` session |
 
 3. Record the run as [Validation](validation.md#record-a-run)
    describes.

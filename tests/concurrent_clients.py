@@ -1,7 +1,7 @@
 """Real sequential prompts with live clients, plus independent UI lifecycle.
 
-Called by integration.py; terminal binaries stay alive in RPC mode. PI WEB
-uses its browser HTTP API, Paseo its daemon CLI. TOKENCRATE_CONCURRENT_AGENTS
+Called by integration.py; terminal binaries stay alive in RPC mode. pi-web
+uses its browser HTTP API. TOKENCRATE_CONCURRENT_AGENTS
 selects the terminal clients (default "pi,omp"); CI sets "pi" to skip omp's
 cold prompt. Browser rendering and terminal screen interaction are separate
 manual checks, not claimed by this test.
@@ -9,11 +9,9 @@ manual checks, not claimed by this test.
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import os
 import queue
-import re
 import socket
 import subprocess
 import threading
@@ -173,114 +171,56 @@ def run(root: Path, project: Path) -> None:
             sock.bind(("127.0.0.1", 0))
             return str(sock.getsockname()[1])
 
-    ports = {name: free_port() for name in ("pi-web", "paseo")}
+    port = free_port()
     before = stable_identity()
     assert len(before[1]) == 2, before
-    cli("ui", "pi-web", "--sets", "", "--dir", str(project), "--port", ports["pi-web"])
+    cli("ui", "pi-web", "--sets", "", "--dir", str(project), "--port", port)
     first = ui_ids("pi-web")
-    cli("ui", "paseo", "--sets", "", "--dir", str(project), "--port", ports["paseo"])
-    second = ui_ids("paseo")
-    assert first == ui_ids("pi-web")
     assert before == stable_identity()
-    print(
-        f"client start: agents={AGENTS}, router/processes={before}, pi-web={first}, paseo={second}, ports={ports}",
-        flush=True,
-    )
-    home = session.agent_home_directory(settings, "pi", project)
-    config = json.loads((home / ".paseo/config.json").read_text())
-    assert config["agents"]["providers"]["pi"]["additionalModels"][0]["id"] == "tokencrate/ci-small", config
-    # Each HTTP forwarder refuses the sibling origin as well as foreign hosts.
-    for name, port in ports.items():
-        for headers in (
-            {"Origin": "http://evil.example.com"},
-            {"Host": f"evil.example.com:{port}"},
-            {"Origin": f"http://127.0.0.1:{ports['paseo' if name == 'pi-web' else 'pi-web']}"},
-        ):
-            try:
-                request(f"http://127.0.0.1:{port}/", **headers)
-            except urllib.error.HTTPError as error:
-                assert error.code == 403, error
-                error.close()
-            else:
-                raise AssertionError(f"{name} accepted foreign Host/Origin")
+    print(f"client start: agents={AGENTS}, router/processes={before}, pi-web={first}, port={port}", flush=True)
+    # The forwarder refuses another loopback origin as well as foreign hosts.
+    for headers in (
+        {"Origin": "http://evil.example.com"},
+        {"Host": f"evil.example.com:{port}"},
+        {"Origin": f"http://127.0.0.1:{free_port()}"},
+    ):
+        try:
+            request(f"http://127.0.0.1:{port}/", **headers)
+        except urllib.error.HTTPError as error:
+            assert error.code == 403, error
+            error.close()
+        else:
+            raise AssertionError(f"pi-web accepted foreign Host/Origin {headers}")
     clients = []
     try:
         clients = [RpcClient(root, name, project) for name in AGENTS]
         for client, name in zip(clients, AGENTS, strict=True):
             client.prompt(MARKERS[name])
-        base = f"http://127.0.0.1:{ports['pi-web']}"
-        created = request(base + "/api/sessions", {"cwd": str(project)})
-        print("PI WEB session:", created, flush=True)
-        sid = created["id"]
-        route = f"/api/sessions/{urllib.parse.quote(sid)}"
-        query = "?" + urllib.parse.urlencode({"cwd": str(project)})
-        request(
-            base + route + "/prompt",
-            {"cwd": str(project), "text": "Reply with the single word hello. Do not use tools."},
-        )
+        base = f"http://127.0.0.1:{port}"
+        prompt = {"type": "prompt", "message": "Reply with the single word hello. Do not use tools."}
+        created = request(base + "/api/agent/new", {"cwd": str(project), **prompt})
+        print("pi-web session:", created, flush=True)
+        assert created["model"] == {"provider": "tokencrate", "modelId": "ci-small"}, created
+        sid = created["sessionId"]
+        agent = f"{base}/api/agent/{urllib.parse.quote(sid)}"
 
-        def web_answer():
-            page = request(base + route + "/messages" + query)
-            messages = page.get("messages", []) if isinstance(page, dict) else page
-            return next((m for m in messages if assistant_text(m)), None)
+        def web_answers():
+            page = request(f"{base}/api/sessions/{urllib.parse.quote(sid)}")
+            return [m for m in page["context"]["messages"] if assistant_text(m)]
 
-        answer = until(web_answer)
-        print("PI WEB assistant:", answer, flush=True)
+        answer = until(web_answers)[0]
+        print("pi-web assistant:", answer, flush=True)
         assert answer.get("model") == "ci-small", answer
-        # Title generation uses a separate request, outside isStreaming; PI
-        # WEB's session-naming package assigns a name when it finishes.
-        until(lambda: any(s["id"] == sid and s.get("name") for s in request(base + "/api/sessions" + query)))
-        until(lambda: not request(base + route + "/status" + query)["isStreaming"])
-        # Paseo's daemon listens on the container's `ui` address, which the
-        # launcher logs; its CLI needs the same address to reach it.
-        daemon_log = selected.command("logs", second[0], capture=True, check=False)
-        listen = re.search(r"listens on (\S+:\d+)", daemon_log.stdout + daemon_log.stderr)
-        assert listen, "the Paseo launcher did not log its listen address"
-        # Bounded like the RPC clients: a daemon that accepts the prompt and
-        # never answers must not hang the run.
-        paseo = subprocess.run(
-            [
-                selected.name,
-                "exec",
-                "-e",
-                f"PASEO_LISTEN={listen.group(1)}",
-                second[0],
-                "paseo",
-                "run",
-                "--provider",
-                "pi",
-                "--model",
-                "tokencrate/ci-small",
-                "--thinking",
-                "off",
-                "Reply with the single word welcome. Do not use tools.",
-            ],
-            env=selected.env,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=RPC_TIMEOUT,
-        )
-        print("Paseo run:", paseo.stdout, flush=True)
-        agent_id = re.search(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", paseo.stdout).group()
-        records = list((home / ".paseo/agents").rglob(f"{agent_id}.json"))
-        assert len(records) == 1, "Paseo did not save the agent record from this run"
-        record = json.loads(records[0].read_text())
-        assert record["config"]["model"] == "tokencrate/ci-small", record
-        assert record["runtimeInfo"]["model"] == "tokencrate/ci-small", record
-        relative = Path(record["persistence"]["nativeHandle"]).relative_to("/home/agent")
-        answers = [json.loads(line).get("message", {}) for line in (home / relative).read_text().splitlines()]
-        answer = next((m for m in answers if assistant_text(m)), None)
-        assert answer and answer.get("model") == "ci-small", answers
-        print(
-            f"Paseo assistant: {assistant_text(answer)!r}, model={answer['model']}, session={relative.name}", flush=True
-        )
+        until(lambda: not request(agent, {"type": "get_state"})["data"]["isStreaming"])
+        # The sidebar state (here a pin) is the one pi-web file the set retains.
+        state = request(base + "/api/sessions/ui-state", {"action": "set", "ids": [sid], "pinned": True})
+        assert state["state"]["sessions"][sid]["pinnedAt"], state
         clients[0].prompt("hello")
         assert all(c.process.poll() is None for c in clients), "a terminal client stopped"
-        assert first == ui_ids("pi-web") and second == ui_ids("paseo")
+        assert first == ui_ids("pi-web")
         assert before == stable_identity(), (before, stable_identity())
         assert runtime.model_states(settings)["ci-small"] == "loaded"
-        print(f"{len(clients) + 2} clients answered with the same router/model process identity", flush=True)
+        print(f"{len(clients) + 1} clients answered with the same router/model process identity", flush=True)
         targets = uis.peer_targets(selected)
         assert targets, "no UI peers discovered for containment"
         probe_script = r"""
@@ -323,7 +263,7 @@ exit "$fail"
                 )
                 print(f"containment: {name}, egress={egress}, targets={targets}", flush=True)
         assert before == stable_identity()
-        # A failed custom UI launch leaves both running siblings available.
+        # A failed custom UI launch leaves the running UI available.
         failing = root / "local/agent-sets/concurrent-failure"
         failing.mkdir(parents=True)
         try:
@@ -336,82 +276,47 @@ exit "$fail"
             )
             stopped = f"the container {uis.container_names('concurrent-failure')[0]} is exited before it answered"
             assert failed.returncode and stopped in failed.stderr, failed
-            assert first == ui_ids("pi-web") and second == ui_ids("paseo")
+            assert first == ui_ids("pi-web")
             logs = selected.command("logs", uis.container_names("concurrent-failure")[0], capture=True)
             assert logs.returncode == 0
             cli("ui", "stop", "concurrent-failure")
+            # Another UI on a held port is refused before anything starts.
+            refused = cli("ui", "concurrent-failure", "--sets", "", "--dir", str(other), "--port", port, check=False)
+            assert refused.returncode and "another container" in refused.stderr, refused
+            assert first == ui_ids("pi-web")
         finally:
             import shutil
 
             shutil.rmtree(failing)
         assert before == stable_identity()
-        # Collision must preserve all running container identities.
-        refused = cli("ui", "paseo", "--sets", "", "--dir", str(project), "--port", ports["pi-web"], check=False)
-        assert refused.returncode and "another container" in refused.stderr, refused
-        assert first == ui_ids("pi-web") and second == ui_ids("paseo")
-        assert before == stable_identity()
+        # Stop and restart pi-web alone: the model stays, and the saved
+        # session and its pin are retained and the session answers again.
         cli("ui", "stop", "pi-web")
         assert selected.container_state(uis.container_names("pi-web")[0]) == "removed"
-        assert second == ui_ids("paseo") and before == stable_identity()
-        cli("ui", "pi-web", "--sets", "", "--dir", str(project), "--port", ports["pi-web"])
-        assert request(base + route + "/messages" + query), "PI WEB transcript was not retained"
-        assert second == ui_ids("paseo") and before == stable_identity()
-        # Stop/restart Paseo independently and retain its provider settings
-        # and daemon identity. PI WEB must continue answering the saved session.
-        first = ui_ids("pi-web")
-        retained = {
-            name: (home / ".paseo" / name).read_bytes() for name in ("config.json", "server-id", "daemon-keypair.json")
-        }
-        cli("ui", "stop", "paseo")
-        assert first == ui_ids("pi-web") and before == stable_identity()
-        request(
-            base + route + "/prompt",
-            {"cwd": str(project), "text": "Reply with the single word hello. Do not use tools."},
+        assert before == stable_identity()
+        cli("ui", "pi-web", "--sets", "", "--dir", str(project), "--port", port)
+        assert web_answers(), "pi-web transcript was not retained"
+        assert request(base + "/api/sessions/ui-state")["state"]["sessions"][sid]["pinnedAt"], (
+            "the pin was not retained"
         )
-
+        assert before == stable_identity()
+        request(agent, prompt)
         # The fast fixture may have completed before the first poll; the
         # recorded transcript itself supplies the count of completed answers.
-        def web_repeat():
-            page = request(base + route + "/messages" + query)
-            return len([m for m in page["messages"] if assistant_text(m)]) >= 2
-
-        until(web_repeat)
-        cli("ui", "paseo", "--sets", "", "--dir", str(project), "--port", ports["paseo"])
-        assert first == ui_ids("pi-web") and before == stable_identity()
-        assert all((home / ".paseo" / name).read_bytes() == value for name, value in retained.items())
-        second = ui_ids("paseo")
-        # A different project, selection and port apply only to the target UI.
-        changed_port = free_port()
-        cli("ui", "pi-web", "--sets", "coding", "--dir", str(other), "--port", changed_port)
-        assert second == ui_ids("paseo") and before == stable_identity()
+        until(lambda: len(web_answers()) >= 2)
+        # A different project, selection and port apply to the replaced UI
+        # and leave the model alone.
+        cli("ui", "pi-web", "--sets", "coding", "--dir", str(other), "--port", free_port())
+        assert before == stable_identity()
         changed = json.loads(
             selected.command("inspect", "--format", "{{json .}}", ui_ids("pi-web")[0], capture=True).stdout
         )
         assert f"TOKENCRATE_PROJECT_DIR={other}" in changed["Config"]["Env"]
         assert "TOKENCRATE_PRESET=ci-small" in changed["Config"]["Env"]
-        # Starts issued close together must each publish their own launch
-        # definition. Both targets change, while the model identity stays put.
-        commands = [
-            ["ui", "pi-web", "--sets", "", "--dir", str(project), "--port", ports["pi-web"]],
-            ["ui", "paseo", "--sets", "coding", "--dir", str(other), "--port", ports["paseo"]],
-        ]
-        # Drain both builds while they run: sequential communicate() calls
-        # can fill the second launch's output pipe while it holds the lock.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            starting = [pool.submit(cli, *args) for args in commands]
-            for future in starting:
-                future.result()
-        for name, expected in (("pi-web", project), ("paseo", other)):
-            current = json.loads(
-                selected.command("inspect", "--format", "{{json .}}", ui_ids(name)[0], capture=True).stdout
-            )
-            assert f"TOKENCRATE_PROJECT_DIR={expected}" in current["Config"]["Env"]
-        assert before == stable_identity()
         cli("ui", "stop")
         assert not uis.containers(selected)
         assert before == stable_identity()
-        assert (home / ".paseo/config.json").exists()
-        print("independent UI lifecycle, retained state, failed launches and close starts passed", flush=True)
+        print("UI lifecycle, retained state, and failed launches passed", flush=True)
         # Both terminal run --rm containers are still alive. Whole-stack
         # shutdown must remove them before removing their networks.
         cli("down")

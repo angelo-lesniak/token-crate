@@ -4,9 +4,8 @@
   "description": "The pi coding extensions, pinned by the lockfile; pi provides the peer packages, typebox is a direct dependency because the debug set's extension declares it as a peer.",
   "dependencies": {
     "@juicesharp/rpiv-advisor": "2.15.0",
-    "@narumitw/pi-plan-mode": "0.60.0",
-    "pi-hashline-edit-pro": "7.1.1",
-    "pi-lens": "4.4.10",
+    "@narumitw/pi-plan-mode": "0.60.2",
+    "pi-lens": "4.5.1",
     "typebox": "1.4.5"
   }
 }

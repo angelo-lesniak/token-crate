@@ -10,6 +10,7 @@ import os
 import pty
 import re
 import shutil
+import stat
 import sys
 import unittest
 from pathlib import Path
@@ -177,8 +178,8 @@ class ProjectDirectoryTests(unittest.TestCase):
         session.prepare_mountpoints(home, "pi")
         created = {str(path.relative_to(home)) for path in home.rglob("*")}
         self.assertEqual(created, {".pi", ".pi/agent", ".pi/agent/sessions"})
-        session.prepare_mountpoints(home, "pi", ".paseo")
-        self.assertTrue((home / ".paseo").is_dir())
+        session.prepare_mountpoints(home, "pi", ".custom-ui")
+        self.assertTrue((home / ".custom-ui").is_dir())
         self.assertFalse((home / ".pi-web").exists(), "only the started UI's state directory is created")
         omp_home = self.scratch.storage / "agents" / "omp" / "project-x"
         session.prepare_mountpoints(omp_home, "omp")
@@ -303,7 +304,7 @@ class LaunchTests(unittest.TestCase):
         self.scratch = Scratch()
         self.addCleanup(self.scratch.close)
         self.settings = env.load(
-            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
+            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k")
         )
         self.engine = mock.MagicMock()
         self.engine.name = "docker"
@@ -348,7 +349,14 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(run.args, ("run", "--rm", "--name", name, "agent-pi", "pi", "-p", "hi"))
         self.assertEqual(
             run.kwargs,
-            {"profiles": ("agent-pi",), "egress": False, "check": False, "stdin": None, "TOKENCRATE_PRESET": "p"},
+            {
+                "profiles": ("agent-pi",),
+                "egress": False,
+                "memory_network": False,
+                "check": False,
+                "stdin": None,
+                "TOKENCRATE_PRESET": "p",
+            },
         )
         self.engine.command.assert_called_once_with("stop", "--time", "5", name, capture=True, check=False)
         # Neither the pre-flight nor the session holds the stack lock.
@@ -384,7 +392,7 @@ class LaunchTests(unittest.TestCase):
         keys.chmod(0o600)
         settings = env.load(
             self.scratch.root,
-            self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k", LLM_CLOUD_KEYS_FILE=str(keys)),
+            self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k", LLM_CLOUD_KEYS_FILE=str(keys)),
         )
         with contextlib.redirect_stderr(io.StringIO()) as stderr:
             launch = session.plan(settings, self.engine, None, "pi", "", self.scratch.project, cloud=True)
@@ -428,12 +436,264 @@ class LaunchTests(unittest.TestCase):
                 self.assertFalse(agents.terminal_is_ours())
 
 
+class JudgeAddressTests(unittest.TestCase):
+    """A start with a route out reaches the judge by its address on the
+    default network, never by name, and only while the judge runs; against
+    a mocked engine, with the pre-flight proper mocked as in LaunchTests."""
+
+    def setUp(self) -> None:
+        self.scratch = Scratch()
+        self.addCleanup(self.scratch.close)
+        self.engine = mock.MagicMock()
+        self.engine.container_ids.return_value = ["judge-id"]
+        self.engine.network_address.return_value = "10.89.0.4"
+        prepared = mock.patch("tokencrate.session.prepare", return_value={})
+        prepared.start()
+        self.addCleanup(prepared.stop)
+
+    def judge_arguments(self, *, server: str = "true", sets: str = "judge", agent: str = "pi", **options) -> list:
+        settings = env.load(
+            self.scratch.root,
+            self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k", LLM_JUDGE_SERVER=server),
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            launch = session.plan(
+                settings,
+                self.engine,
+                None,
+                agent,
+                "",
+                self.scratch.project,
+                sets=sets if agent == "pi" else None,
+                **options,
+            )
+        launch.run(self.engine, "tokencrate-agent-000000000000")
+        args = self.engine.compose.call_args.args
+        return [args[index + 1] for index, value in enumerate(args) if value == "-e" and "JUDGE" in args[index + 1]]
+
+    def test_an_egress_start_gets_the_judge_address_on_the_default_network(self) -> None:
+        self.assertEqual(self.judge_arguments(egress=True), ["TOKENCRATE_JUDGE_URL=http://10.89.0.4:8080"])
+        self.engine.container_ids.assert_called_once_with("judge")
+        self.engine.network_address.assert_called_once_with("judge-id", "default")
+        # A browser UI of the judge set with a route out is planned the same way.
+        ui = mock.Mock(ui=mock.Mock(state=".ui-state"))
+        ui.name = "pi-web"
+        self.assertEqual(self.judge_arguments(egress=True, ui=ui), ["TOKENCRATE_JUDGE_URL=http://10.89.0.4:8080"])
+
+    def test_an_offline_start_keeps_the_name_and_asks_the_engine_nothing(self) -> None:
+        self.assertEqual(self.judge_arguments(), [])
+        self.engine.container_ids.assert_not_called()
+
+    def test_without_a_running_judge_the_overlay_leaves_the_url_empty(self) -> None:
+        for change, expected_engine_call in (
+            ({"server": "false"}, False),
+            ({"sets": "coding"}, False),
+            ({"agent": "omp"}, False),
+            ({}, True),
+        ):
+            with self.subTest(change=change):
+                self.engine.reset_mock()
+                if expected_engine_call:
+                    self.engine.container_ids.return_value = []
+                self.assertEqual(self.judge_arguments(egress=True, **change), [])
+                self.assertEqual(self.engine.container_ids.called, expected_engine_call)
+
+    def test_only_an_ipv4_address_becomes_a_url(self) -> None:
+        for address in ("", "judge", "judge.lan", "fe80::1", "10.89.0.4:8080", "10.89.0.256"):
+            with self.subTest(address=address):
+                self.engine.network_address.return_value = address
+                self.assertEqual(self.judge_arguments(egress=True), [])
+        self.engine.container_ids.return_value = ["one", "two"]
+        self.engine.network_address.return_value = "10.89.0.4"
+        self.assertEqual(self.judge_arguments(egress=True), [], "two running judges give no single address")
+
+
+class MemorySessionTests(unittest.TestCase):
+    """`agent pi --memory`: the store's bind, the memory server's bank and
+    approval for an offline session, and the refusals, against a mocked
+    engine (the pre-flight proper is mocked as in LaunchTests)."""
+
+    PRESET = "qwen3.8-27b-q4-mtp-2x128k"
+
+    def setUp(self) -> None:
+        self.scratch = Scratch()
+        self.addCleanup(self.scratch.close)
+        self.engine = mock.MagicMock()
+        self.engine.command.return_value.returncode = 0
+        prepared = mock.patch("tokencrate.session.prepare", return_value={})
+        prepared.start()
+        self.addCleanup(prepared.stop)
+
+    def plan(self, scope: str, sets: str = "memory,hindsight", *, server: str = "true", **options):
+        settings = env.load(
+            self.scratch.root,
+            self.scratch.environment(
+                LLM_DEFAULT_PRESET=self.PRESET, LLM_MEMORY_SERVER=server, **options.pop("env", {})
+            ),
+        )
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            launch = session.plan(
+                settings, self.engine, None, "pi", "", self.scratch.project, sets=sets, memory=scope, **options
+            )
+        launch.run(self.engine, "tokencrate-agent-000000000000")
+        return settings, launch, self.engine.compose.call_args.args, stderr.getvalue()
+
+    def test_project_memory_binds_the_homes_store_and_approves_the_project_for_the_server(self) -> None:
+        settings, launch, run, stderr = self.plan("project")
+        store = launch.home / agenthome.MEMORY_DIRECTORY
+        self.assertTrue(store.is_dir())
+        self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o700)
+        bank = f"tokencrate::{launch.home.name}"
+        self.assertEqual(
+            run[run.index("--name") + 2 : run.index("agent-pi")],
+            (
+                "-v",
+                f"{store}:/home/agent/.pi/agent/memory",
+                "-e",
+                f"HINDSIGHT_BANK_ID={bank}",
+                "-e",
+                f"HINDSIGHT_OPT_IN_PATHS={self.scratch.project}",
+            ),
+        )
+        self.assertEqual(stderr, "")
+
+    def test_global_memory_is_one_store_and_one_bank_for_every_project(self) -> None:
+        settings, _launch, run, _stderr = self.plan("global")
+        store = settings.agents_dir / "pi" / agenthome.GLOBAL_MEMORY
+        self.assertIn(f"{store}:/home/agent/.pi/agent/memory", run)
+        self.assertIn("HINDSIGHT_BANK_ID=tokencrate::global", run)
+        self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o700)
+
+    def test_without_a_reachable_server_only_the_store_is_bound(self) -> None:
+        for server, options, ids, address, why in (
+            ("false", {}, [], "", "LLM_MEMORY_SERVER is false"),
+            ("false", {"egress": True}, ["server-id"], "10.89.3.2", "LLM_MEMORY_SERVER is false"),
+            ("true", {"egress": True}, [], "10.89.3.2", session.NO_MEMORY_SERVER),
+            ("true", {"egress": True}, ["one", "two"], "10.89.3.2", session.NO_MEMORY_SERVER),
+            ("true", {"egress": True}, ["server-id"], "", session.NO_MEMORY_SERVER),
+            ("true", {"egress": True}, ["server-id"], "hindsight", session.NO_MEMORY_SERVER),
+        ):
+            with self.subTest(why=why, ids=ids, address=address):
+                self.engine.container_ids.return_value = ids
+                self.engine.network_address.return_value = address
+                _settings, launch, run, stderr = self.plan("project", server=server, **options)
+                self.assertIn(f"{launch.home / agenthome.MEMORY_DIRECTORY}:/home/agent/.pi/agent/memory", run)
+                self.assertFalse(any(argument.startswith("HINDSIGHT_") for argument in run))
+                self.assertFalse(self.engine.compose.call_args.kwargs["memory_network"])
+                self.assertIn(f"the hindsight set stays inert in this session: {why}.", stderr)
+        # pi-memory alone needs no server and gets no hindsight variable.
+        _settings, _launch, run, stderr = self.plan("project", "memory")
+        self.assertFalse(any(argument.startswith("HINDSIGHT_") for argument in run))
+        self.assertEqual(stderr, "")
+
+    def test_a_session_with_a_route_out_gets_the_server_by_address_and_a_warning(self) -> None:
+        keys = self.scratch.tmp / "keys.env"
+        keys.write_text("A_API_KEY=x\n")
+        keys.chmod(0o600)
+        self.engine.container_ids.return_value = ["server-id"]
+        self.engine.network_address.return_value = "10.89.3.2"
+        for options in (
+            {"egress": True},
+            {"cloud": True, "env": {"LLM_CLOUD_KEYS_FILE": str(keys)}},
+        ):
+            with self.subTest(options=options):
+                self.engine.network_address.reset_mock()
+                cloud = "cloud" in options
+                _settings, launch, run, stderr = self.plan("project", **options)
+                self.engine.network_address.assert_called_once_with("server-id", "memory")
+                compose = self.engine.compose.call_args.kwargs
+                self.assertTrue(compose["egress"])
+                self.assertTrue(compose["memory_network"])
+                self.assertEqual(compose["TOKENCRATE_MEMORY_ADDRESS"], "10.89.3.2")
+                self.assertIn(f"HINDSIGHT_BANK_ID=tokencrate::{launch.home.name}", run)
+                self.assertIn(f"HINDSIGHT_OPT_IN_PATHS={self.scratch.project}", run)
+                self.assertIn("every project's Hindsight bank", stderr)
+                self.assertNotIn("stays inert", stderr)
+                self.assertEqual("go to the cloud model" in stderr, cloud, stderr)
+
+    def test_an_offline_session_reaches_the_server_by_name_and_joins_no_other_network(self) -> None:
+        _settings, _launch, run, stderr = self.plan("project")
+        self.engine.network_address.assert_not_called()
+        self.assertFalse(self.engine.compose.call_args.kwargs["memory_network"])
+        self.assertIn(f"HINDSIGHT_OPT_IN_PATHS={self.scratch.project}", run)
+        self.assertEqual(stderr, "")
+
+    def test_only_a_session_that_asked_for_memory_joins_the_memory_network(self) -> None:
+        self.engine.container_ids.return_value = ["server-id"]
+        self.engine.network_address.return_value = "10.89.3.2"
+        for scope, sets in (("", "hindsight"), ("project", "memory")):
+            with self.subTest(scope=scope, sets=sets):
+                self.plan(scope, sets, egress=True)
+                self.assertFalse(self.engine.compose.call_args.kwargs["memory_network"])
+
+    def test_a_cloud_session_is_told_where_the_store_goes(self) -> None:
+        keys = self.scratch.tmp / "keys.env"
+        keys.write_text("A_API_KEY=x\n")
+        keys.chmod(0o600)
+        _settings, _launch, run, stderr = self.plan(
+            "global", "memory", cloud=True, env={"LLM_CLOUD_KEYS_FILE": str(keys)}
+        )
+        self.assertIn("what the global memory puts in a prompt, notes and recalled memories, go to the cloud", stderr)
+        self.assertFalse(any(argument.startswith("HINDSIGHT_") for argument in run))
+
+    def test_a_session_with_a_route_out_is_warned_about_the_global_store(self) -> None:
+        warning = "the global memory store holds every project's notes, and this session has a route out"
+        for memory, egress, expected in (("global", True, True), ("global", False, False), ("project", True, False)):
+            with self.subTest(memory=memory, egress=egress):
+                _settings, _launch, _run, stderr = self.plan(memory, "memory", egress=egress)
+                self.assertEqual(warning in stderr, expected, stderr)
+
+    def test_refusals_come_before_the_pre_flight(self) -> None:
+        settings = env.load(
+            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET=self.PRESET, LLM_MEMORY_SERVER="true")
+        )
+        project = self.scratch.project
+        with self.assertRaisesRegex(TokenCrateError, "^--memory needs the memory or hindsight agent set"):
+            session.plan(settings, self.engine, None, "pi", "", project, sets="coding", memory="project")
+        # The server extracts with the default preset; another one would
+        # swap the model at every extraction. Without the server the
+        # preset is free.
+        for egress in (False, True):
+            with (
+                self.subTest(egress=egress),
+                self.assertRaisesRegex(TokenCrateError, "^the memory server extracts memories with LLM_DEFAULT_PRESET"),
+            ):
+                session.plan(
+                    settings,
+                    self.engine,
+                    None,
+                    "pi",
+                    "ci-small",
+                    project,
+                    sets="hindsight",
+                    memory="project",
+                    egress=egress,
+                )
+        session.prepare.assert_not_called()
+        with contextlib.redirect_stderr(io.StringIO()):
+            session.plan(settings, self.engine, None, "pi", "ci-small", project, sets="memory", memory="project")
+        # A linked store is refused like a linked home.
+        store = session.agent_home_directory(settings, "pi", project) / agenthome.MEMORY_DIRECTORY
+        store.rmdir()
+        store.symlink_to(self.scratch.tmp)
+        with self.assertRaisesRegex(TokenCrateError, "is a symbolic link"):
+            session.plan(settings, self.engine, None, "pi", "", project, sets="memory", memory="project")
+
+    def test_the_cli_takes_a_scope_and_refuses_memory_for_omp(self) -> None:
+        project = str(self.scratch.project)
+        refused = self.scratch.run("agent", "omp", "--dir", project, "--memory", "project")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn(session.MEMORY_IS_PI_ONLY, refused.stderr)
+        refused = self.scratch.run("agent", "pi", "--dir", project, "--memory", "everything")
+        self.assertIn("--memory requires project or global", refused.stderr)
+
+
 class CloudSessionTests(unittest.TestCase):
     """What a user observes from bin/tokencrate, through the fake engine,
     which prints the credential variables it sees and the keys file's path
     (from the `-v` of the `run`)."""
 
-    PRESET = "qwen3.8-27b-q4-2x128k"
+    PRESET = "qwen3.8-27b-q4-mtp-2x128k"
 
     def setUp(self) -> None:
         self.scratch = Scratch()
@@ -559,7 +819,7 @@ class CloudSessionTests(unittest.TestCase):
         self.assertIn("--file compose.agent-egress.yaml --profile ui", ui_run)
         self.assertRegex(
             ui_run,
-            r"run --detach --no-deps -T -v \S+/pi/pi-web-state:/run/tokencrate/ui-state --name tokencrate-ui-pi-web "
+            r"run --detach --no-deps -T --name tokencrate-ui-pi-web "
             + re.escape(f"-v {self.keys}:{session.KEYS_MOUNT_TARGET}:ro -e TOKENCRATE_CLOUD=1 agent-ui"),
         )
         self.assertIn(f"key_file={self.keys} ", ui_run)

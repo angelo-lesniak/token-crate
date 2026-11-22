@@ -21,8 +21,10 @@ says what such a session exposes.
 | An agent image build | docker.io (the Node or Bun base image), the Debian and npm mirrors, and the `url` of every asset and Git checkout in the selected [agent sets](agent-sets.md), with the hosts those URLs redirect to | At the first `agent`, `smoke --agent`, or `ui <set>` with that selection |
 | The forwarder's base image pull | docker.io (the Node image) | At the first `ui <set>` |
 | The [dashboard](configuration.md#dashboard) image pulls | docker.io (the VictoriaMetrics, Grafana, and Node images) and, with `LLM_GPU=true`, nvcr.io (the DCGM exporter image) | At the first `up` with `LLM_DASHBOARD=true` |
+| The memory server's image pull | ghcr.io (the Hindsight API image) | At the first `up` with `LLM_MEMORY_SERVER=true` |
 | `--egress` and `--cloud` sessions and browser UIs | Whatever the agent, the UI, or your commands contact | Only when you ask for it |
-| The conversation so far: every prompt, file content, and tool output of the session, the turns the local model answered included | The provider whose model you picked in the agent, over its own endpoint | Only in a `--cloud` session or browser UI, with each request to that model |
+| The `search` set's tools | `web_search`: Exa's keyless endpoint (`mcp.exa.ai`), or Exa, Brave, Tavily, or Jina with a key from the keys file; `fetch_content`: the page's host, or Firecrawl or Crawl4AI when the keys file sets one up | When the model calls them in an `--egress` or `--cloud` session |
+| The conversation so far: every prompt, file content, and tool output of the session, the turns the local model answered included; with `--memory`, the memory store's notes; with the `roles` set, what its planner and reviewer read | The provider whose model you picked in the agent, over its own endpoint | Only in a `--cloud` session or browser UI, with each request to that model |
 
 Commands not listed above reach only loopback ports or use no network;
 requests to local APIs bypass host HTTP proxy settings.
@@ -47,17 +49,19 @@ bundled components, so they stay off even with a route out. The agent
 `Dockerfile`, the entrypoint, `config/agents/`, the set manifests and UI
 launchers in `config/agent-sets/`, and the `grafana` service in
 `compose.yaml` set the switches. Not switched off, and able to reach
-the internet with a route out: PI WEB's user-started package installs
-and updates, Paseo's "What's new" changelog, and the `browser` set's
-browser tool.
+the internet with a route out: what you start in pi-web's settings
+(skill search, installs, and update checks, plugin installs, model
+discovery and the models.dev catalogue, provider usage) and its browser
+notifications, the `browser` set's browser tool, and the
+`search` set's tools.
 
 | Component | Switched off |
 | --- | --- |
-| pi and oh-my-pi | The install ping, the update checks, package installs, and the model-catalogue refresh, so a cloud provider offers the model list bundled with the pinned package; oh-my-pi's automatic skill learning |
+| pi and oh-my-pi | The install ping, the update checks, package installs, and the model-catalogue refresh, so a cloud provider offers the model list bundled with the pinned package; pi's prompt-cache warming (`cacheWarming`), which sends extra requests to a cloud model; pi's MCP client, unless the `mcp` set or a trusted project's settings turn it on; oh-my-pi's automatic skill learning |
+| pi-warden (`guard` set) | Jev judgments, until `/warden enable` in a session with a route out (for that container) or `PI_WARDEN_ENABLED=1` and `TYPESAFE_API_KEY` in the keys file; pi-warden then sends redacted summaries of requests, commands, written content, and tool output to `api.typesafe.ai` |
 | pi-lens (`coding` set) | On-demand installs of language servers and tools |
 | .NET SDK (`dotnet` set) | Usage telemetry and the workload update check; NuGet sources point at the image cache |
-| PI WEB (`pi-web` set) | The release check and the model-catalogue refresh |
-| Paseo (`paseo` set) | The rendezvous relay, the speech-model downloads, and the usage sources, which read other agents' credential files and call their providers; the hub and push features are never set up |
+| pi-web (`pi-web` set) | The release check, Next.js telemetry, the model-catalogue refresh, and plugin update checks |
 | Grafana (dashboard profile) | Usage reporting, update checks, the news feed, plugin preinstalls and key retrieval, external snapshot publishing, Gravatar lookups |
 
 ## Defaults and their limits
@@ -73,9 +77,10 @@ llama API does not ([llama API](#llama-api)).
 
 ### Browser UIs
 
-A browser UI (`ui <set>`) has no password: PI WEB has no
-authentication, and Paseo's is not turned on. Every process on the host
-can use the UI port, and with it the agent's access to the project.
+pi-web runs without a password. Every process on the host can use the UI
+port, and with it the agent's access to the project. Inside the
+container, the agent's own commands can use pi-web's API too, so in
+pi-web they can answer the `guard` set's hold dialogs themselves.
 
 ### Forwarder
 
@@ -85,7 +90,10 @@ or `none`; these checks cover cross-site requests and DNS rebinding.
 Allowed authorities are `127.0.0.1`, `localhost`, and `[::1]`
 with the UI's own port (on port `80`, also without a port), and an
 `Origin` must use `http://`. An allowed `Origin` takes precedence over
-`Sec-Fetch-Site`; one UI's origin does not authorize another. The UI
+`Sec-Fetch-Site`; one UI's origin does not authorize another. Its
+`Content-Security-Policy` lets the browser load images and media only
+from the UI, so a remote image in the model's output, which could carry
+project data in its URL, is not fetched. The UI
 daemon listens only on the container's `ui`-network address, so on
 rootless Podman an `--egress` session does not reach it past the
 forwarder; on Docker Engine no run covers this ([Known
@@ -104,8 +112,8 @@ rendered `[*]` section).
 
 ### Networks
 
-Terminal agents share the internal `agents` network with each other
-and the model, so offline sessions of different projects reach each
+Offline terminal sessions share the internal `agents` network with each
+other and the model, so sessions of different projects reach each
 other's listeners. All browser UIs, their forwarders, and the model
 share the internal `ui` network. The dashboard profile's containers
 share the internal `dashboard` network with the model; no agent or UI
@@ -120,6 +128,26 @@ decision](../CONTRIBUTING.md#settled-decisions)). Browser UIs are not
 isolated from each other: treat them as trusted peers with access to
 their mounted projects.
 
+The memory server (`hindsight`) is on the internal `agents` and
+`memory` networks, has no route out, and calls only the model. An
+`agent pi --memory` session with the `hindsight` set and `--egress` or
+`--cloud` joins `memory` beside the default network; no other session
+does. The server has no authentication between banks: every offline
+session, and every session on `memory`, can read and change every
+bank. An online one can therefore send every bank
+off the machine, what offline sessions stored included, and web content
+can plant memories that offline sessions recall.
+
+The judge service (`judge`) is on `agents`, `ui`, and the default
+network, publishes no port, and calls out to nothing. A session or UI
+with a route out gets its address from the wrapper at start and never
+asks for it by name, which that container's resolver could send off the
+machine. When the judge is recreated, that address can pass to another
+container on the default network, so the set checks before every
+question that the server serves `kev-4b`, and never asks again one that
+does not. A container there that impersonates the judge still receives
+the request and the edits.
+
 ### Services
 
 Every service runs with a read-only root filesystem, no Linux
@@ -128,7 +156,8 @@ capabilities, `no-new-privileges`, a PID limit, and a size-limited tmpfs
 
 ### Internal networks
 
-The internal `agents`, `ui`, and `dashboard` networks have no route out
+The internal `agents`, `ui`, `dashboard`, and `memory` networks have no
+route out
 and no gateway through which agents reach host services. Compose keeps an existing network's options, so `up` and
 every agent or UI start refuse a network of that name that is not
 internal, that this Compose project did not create, or that fails the

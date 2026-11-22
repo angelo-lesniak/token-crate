@@ -1,34 +1,52 @@
 schema = 1
-description = "PI WEB (jmfederico/pi-web), a browser UI for pi with a session daemon; start it with `ui pi-web`"
-# npm still places a copy of pi under the scope directory although the peers
-# are omitted; the image's pi must be the only one, so the directory is
-# replaced by links to the global install: pi-coding-agent itself, and
-# pi-ai and pi-agent-core, which npm nests below it.
+description = "pi-web (agegr/pi-web), a browser UI for pi; start it with `ui pi-web`"
+# pi-web pins every pi package exactly, and the image's pi must be the only
+# copy: the build stops unless each pin is the image's pi version
+# (PI_VERSION in pins.env), then replaces the copy npm installed with links
+# to the global install, which nests the packages below pi-coding-agent,
+# and removes the dependencies npm installed for that copy alone
+# (prune.js).
+# The package's build output moves aside and `.next` becomes a link into
+# the container's run directory, where the launcher assembles it at every
+# start with fresh preview-mode secrets; the build stops if the published
+# secret is in any file but the two the launcher replaces.
 build = [
+  '''node -e 'const pi = require("/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json").version; const pins = Object.entries(require("./node_modules/@agegr/pi-web/package.json").dependencies).filter(([name]) => name.startsWith("@earendil-works/")); const wrong = pins.filter(([, version]) => version !== pi); if (pins.length === 0 || wrong.length > 0) { console.error(`pi-web pins ${wrong.map(([name, version]) => name + "@" + version).join(", ") || "no pi package"}; the image has pi ${pi}: set PI_VERSION in pins.env to the pin`); process.exit(1); }' ''',
   "rm -rf node_modules/@earendil-works && mkdir node_modules/@earendil-works",
-  "ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent node_modules/@earendil-works/pi-coding-agent",
-  "ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai node_modules/@earendil-works/pi-ai",
-  "ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core node_modules/@earendil-works/pi-agent-core",
+  '''for name in $(node -p 'Object.keys(require("./node_modules/@agegr/pi-web/package.json").dependencies).filter((name) => name.startsWith("@earendil-works/")).join(" ")'); do target=/usr/local/lib/node_modules/@earendil-works/pi-coding-agent; [ "$name" = @earendil-works/pi-coding-agent ] || target=$target/node_modules/$name; test -d "$target" || { echo "the image's pi has no $name" >&2; exit 1; }; ln -s "$target" "node_modules/$name"; done''',
+  "node prune.js",
+  "mv node_modules/@agegr/pi-web/.next node_modules/@agegr/pi-web/.next-image",
+  "ln -s /run/tokencrate/pi-web-next node_modules/@agegr/pi-web/.next",
+  '''(cd node_modules/@agegr/pi-web/.next-image && test "$(grep -rlF "$(node -p 'require("./prerender-manifest.json").preview.previewModeId')" | sort | tr '\n' ' ')" = "prerender-manifest.json server/preview-props.json ")''',
   "install -m 0755 tokencrate-ui-pi-web /usr/local/bin/tokencrate-ui-pi-web",
 ]
 
-# The daemon must load the image's pi (the scope directory of the set is a
-# link to the global install, never a second copy) and node-pty from its
-# prebuild.
+# Every pi package pi-web loads resolves into the image's pi, node-pty
+# (the terminal panel) loads its prebuild, and the offline switches are
+# set for every process of the container.
 check = [
-  'test "$(readlink -f /opt/tokencrate/sets/pi-web/node_modules/@earendil-works/pi-coding-agent)" = /usr/local/lib/node_modules/@earendil-works/pi-coding-agent',
-  '''cd /opt/tokencrate/sets/pi-web && node -e 'import("@earendil-works/pi-ai").then(() => import("@earendil-works/pi-coding-agent")).then(() => import("node-pty")).then(() => process.exit(0), (error) => { console.error(error.message); process.exit(1); })'''',
-  "echo \"pi-web $(pi-web --version | head -1) resolves the image's pi and node-pty\"",
+  '''cd /opt/tokencrate/sets/pi-web && for link in node_modules/@earendil-works/*; do case "$(readlink -f "$link")" in /usr/local/lib/node_modules/@earendil-works/pi-coding-agent | /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/*) ;; *) echo "$link is not the image's pi" >&2; exit 1 ;; esac; done''',
+  '''cd /opt/tokencrate/sets/pi-web && node -e 'require("node-pty"); import("@earendil-works/pi-coding-agent").then(() => process.exit(0), (error) => { console.error(error.message); process.exit(1); })' ''',
+  'test "$NEXT_TELEMETRY_DISABLED" = 1 && test "$PI_WEB_SKIP_VERSION_CHECK" = 1',
+  "echo \"pi-web $(pi-web --version | head -1) resolves the image's pi $(pi --version) and node-pty\"",
 ]
 
 [npm]
-omit_peer = true
 
+# No Next.js telemetry and no pi-web release check: the container has no
+# route out unless the UI was started with --egress or --cloud.
 [env]
 PATH = "/opt/tokencrate/sets/pi-web/node_modules/.bin"
+NEXT_TELEMETRY_DISABLED = "1"
+PI_WEB_SKIP_VERSION_CHECK = "1"
 
+# The address `ui` prints opens the project; without `cwd`, pi-web knows a
+# project only once it has a session there. `state` holds the sidebar
+# (pins, archive, project order and names, read times); the launcher
+# copies it into and out of pi's agent directory, where pi-web keeps it.
 [ui]
 command = "tokencrate-ui-pi-web"
 port = 8504
 state = ".pi-web"
 host_port = 4224
+path = "/?cwd={project}"

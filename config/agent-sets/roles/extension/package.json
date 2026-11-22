@@ -1,0 +1,11 @@
+{
+  "name": "tokencrate-roles",
+  "private": true,
+  "description": "pi-subagents' extension loaded as a local pi package without its skills and prompts, and the role definitions as package agents.",
+  "pi": {
+    "extensions": ["../node_modules/pi-subagents/bundle/index.js"],
+    "subagents": {
+      "agents": ["./agents"]
+    }
+  }
+}

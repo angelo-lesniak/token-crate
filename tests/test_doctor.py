@@ -138,10 +138,10 @@ class EvaluateTests(unittest.TestCase):
             self.assertIn(expected, lines)
 
     def test_findings_follow_the_report_order(self) -> None:
-        lines = evaluate(healthy_facts(), preset="qwen3.8-27b-q4-2x128k", required_vram_gib=24, required_ram_gib=1)
+        lines = evaluate(healthy_facts(), preset="qwen3.8-27b-q4-mtp-2x128k", required_vram_gib=24, required_ram_gib=1)
         order = [
             "[ok] checking the GPU path (LLM_GPU=true)",
-            "[ok] checking host requirements of preset qwen3.8-27b-q4-2x128k",
+            "[ok] checking host requirements of preset qwen3.8-27b-q4-mtp-2x128k",
             "[ok] git is available",
             "[ok] podman version 6.1.0-fake",
             "[ok] NVIDIA GPU: Fake RTX 5090, driver 610.57.04, 32607 MiB",
@@ -213,6 +213,28 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertFalse(any("Podman" in line for line in lines))
 
+    def test_the_memory_server_needs_the_images_uid_on_docker_alone(self) -> None:
+        # Docker gives the container no passwd entry for another user, and
+        # the memory server's PostgreSQL refuses to initialise without one.
+        refused = (
+            "[fail] LLM_MEMORY_SERVER=true needs UID 1000 on Docker (yours is 1001): the memory server's embedded "
+            "PostgreSQL runs only as its image's user; use Podman or set LLM_MEMORY_SERVER=false"
+        )
+        self.assertEqual(
+            failures(evaluate(healthy_facts(engine=docker_facts(), memory_server=True, uid=1001))), [refused]
+        )
+        self.assertIn(
+            "[ok] the memory server runs as your user (UID 1000) on Docker",
+            evaluate(healthy_facts(engine=docker_facts(), memory_server=True, uid=1000)),
+        )
+        for facts in (
+            healthy_facts(engine=docker_facts(), memory_server=False, uid=1001),
+            healthy_facts(memory_server=True, uid=1001),
+        ):
+            lines = evaluate(facts)
+            self.assertEqual(failures(lines), [])
+            self.assertFalse(any("memory server" in line for line in lines))
+
     def test_docker_older_than_28_fails_the_gateway_mode_check(self) -> None:
         for version in ("27.5.1", ""):
             lines = evaluate(healthy_facts(engine=docker_facts(server_version=version)))
@@ -281,27 +303,61 @@ class EvaluateTests(unittest.TestCase):
 
     def test_a_24_gb_card_covers_a_24_gib_preset(self) -> None:
         # The card reports 24564 MiB; half a GiB of slack makes it cover 24 GiB.
-        # With 24000 MiB free the same slack still warns.
-        lines = evaluate(healthy_facts(gpu=GpuFacts("610.57.04", 24564, 24000, "Fake RTX 4090")), required_vram_gib=24)
+        # The free-memory check also leaves room for the driver and the desktop.
+        lines = evaluate(healthy_facts(gpu=GpuFacts("610.57.04", 24564, 22000, "Fake RTX 4090")), required_vram_gib=24)
         self.assertEqual(failures(lines), [])
         self.assertIn("[ok] GPU memory 24 GiB covers the preset requirement of 24 GiB", lines)
         self.assertEqual(
             warnings(lines),
-            ["[warn] only 23 GiB of GPU memory is free right now; the preset needs 24 GiB (close other GPU programs)"],
+            ["[warn] only 21 GiB of GPU memory is free right now; the preset needs 24 GiB (close other GPU programs)"],
         )
-        lines = evaluate(healthy_facts(gpu=GpuFacts("610.57.04", 24564, 24100, "Fake RTX 4090")), required_vram_gib=24)
+        lines = evaluate(healthy_facts(gpu=GpuFacts("610.57.04", 24564, 23200, "Fake RTX 4090")), required_vram_gib=24)
         self.assertEqual(warnings(lines), [])
 
-    def test_small_gpu_fails_and_warns_about_free_memory(self) -> None:
+    def test_small_gpu_fails_and_blames_no_other_program(self) -> None:
         lines = evaluate(healthy_facts(gpu=GpuFacts("610.57.04", 16384, 16000, "Fake RTX 5070")), required_vram_gib=24)
         self.assertEqual(
             failures(lines),
             ["[fail] GPU memory 16 GiB is below the preset requirement of 24 GiB; choose a smaller preset"],
         )
-        self.assertEqual(
-            warnings(lines),
-            ["[warn] only 16 GiB of GPU memory is free right now; the preset needs 24 GiB (close other GPU programs)"],
+        self.assertEqual(warnings(lines), [])
+
+    def test_an_idle_card_does_not_warn_about_free_memory(self) -> None:
+        # A 32 GB card with only the driver and a desktop on it has 31025 to
+        # 31374 MiB free, less than a preset that takes the whole card asks for.
+        for free in (31025, 31374):
+            idle = GpuFacts("610.57.04", 32607, free, "Fake RTX 5090")
+            for judge, vram in ((True, 28), (False, 31), (False, 32)):
+                with self.subTest(free=free, judge=judge, vram=vram):
+                    lines = evaluate(healthy_facts(gpu=idle, judge_server=judge), required_vram_gib=vram)
+                    self.assertEqual((failures(lines), warnings(lines)), ([], []))
+
+    def test_the_free_memory_warning_starts_where_another_program_matters(self) -> None:
+        # A preset that takes the whole card warns once more than 2 GiB is
+        # taken; a smaller one only when its own requirement is not free.
+        for judge, vram, limit in ((True, 28, 32607 - 2048), (False, 32, 32607 - 2048), (False, 24, 24064)):
+            for free, warned in ((limit - 1, 1), (limit, 0)):
+                with self.subTest(judge=judge, vram=vram, free=free):
+                    gpu = GpuFacts("610.57.04", 32607, free, "Fake RTX 5090")
+                    lines = evaluate(healthy_facts(gpu=gpu, judge_server=judge), required_vram_gib=vram)
+                    self.assertEqual(len(warnings(lines)), warned)
+
+    def test_the_judge_server_adds_its_memory_to_the_preset_requirement(self) -> None:
+        # A 32 GB card: 28 GiB fits with the judge's 4 GiB, 29 GiB does not.
+        lines = evaluate(healthy_facts(judge_server=True), required_vram_gib=28)
+        self.assertEqual(failures(lines), [])
+        self.assertIn(
+            "[ok] GPU memory 32 GiB covers the preset requirement of 28 GiB plus 4 GiB for the judge server", lines
         )
+        lines = evaluate(healthy_facts(judge_server=True), required_vram_gib=29)
+        self.assertEqual(
+            failures(lines),
+            [
+                "[fail] GPU memory 32 GiB is below the preset requirement of 29 GiB plus 4 GiB for the judge "
+                "server; choose a smaller preset or set LLM_JUDGE_SERVER=false"
+            ],
+        )
+        self.assertEqual(failures(evaluate(healthy_facts(judge_server=False), required_vram_gib=29)), [])
 
     def test_busy_gpu_warns_but_passes(self) -> None:
         lines = evaluate(healthy_facts(gpu=GpuFacts("610.57.04", 32607, 8000, "Fake RTX 5090")), required_vram_gib=24)
@@ -309,6 +365,17 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(
             warnings(lines),
             ["[warn] only 8 GiB of GPU memory is free right now; the preset needs 24 GiB (close other GPU programs)"],
+        )
+        # The stack's own model holds that memory: an `up` on a running stack
+        # does not warn about it, and the total still has to cover the preset.
+        busy = GpuFacts("610.57.04", 32607, 8000, "Fake RTX 5090")
+        self.assertEqual(
+            warnings(evaluate(healthy_facts(gpu=busy, own_gpu_service_running=True), required_vram_gib=24)), []
+        )
+        lines = evaluate(healthy_facts(gpu=busy, own_gpu_service_running=True), required_vram_gib=33)
+        self.assertEqual(
+            failures(lines),
+            ["[fail] GPU memory 32 GiB is below the preset requirement of 33 GiB; choose a smaller preset"],
         )
 
     def test_unknown_gpu_memory_skips_the_memory_checks(self) -> None:
@@ -485,7 +552,7 @@ class RunTests(unittest.TestCase):
             status = doctor.run(
                 settings,
                 min_driver_major=MIN_DRIVER_MAJOR,
-                preset="qwen3.8-27b-q4-2x128k",
+                preset="qwen3.8-27b-q4-mtp-2x128k",
                 required_vram_gib=24,
                 required_ram_gib=1,
             )
@@ -517,7 +584,7 @@ class RunTests(unittest.TestCase):
         lines = output.splitlines()
         self.assertEqual(lines[0], "== TokenCrate host doctor ==")
         self.assertEqual(lines[1], "[ok] checking the GPU path (LLM_GPU=true)")
-        self.assertEqual(lines[2], "[ok] checking host requirements of preset qwen3.8-27b-q4-2x128k")
+        self.assertEqual(lines[2], "[ok] checking host requirements of preset qwen3.8-27b-q4-mtp-2x128k")
         self.assertIn(NOTE, lines)
         self.assertEqual(lines[-2], "")
         self.assertEqual(lines[-1], "Doctor completed with 0 failure(s) and 0 warning(s).")
@@ -685,7 +752,8 @@ class GatherTests(unittest.TestCase):
 
     def test_gather_skips_the_gpu_probes_when_the_gpu_is_off(self) -> None:
         self.fake("nvidia-smi", FAKE_NVIDIA_SMI)
-        facts = doctor.gather(self.settings(LLM_GPU="false"))
+        facts = doctor.gather(self.settings(LLM_GPU="false", LLM_MEMORY_SERVER="true", LLM_JUDGE_SERVER="true"))
+        self.assertEqual((facts.memory_server, facts.uid, facts.judge_server), (True, os.getuid(), True))
         self.assertIsNone(facts.gpu)
         self.assertFalse(facts.nvidia_ctk_present)
         self.assertEqual(facts.cdi_devices, [])
@@ -708,6 +776,7 @@ class GatherTests(unittest.TestCase):
         )
         self.assertEqual(facts.candidates, [])
         self.assertTrue(facts.own_container_holds_port)
+        self.assertTrue(facts.own_gpu_service_running)
         self.assertFalse(doctor.gather(self.settings(LLM_PORT="4307")).own_container_holds_port)
         self.assertIsNone(facts.gpu)
 

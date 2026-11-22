@@ -123,6 +123,17 @@ class AgentCheckTests(unittest.TestCase):
         egress = self.run_check(FAKE_DNS="1", TOKENCRATE_EGRESS="1")
         self.assertIn("[ok] example.com resolves (expected with --egress)", egress)
 
+    def test_an_egress_session_gets_the_judge_by_address_or_not_at_all(self) -> None:
+        egress = {"TOKENCRATE_EGRESS": "1"}
+        self.assertIn("[ok] no judge URL", self.run_check(**egress))
+        lines = self.run_check(TOKENCRATE_JUDGE_URL="http://10.89.0.4:8080", **egress)
+        self.assertIn("[ok] the judge is given by address: http://10.89.0.4:8080", lines)
+        for named in ("http://judge:8080", "http://judge.lan:8080"):
+            lines = self.run_check(TOKENCRATE_JUDGE_URL=named, **egress)
+            self.assertIn(f"[fail] the judge URL names a host instead of an address: {named}", lines)
+        # Offline the name is the judge set's own check.
+        self.assertNotIn("judge", self.run_check(TOKENCRATE_JUDGE_URL="http://judge:8080"))
+
     def test_the_project_mount_must_be_writable(self) -> None:
         # The identity line proves nothing by itself; the project line
         # proves the read-write mount the agent edits through.

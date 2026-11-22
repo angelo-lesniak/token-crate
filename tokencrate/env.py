@@ -43,7 +43,7 @@ TOKEN_KEY = "HF_TOKEN"
 PATH_KEYS = ("LLM_MODELS_DIR", "LLM_AGENTS_DIR", "LLM_SKILLS_DIR", "LLM_LOCAL_SKILLS_DIR", "LLM_CLOUD_KEYS_FILE")
 # The switches the wrapper itself reads (Compose reads the rest as text):
 # a misspelling must not silently mean false.
-BOOLEAN_KEYS = ("LLM_GPU", "LLM_DASHBOARD")
+BOOLEAN_KEYS = ("LLM_GPU", "LLM_DASHBOARD", "LLM_MEMORY_SERVER", "LLM_JUDGE_SERVER")
 BOOLEAN_WORDS = {"1": True, "true": True, "yes": True, "on": True} | dict.fromkeys(("0", "false", "no", "off"), False)
 # What podman-compose keeps of a project name (Docker Compose's rule is the
 # same); anything else would silently name another project's containers.
@@ -262,6 +262,14 @@ class Settings:
         return is_true(self.values["LLM_DASHBOARD"], "LLM_DASHBOARD")
 
     @property
+    def memory_server(self) -> bool:
+        return is_true(self.values["LLM_MEMORY_SERVER"], "LLM_MEMORY_SERVER")
+
+    @property
+    def judge_server(self) -> bool:
+        return is_true(self.values["LLM_JUDGE_SERVER"], "LLM_JUDGE_SERVER")
+
+    @property
     def dashboard_port(self) -> str:
         return validate_port(self.values["LLM_DASHBOARD_PORT"], "LLM_DASHBOARD_PORT")
 
@@ -309,6 +317,7 @@ class Settings:
             HostPath("the cloud keys file", self.cloud_keys_file, "LLM_CLOUD_KEYS_FILE", refuses_projects=True),
             HostPath("the reports directory", root / "reports", created_by_init=True),
             HostPath("the dashboard's samples", root / "data" / "dashboard" / "victoria", created_by_init=True),
+            HostPath("the memory server's database", self.agents_dir / "hindsight", created_by_init=True),
         )
 
     def subprocess_env(self, **extra: str) -> dict[str, str]:

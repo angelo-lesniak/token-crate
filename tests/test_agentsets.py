@@ -13,7 +13,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from tokencrate import PROJECT_ROOT, TokenCrateError, agentsets
+from tokencrate import PROJECT_ROOT, TokenCrateError, agentsets, env
 
 BASE = "FROM node AS pi\nRUN true\n"
 MANIFEST_TEMPLATE = """
@@ -73,8 +73,9 @@ class AgentSetTests(unittest.TestCase):
             path.parent.name: agentsets.read_manifest(path.parent, f"config/agent-sets/{path.parent.name}")
             for path in sorted((PROJECT_ROOT / "config" / "agent-sets").glob(f"*/{agentsets.MANIFEST}"))
         }
-        self.assertEqual(catalog["pi-web"].ui, agentsets.UiSpec("tokencrate-ui-pi-web", 8504, ".pi-web", 4224))
-        self.assertEqual(catalog["paseo"].ui, agentsets.UiSpec("tokencrate-ui-paseo", 6767, ".paseo", 4250))
+        self.assertEqual(
+            catalog["pi-web"].ui, agentsets.UiSpec("tokencrate-ui-pi-web", 8504, ".pi-web", 4224, "/?cwd={project}")
+        )
         self.assertIsNone(catalog["coding"].ui)
         base = (PROJECT_ROOT / "services" / "agents" / "Dockerfile").read_text()
         rendered = agentsets.render_selection(base, list(catalog.values()))
@@ -85,7 +86,8 @@ class AgentSetTests(unittest.TestCase):
         self.assertIn("/opt/tokencrate/sets/coding/node_modules/pi-lens\n", rendered.packages)
         self.assertIn("/opt/tokencrate/sets/debug/piex-dap\n", rendered.packages)
         self.assertEqual(json.loads(rendered.pi_lens)["lsp"]["servers"]["ols"]["command"], "ols")
-        self.assertIs(json.loads(rendered.pi_lens)["tools"]["effective_config"]["enabled"], False)
+        for tool in ("effective_config", "project_report", "module_report"):
+            self.assertIs(json.loads(rendered.pi_lens)["tools"][tool]["enabled"], False, tool)
         self.assertTrue(rendered.note.startswith(agentsets.NOTE_HEADER))
 
     def test_a_manifest_renders_every_step_kind_in_order(self) -> None:
@@ -111,9 +113,10 @@ class AgentSetTests(unittest.TestCase):
             "install -D -m 0755 /tmp/asset /usr/local/bin/helper",
             "COPY config/agent-sets/tools /opt/tokencrate/sets/tools\n",
             "WORKDIR /opt/tokencrate/sets/tools\n",
-            "npm ci --ignore-scripts --omit=peer",
+            # One layer: the build lines can remove what the install brought.
             'RUN ["/bin/bash", "-e", "-o", "pipefail", "-c", '
-            '"install -m 0755 wrapper /usr/local/bin/wrapper\\ntool --version"]\n',
+            '"npm ci --ignore-scripts --omit=peer\\nnpm audit signatures\\nnpm cache clean --force\\n'
+            'install -m 0755 wrapper /usr/local/bin/wrapper\\ntool --version"]\n',
             "WORKDIR /\n",
             f"COPY build/agents/pi/{rendered.tag}/pi-packages.txt /opt/tokencrate/pi-packages.txt\n",
         ]
@@ -216,6 +219,23 @@ class AgentSetTests(unittest.TestCase):
         for manifest in sorted((PROJECT_ROOT / "config" / "agent-sets").glob(f"*/{agentsets.MANIFEST}")):
             self.assertIn("check", tomllib.loads(manifest.read_text(encoding="utf-8")), manifest)
 
+    def test_the_pi_web_lockfile_pins_the_image_pi(self) -> None:
+        # pi-web pins pi exactly and the set links the image's pi in place of
+        # the copy npm installs, so every pi package it depends on must be
+        # PI_VERSION; the build stops on a mismatch, this says so before one.
+        pi = env.load_pins(PROJECT_ROOT / "pins.env")["PI_VERSION"]
+        lock = json.loads((PROJECT_ROOT / "config/agent-sets/pi-web/package-lock.json").read_text(encoding="utf-8"))
+        packages = lock["packages"]
+        pins = {
+            name: version
+            for name, version in packages["node_modules/@agegr/pi-web"]["dependencies"].items()
+            if name.startswith("@earendil-works/pi-")
+        }
+        self.assertIn("@earendil-works/pi-coding-agent", pins)
+        self.assertEqual(pins, dict.fromkeys(pins, pi), "pi-web's pins must equal PI_VERSION in pins.env")
+        installed = {path: entry["version"] for path, entry in packages.items() if "/@earendil-works/pi-" in path}
+        self.assertEqual(installed, {f"node_modules/{name}": pi for name in pins}, "one copy of each, at PI_VERSION")
+
     def test_selection_names_must_exist_once_and_local_sets_are_found(self) -> None:
         self.write_set("mine", 'schema = 1\ndescription = "private"\ncheck = []\napt = ["shellcheck"]\n', private=True)
         [selected] = agentsets.select(self.root, "mine")
@@ -261,7 +281,7 @@ class AgentSetTests(unittest.TestCase):
 
     def test_manifests_are_validated(self) -> None:
         head = 'schema = 1\ndescription = "x"\ncheck = []\n'
-        ui = '[ui]\ncommand = "x"\nport = 8080\nstate = ".paseo"\n'
+        ui = '[ui]\ncommand = "x"\nport = 8080\nstate = ".x"\n'
         digest = "a" * 64
         tgz = f'[[asset]]\nurl = "https://x/y.tgz"\nsha256 = "{digest}"\ninto = "/opt/y"\n'
         zipped = f'[[asset]]\nurl = "https://x/y.zip"\nsha256 = "{digest}"\ninto = "/opt/y"\n'
@@ -291,14 +311,16 @@ class AgentSetTests(unittest.TestCase):
             'schema = 1\ndescription = "x"\ncheck = ["# only a comment"]\n': "check lines must be single non-empty",
             head + '[ui]\ncommand = "x"\n': "command, port, and state, and at most host_port",
             head + '[ui]\ncommand = "x"\nport = 8080\n': "command, port, and state",
-            # Paseo's launcher keeps the daemon identity through the per-set
-            # state mount; no manifest key names identity files.
-            head + ui + 'identity = [".paseo/server-id"]\n': "at most host_port",
+            head + ui + 'identity = [".x/server-id"]\n': "at most host_port",
             head + '[ui]\ncommand = "/usr/bin/x"\nport = 8080\nstate = ".x"\n': "program name without a path",
             head
             + '[ui]\ncommand = "x"\nport = 80\nstate = ".x"\n': "ui port must be an integer between 1024 and 65535",
             head + '[ui]\ncommand = "x"\nport = true\nstate = ".x"\n': "between 1024 and 65535",
             head + ui + "host_port = 80\n": "ui host_port must be an integer between 1024 and 65535",
+            head + ui + 'path = "?cwd={project}"\n': "ui path must start with /",
+            head + ui + 'path = "/#{project}"\n': "ui path must start with /",
+            head + ui + 'path = "/{dir}"\n': "ui path must start with /",
+            head + ui + "path = 1\n": "ui path must start with /",
             head + '[ui]\ncommand = "x"\nport = 8080\nstate = ".pi"\n': "not the agent's own",
             head + '[ui]\ncommand = "x"\nport = 8080\nstate = "a/b"\n': "one directory below the agent home",
             head + '[ui]\ncommand = "x"\nport = 8080\nstate = ""\n': "one directory below the agent home",

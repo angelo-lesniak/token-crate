@@ -1,0 +1,9 @@
+{
+  "name": "tokencrate-judge",
+  "private": true,
+  "type": "module",
+  "description": "Advice from a local decision model on the judge service: a check run before done, a stalled approach, an edit off the task.",
+  "pi": {
+    "extensions": ["./index.js"]
+  }
+}

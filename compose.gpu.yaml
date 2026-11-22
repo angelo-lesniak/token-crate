@@ -1,8 +1,11 @@
-# GPU device request for the llama service. The wrapper includes this overlay
+# GPU device request for the model servers. The wrapper includes this overlay
 # unless LLM_GPU=false, which lets the same image run CPU-only checks without
 # a CDI device.
 services:
   llama:
+    devices:
+      - "${GPU_DEVICE:?exported by bin/tokencrate from .env}"
+  judge:
     devices:
       - "${GPU_DEVICE:?exported by bin/tokencrate from .env}"
   gpu-exporter:

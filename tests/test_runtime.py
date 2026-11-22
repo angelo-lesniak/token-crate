@@ -13,8 +13,8 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
-from tests.support import Scratch
-from tokencrate import TokenCrateError, env, runtime
+from tests.support import SOURCE_ROOT, Scratch
+from tokencrate import TokenCrateError, env, models, runtime
 from tokencrate import engine as engines
 from tokencrate.engine import Engine
 
@@ -89,21 +89,61 @@ class WaitTests(unittest.TestCase):
 
     def test_waits_for_the_default_preset_to_be_loaded(self) -> None:
         output = self.wait(
-            self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k"),
+            self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k"),
             FakeEngine(["running"]),
-            {"models": listing(**{"qwen3.8-27b-q4-2x128k": "loaded", "gpt-oss-20b-2x128k": "unloaded"})},
+            {"models": listing(**{"qwen3.8-27b-q4-mtp-2x128k": "loaded", "gpt-oss-20b-2x128k": "unloaded"})},
         )
-        self.assertIn("TokenCrate is ready at http://127.0.0.1:4208/ with preset qwen3.8-27b-q4-2x128k loaded", output)
+        self.assertIn(
+            "TokenCrate is ready at http://127.0.0.1:4208/ with preset qwen3.8-27b-q4-mtp-2x128k loaded", output
+        )
 
     def test_times_out_while_the_preset_is_loading(self) -> None:
         # The container keeps loading after the refusal; the message says so.
         with self.assertRaisesRegex(TokenCrateError, "did not become ready within 5s; it keeps loading, and status"):
             self.wait(
-                self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k"),
+                self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k"),
                 FakeEngine(["running"]),
-                {"models": listing(**{"qwen3.8-27b-q4-2x128k": "loading"})},
+                {"models": listing(**{"qwen3.8-27b-q4-mtp-2x128k": "loading"})},
                 timeout=5,
             )
+
+    def wait_for_judge(self, states: list[str], answers: list[int], timeout=10) -> list[tuple]:
+        """The judge wait with one container state and one /health exit
+        status (curl -f: 22 for the 503 while loading) per poll."""
+        engine = FakeEngine(states)
+        engine.name = "podman"
+        statuses = iter(answers)
+        execs: list[tuple] = []
+
+        def command(*args, **_):
+            execs.append(args)
+            return mock.Mock(returncode=next(statuses))
+
+        engine.command = command
+        runtime.wait_for_judge(engine, timeout, sleep=self.tick, clock=lambda: self.clock)
+        return execs
+
+    def test_the_judge_wait_polls_health_in_its_container_until_it_answers(self) -> None:
+        execs = self.wait_for_judge(["running"], [7, 22, 22, 0])
+        self.assertEqual(len(execs), 4)
+        self.assertEqual(
+            execs[0], ("exec", "llama-1", "curl", "-sf", "-o", "/dev/null", "http://127.0.0.1:8080/health")
+        )
+        self.assertEqual(self.clock, 6)
+
+    def test_the_judge_wait_fails_on_a_stopped_judge_or_the_deadline(self) -> None:
+        # Too little GPU memory for Kev-4B: the server exits, and the restart
+        # policy turns that into `restarting`.
+        with self.assertRaisesRegex(
+            TokenCrateError,
+            "^the judge container is restarting before it was ready. Check its logs: podman logs llama-1, "
+            "or set LLM_JUDGE_SERVER=false$",
+        ):
+            self.wait_for_judge(["running", "restarting"], [22, 22])
+        with self.assertRaisesRegex(TokenCrateError, "^the judge container is removed before it was ready"):
+            self.wait_for_judge(["removed"], [])
+        with self.assertRaisesRegex(TokenCrateError, "^the judge did not become ready within 4s. Check its logs"):
+            self.wait_for_judge(["running"], [22] * 10, timeout=4)
 
     def wait_through(self, settings, bodies: list[str], post=None) -> str:
         """Wait with one GET /models body per poll and a stubbed POST."""
@@ -119,46 +159,51 @@ class WaitTests(unittest.TestCase):
     def test_a_preset_whose_server_exited_fails_immediately(self) -> None:
         # `loading` then `unloaded` is the router's report of a model server
         # that exited; a preset the router does not list was never rendered.
-        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
-        with self.assertRaisesRegex(TokenCrateError, "preset qwen3.8-27b-q4-2x128k is unloaded instead of loaded"):
+        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k")
+        with self.assertRaisesRegex(TokenCrateError, "preset qwen3.8-27b-q4-mtp-2x128k is unloaded instead of loaded"):
             self.wait_through(
                 settings,
-                [listing(**{"qwen3.8-27b-q4-2x128k": "loading"}), listing(**{"qwen3.8-27b-q4-2x128k": "unloaded"})],
+                [
+                    listing(**{"qwen3.8-27b-q4-mtp-2x128k": "loading"}),
+                    listing(**{"qwen3.8-27b-q4-mtp-2x128k": "unloaded"}),
+                ],
             )
-        with self.assertRaisesRegex(TokenCrateError, "preset qwen3.8-27b-q4-2x128k is not listed instead of loaded"):
+        with self.assertRaisesRegex(
+            TokenCrateError, "preset qwen3.8-27b-q4-mtp-2x128k is not listed instead of loaded"
+        ):
             self.wait(settings, FakeEngine(["running"]), {"models": listing()})
 
     def test_a_kept_container_with_another_preset_loaded_is_reported_as_running(self) -> None:
         # Compose keeps a running container; after a swap the default preset
         # is `unloaded` while another holds the slot, and the router loads
         # the default on its first request. A sleeping preset counts as loaded.
-        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
+        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k")
         output = self.wait_through(
-            settings, [listing(**{"qwen3.8-27b-q4-2x128k": "unloaded", "gpt-oss-20b-2x128k": "loaded"})]
+            settings, [listing(**{"qwen3.8-27b-q4-mtp-2x128k": "unloaded", "gpt-oss-20b-2x128k": "loaded"})]
         )
         self.assertIn(
-            "with preset gpt-oss-20b-2x128k loaded; preset qwen3.8-27b-q4-2x128k loads on its first request", output
+            "with preset gpt-oss-20b-2x128k loaded; preset qwen3.8-27b-q4-mtp-2x128k loads on its first request", output
         )
-        output = self.wait_through(settings, [listing(**{"qwen3.8-27b-q4-2x128k": "sleeping"})])
-        self.assertIn("with preset qwen3.8-27b-q4-2x128k loaded", output)
+        output = self.wait_through(settings, [listing(**{"qwen3.8-27b-q4-mtp-2x128k": "sleeping"})])
+        self.assertIn("with preset qwen3.8-27b-q4-mtp-2x128k loaded", output)
 
     def test_a_kept_container_with_nothing_loaded_is_asked_to_load_the_preset(self) -> None:
         # Nothing loaded and nothing loading: an earlier load failed, so `up`
         # asks the router once and then judges the load it started.
-        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
+        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k")
         post = mock.Mock(return_value="")
-        states = [listing(**{"qwen3.8-27b-q4-2x128k": value}) for value in ("unloaded", "loading", "loaded")]
+        states = [listing(**{"qwen3.8-27b-q4-mtp-2x128k": value}) for value in ("unloaded", "loading", "loaded")]
         output = self.wait_through(settings, states, post)
-        post.assert_called_once_with("http://127.0.0.1:4208/models/load", {"model": "qwen3.8-27b-q4-2x128k"})
-        self.assertIn("with preset qwen3.8-27b-q4-2x128k loaded", output)
+        post.assert_called_once_with("http://127.0.0.1:4208/models/load", {"model": "qwen3.8-27b-q4-mtp-2x128k"})
+        self.assertIn("with preset qwen3.8-27b-q4-mtp-2x128k loaded", output)
         # The router answers the load request before its model server is
         # spawned, so the listing may still read unloaded for a few polls;
         # a load that never begins within that grace has failed.
-        unloaded = listing(**{"qwen3.8-27b-q4-2x128k": "unloaded"})
+        unloaded = listing(**{"qwen3.8-27b-q4-mtp-2x128k": "unloaded"})
         post = mock.Mock(return_value="")
         output = self.wait_through(settings, [unloaded] * (runtime.LOAD_GRACE_POLLS + 1) + states[1:], post)
         post.assert_called_once()
-        self.assertIn("with preset qwen3.8-27b-q4-2x128k loaded", output)
+        self.assertIn("with preset qwen3.8-27b-q4-mtp-2x128k loaded", output)
         with self.assertRaisesRegex(TokenCrateError, "is unloaded instead of loaded"):
             self.wait_through(settings, [unloaded] * (runtime.LOAD_GRACE_POLLS + 2))
         # A refused load says so, on the next poll: the state alone cannot
@@ -205,6 +250,7 @@ class InitAndListingTests(unittest.TestCase):
             settings.local_skills_dir,
             root / "reports",
             root / "data" / "dashboard" / "victoria",
+            settings.agents_dir / "hindsight",
         ):
             self.assertTrue(path.is_dir(), path)
         env_file.chmod(0o644)
@@ -310,6 +356,75 @@ class InitAndListingTests(unittest.TestCase):
         runtime.stop_stack(engine)
         self.assertFalse(engine.stack_record.exists())
 
+    def test_the_memory_server_follows_the_model_and_needs_the_default_preset(self) -> None:
+        settings = self.settings(LLM_DEFAULT_PRESET="", LLM_MEMORY_SERVER="true")
+        engine = Engine("docker", settings)
+        engine.compose = mock.Mock()
+        with (
+            mock.patch.object(engine, "require_port"),
+            self.assertRaisesRegex(TokenCrateError, "^LLM_MEMORY_SERVER needs LLM_DEFAULT_PRESET"),
+        ):
+            runtime.start_stack(settings, engine, None, 1)
+        engine.compose.assert_not_called()
+        settings = self.settings(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k", LLM_MEMORY_SERVER="true")
+        engine = Engine("docker", settings)
+        engine.command = mock.Mock(return_value=mock.Mock(stdout=""))
+        engine.compose = mock.Mock()
+        loadable = mock.Mock(loadable=True)
+        loadable.preset.name = "qwen3.8-27b-q4-mtp-2x128k"
+        with (
+            mock.patch.object(engine, "require_port"),
+            mock.patch.object(runtime, "render", return_value=[loadable]),
+            mock.patch.object(runtime, "config_digest", return_value="digest"),
+            mock.patch.object(runtime, "wait_until_ready"),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            runtime.start_stack(settings, engine, None, 1)
+        self.assertEqual(
+            engine.compose.call_args_list[-1],
+            mock.call("up", "--no-build", "--detach", "hindsight", profiles=("memory",)),
+        )
+        self.assertIn(f"{settings.agents_dir}/hindsight", out.getvalue())
+
+    def test_the_judge_service_needs_its_model_files_and_follows_the_model(self) -> None:
+        settings = self.settings(LLM_DEFAULT_PRESET="", LLM_JUDGE_SERVER="true")
+        settings.models_dir.mkdir(parents=True, exist_ok=True)
+        model_set = models.catalog(SOURCE_ROOT / "config")[runtime.JUDGE_MODEL_SET]
+        configuration = mock.Mock(model_sets={runtime.JUDGE_MODEL_SET: model_set})
+        engine = Engine("docker", settings)
+        engine.command = mock.Mock(return_value=mock.Mock(stdout=""))
+        engine.compose = mock.Mock()
+        with (
+            mock.patch.object(engine, "require_port"),
+            self.assertRaisesRegex(
+                TokenCrateError,
+                "^LLM_JUDGE_SERVER needs the model set kev-4b-q4-k-m "
+                r"\(run: bash bin/tokencrate models fetch kev-4b-q4-k-m, or set LLM_JUDGE_SERVER=false\)$",
+            ),
+        ):
+            runtime.start_stack(settings, engine, configuration, 1)
+        engine.compose.assert_not_called()
+        weights = settings.models_dir / model_set.weights.destination
+        weights.parent.mkdir(parents=True)
+        weights.touch()
+        trace: list[str] = []
+        engine.compose = mock.Mock(side_effect=lambda *args, **_: trace.append(args[-1]))
+        with (
+            mock.patch.object(engine, "require_port"),
+            mock.patch.object(runtime, "render", return_value=[]),
+            mock.patch.object(runtime, "config_digest", return_value="digest"),
+            mock.patch.object(runtime, "wait_until_ready", side_effect=lambda *_: trace.append("ready")),
+            mock.patch.object(runtime, "wait_for_judge", side_effect=lambda *_: trace.append("judge ready")),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            runtime.start_stack(settings, engine, configuration, 1)
+        self.assertEqual(trace, ["llama", "llama", "ready", "judge", "judge ready"])
+        self.assertEqual(
+            engine.compose.call_args_list[-1],
+            mock.call("up", "--no-build", "--detach", "judge", profiles=("judge",)),
+        )
+        self.assertIn("Judge service ready for the judge agent set", out.getvalue())
+
 
 class IsolatedNetworkTests(unittest.TestCase):
     """The per-bridge forwarding check of rootless Podman, against the fake
@@ -340,6 +455,13 @@ class IsolatedNetworkTests(unittest.TestCase):
             runtime.require_isolated_networks(
                 self.engine(CONTAINER_ENGINE="podman", FAKE_ENGINE_NETWORK=self.BRIDGED, FAKE_ENGINE_FORWARDING="1")
             )
+
+    def test_every_internal_network_is_checked(self) -> None:
+        engine = mock.MagicMock()
+        engine.network_document.return_value = None
+        runtime.require_isolated_networks(engine)
+        asked = [call.args[0] for call in engine.network_document.call_args_list]
+        self.assertEqual(sorted(asked), ["agents", "dashboard", "memory", "ui"])
 
     def test_a_bridge_with_forwarding_off_passes_silently(self) -> None:
         with mock.patch.object(runtime, "warn") as warn:

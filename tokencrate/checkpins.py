@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from . import TokenCrateError
@@ -253,6 +253,38 @@ def resolve_npm(key: str, package: str, values: dict[str, str]) -> Resolution:
     return Resolution(key, current, latest, notes)
 
 
+PI_PACKAGE = "@earendil-works/pi-coding-agent"
+PI_WEB_PACKAGE = "@agegr/pi-web"
+
+
+def resolve_pi(values: dict[str, str]) -> Resolution:
+    """PI_VERSION as `resolve_npm` finds it, with a note on the pi the newest
+    pi-web pins: PI_VERSION must equal the pi-web set's exact pi pin."""
+    resolution = resolve_npm("PI_VERSION", PI_PACKAGE, values)
+    if resolution.latest == resolution.current:
+        return resolution
+    return replace(resolution, notes=(*resolution.notes, pi_web_note(resolution.current, resolution.latest)))
+
+
+def pi_web_note(current: str, latest: str) -> str:
+    try:
+        payload = request_json(f"https://registry.npmjs.org/{urllib.parse.quote(PI_WEB_PACKAGE, safe='@')}/latest")
+    except TokenCrateError as error:
+        return f"  PI_VERSION must equal the pi-web set's pi pin; npm's {PI_WEB_PACKAGE} could not be read: {error}"
+    payload = payload if isinstance(payload, dict) else {}
+    release, pin = payload.get("version", ""), (payload.get("dependencies") or {}).get(PI_PACKAGE, "")
+    pin_key = version_key(pin, PACKAGE_VERSION_RE)
+    if not release or pin_key is None:
+        return f"  PI_VERSION must equal the pi-web set's pi pin; npm names no exact pi pin for {PI_WEB_PACKAGE}"
+    if pin == latest:
+        return f"  pi-web {release} pins pi {pin}: upgrade the pi-web set to it with PI_VERSION"
+    if pin_key <= version_key(current, PACKAGE_VERSION_RE):
+        return f"  pi-web {release}, its newest release, pins pi {pin}: keep PI_VERSION until pi-web pins a newer pi"
+    return (
+        f"  pi-web {release} pins pi {pin}: raise PI_VERSION only to {pin}, with the pi-web set upgraded to {release}"
+    )
+
+
 # --- Docker Hub --------------------------------------------------------------
 
 
@@ -350,7 +382,7 @@ def resolve_tag(
 # resolved with the tag. A pin of pins.env missing here is reported as such.
 RESOLVERS: dict[str, Callable[[dict[str, str]], Resolution]] = {
     "LLAMA_CPP_TAG": resolve_llama_cpp,
-    "PI_VERSION": functools.partial(resolve_npm, "PI_VERSION", "@earendil-works/pi-coding-agent"),
+    "PI_VERSION": resolve_pi,
     "OMP_VERSION": functools.partial(resolve_npm, "OMP_VERSION", "@oh-my-pi/pi-coding-agent"),
     "NODE_TAG": functools.partial(
         resolve_tag,

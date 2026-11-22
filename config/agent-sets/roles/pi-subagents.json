@@ -1,0 +1,35 @@
+{
+  "disabledFeatures": [
+    "agent-management",
+    "watchdog",
+    "panes",
+    "missions",
+    "lane-management",
+    "spawn-budget-grants",
+    "preflight",
+    "lane-metadata",
+    "gates",
+    "usage-budgets",
+    "tool-budgets",
+    "control-overrides",
+    "extension-bindings",
+    "external-machines",
+    "workflow-scripts"
+  ],
+  "scheduledRuns": {
+    "enabled": false
+  },
+  "missions": {
+    "enabled": false
+  },
+  "autoResume": false,
+  "parallel": {
+    "concurrency": 2
+  },
+  "globalConcurrencyLimit": 2,
+  "maxActiveAsyncRunsPerSession": 1,
+  "intercomBridge": {
+    "mode": "off"
+  },
+  "asyncByDefault": false
+}

@@ -47,13 +47,16 @@ def run_agent(
     arguments: list[str],
     sets: str | None = None,
     cloud: bool = False,
+    memory: str = "",
 ) -> int:
     """One foreground session; its status is the agent's. The CLI has
-    refused `cloud` for oh-my-pi before this. Nothing here holds the stack
+    refused `cloud` and `memory` for oh-my-pi before this. Nothing here holds the stack
     lock: the pre-flight's checks refuse on their own when the stack moves,
     the build is content-addressed, and the session is the user's."""
     project = resolve_project_directory(settings, project_dir)
-    launch = plan(settings, engine, configuration, agent, preset, project, sets=sets, egress=egress, cloud=cloud)
+    launch = plan(
+        settings, engine, configuration, agent, preset, project, sets=sets, egress=egress, cloud=cloud, memory=memory
+    )
     launch.build(engine)
     # Compose `run` replaces the image command, so name the agent binary
     # explicitly and append the user's arguments to it.

@@ -9,12 +9,23 @@
 # `--cloud` only, the only ways to grant a route out. The tag replaces the
 # base list instead of merging into it; it is written per service because
 # podman-compose cannot print a tag that survives in an extension anchor.
+# A container with a route out never looks the judge up by name: off the
+# internal networks the bare name `judge` could resolve outside through
+# the host's resolver, and whoever answered would receive the session's
+# requests and edits. The URL is empty here, and the wrapper's `run`
+# passes the judge's address on the default network when it is running.
 services:
   agent-pi:
     networks: !override [default]
+    environment:
+      TOKENCRATE_JUDGE_URL: ""
   agent-omp:
     networks: !override [default]
+    environment:
+      TOKENCRATE_JUDGE_URL: ""
   agent-ui:
     networks: !override [ui, default]
     labels:
       io.tokencrate.ui-egress: "1"
+    environment:
+      TOKENCRATE_JUDGE_URL: ""

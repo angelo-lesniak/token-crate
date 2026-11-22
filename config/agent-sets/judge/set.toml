@@ -1,0 +1,18 @@
+schema = 1
+description = "Advice from Kev-4B on the judge service (LLM_JUDGE_SERVER=true): a follow-up to run the tests before work is called done, a steer when failed attempts repeat, a notice of an edit off the task; silent without the service"
+# judge/ asks $TOKENCRATE_JUDGE_URL/v1/systemone directly, with no
+# models.json entry, so the judge never appears as a model to pick. The
+# variable is http://judge:8080 in an offline session; a session or UI with
+# a route out gets the judge's address on the default network from the
+# wrapper, or an empty variable when the service is not running, and the
+# extension then registers nothing. The checks run in an offline session
+# (services/agents/agent-check.sh); the egress run checks the address.
+pi_packages = ["judge"]
+check = [
+  'test "$TOKENCRATE_JUDGE_URL" = http://judge:8080',
+  '''node --input-type=module -e 'const on = {}; (await import("/opt/tokencrate/sets/judge/judge/index.js")).default({ on: (name, handler) => (on[name] = handler) }); if (["input", "before_agent_start", "tool_result", "turn_end", "agent_before_settle"].some((name) => typeof on[name] !== "function")) process.exit(1)'''',
+  '''TOKENCRATE_JUDGE_URL= node --input-type=module -e 'const on = {}; (await import("/opt/tokencrate/sets/judge/judge/index.js")).default({ on: (name, handler) => (on[name] = handler) }); process.exit(Object.keys(on).length)'''',
+  # A name other than `judge` could resolve outside; the extension refuses it.
+  '''TOKENCRATE_JUDGE_URL=http://example.com:8080 node --input-type=module -e 'const on = {}; (await import("/opt/tokencrate/sets/judge/judge/index.js")).default({ on: (name, handler) => (on[name] = handler) }); process.exit(Object.keys(on).length)'''',
+  'if curl -fsS --max-time 5 "$TOKENCRATE_JUDGE_URL/health" >/dev/null 2>&1; then echo "the judge extension loads and the judge service answers"; else echo "the judge extension loads; no judge service answers, so it stays silent"; fi',
+]

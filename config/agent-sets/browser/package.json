@@ -3,7 +3,7 @@
   "private": true,
   "description": "The Chrome DevTools extension for pi, pinned by the lockfile; pi provides the peer packages.",
   "dependencies": {
-    "@narumitw/pi-chrome-devtools": "0.54.0",
+    "@narumitw/pi-chrome-devtools": "0.54.1",
     "typebox": "1.4.5"
   }
 }

@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-agent-set-roles",
+  "private": true,
+  "description": "pi-subagents, pinned by the lockfile; pi provides the peer packages. extension/ is the pi package the image loads: the extension without the package's skills and prompts, and the role definitions.",
+  "dependencies": {
+    "pi-subagents": "0.89.0"
+  }
+}

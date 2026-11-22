@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tomllib
 import unittest
+import urllib.parse
 
 from tests.support import SOURCE_ROOT, Scratch, free_port, shipped
 from tokencrate import TokenCrateError, cli, env, presets
@@ -99,8 +100,10 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("HIJACKED", result.stdout + result.stderr)
 
     def test_doctor_reads_the_preset_requirements_from_the_preset_file(self) -> None:
-        output = self.succeed("doctor", "--preset", "qwen3.8-27b-q4-2x128k", CONTAINER_ENGINE="podman", LLM_GPU="false")
-        self.assertIn("checking host requirements of preset qwen3.8-27b-q4-2x128k", output)
+        output = self.succeed(
+            "doctor", "--preset", "qwen3.8-27b-q4-mtp-2x128k", CONTAINER_ENGINE="podman", LLM_GPU="false"
+        )
+        self.assertIn("checking host requirements of preset qwen3.8-27b-q4-mtp-2x128k", output)
         self.assertIn("LLM_GPU=false", output)
         self.assertIn("podman version 6.1.0-fake", output)
         self.assertIn("Doctor completed with 0 failure(s)", output)
@@ -117,7 +120,9 @@ class CliTests(unittest.TestCase):
         self.assertRegex(
             listing, rf"gpt-oss-20b-2x128k \[gpt-oss-20b-mxfp4\] needs [0-9]+ GiB GPU memory; {re.escape(wait)} - "
         )
-        self.assertRegex(listing, r"qwen3.8-27b-q4-2x128k \[qwen3.8-27b-ud-q4-k-xl\] needs [0-9]+ GiB GPU memory - ")
+        self.assertRegex(
+            listing, r"qwen3.8-27b-q4-mtp-2x128k \[qwen3.8-27b-ud-q4-k-xl\] needs [0-9]+ GiB GPU memory - "
+        )
         validated = self.succeed("presets", "check", PATH="/usr/bin:/bin")
         self.assertIn(f"gpt-oss-20b-2x128k: {wait}\n", validated)
         self.assertIn(VALIDATED, validated)
@@ -275,18 +280,24 @@ class CliTests(unittest.TestCase):
 
     def test_agent_refuses_dangerous_or_unprepared_sessions(self) -> None:
         project = str(self.scratch.project)
-        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
+        self.scratch.render_fixture("qwen3.8-27b-q4-mtp-2x128k")
         # The project rules are tested in tests/test_agents.py; one case here
         # proves the refusal precedes the pre-flight and the engine.
         self.expect_failure(
-            "refusing to mount the root filesystem", "agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", "/"
+            "refusing to mount the root filesystem",
+            "agent",
+            "pi",
+            "--preset",
+            "qwen3.8-27b-q4-mtp-2x128k",
+            "--dir",
+            "/",
         )
         self.expect_failure("no preset selected", "agent", "pi", "--dir", project)
         self.expect_failure("unsupported agent", "agent", "claude")
         self.expect_failure(
             "is not rendered as loadable", "agent", "pi", "--preset", "qwen3.8-27b-q4-mtp-128k", "--dir", project
         )
-        self.expect_failure("is not running", "agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project)
+        self.expect_failure("is not running", "agent", "pi", "--preset", "qwen3.8-27b-q4-mtp-2x128k", "--dir", project)
         for command in (
             ("agent", "pi", "--dir", project),
             ("ui", "pi-web", "--dir", project),
@@ -298,7 +309,7 @@ class CliTests(unittest.TestCase):
                         "running llama configuration differs",
                         *command,
                         "--preset",
-                        "qwen3.8-27b-q4-2x128k",
+                        "qwen3.8-27b-q4-mtp-2x128k",
                         FAKE_ENGINE_LLAMA_RUNNING="true",
                         FAKE_ENGINE_CONFIG_SHA256=digest,
                     )
@@ -309,7 +320,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             project,
             FAKE_ENGINE_LLAMA_RUNNING="true",
@@ -326,7 +337,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             project,
             LLM_SKILL_SETS="pocock-core",
@@ -339,7 +350,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             project,
             LLM_SKILL_SETS="pocock-core",
@@ -350,19 +361,19 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
         )
 
     def test_agent_session_joins_the_internal_network_unless_egress_is_requested(self) -> None:
         project = str(self.scratch.project)
-        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
+        self.scratch.render_fixture("qwen3.8-27b-q4-mtp-2x128k")
         session = self.succeed(
             "agent",
             "omp",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             project,
             "--egress",
@@ -380,7 +391,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--sets",
             "debug",
             "--dir",
@@ -395,7 +406,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "omp",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--sets",
             "",
             "--dir",
@@ -407,7 +418,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--sets",
             "nope",
             "--dir",
@@ -419,10 +430,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("coding - ", listing)
         self.assertIn("odin - ", listing)
         plain = self.succeed(
-            "agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, FAKE_ENGINE_LLAMA_RUNNING="true"
+            "agent", "pi", "--preset", "qwen3.8-27b-q4-mtp-2x128k", "--dir", project, FAKE_ENGINE_LLAMA_RUNNING="true"
         )
         self.assertNotIn("compose.agent-egress.yaml", plain)
-        self.assertIn("preset=qwen3.8-27b-q4-2x128k", plain)
+        self.assertIn("preset=qwen3.8-27b-q4-mtp-2x128k", plain)
         self.assertIn(f"home={self.scratch.storage / 'agents' / 'pi' / 'project-'}", plain)
         # The skill sets pre-flight checked are the ones the container mounts:
         # the value reaches the engine even when no setting names it.
@@ -434,7 +445,7 @@ class CliTests(unittest.TestCase):
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             project,
             FAKE_ENGINE_LLAMA_RUNNING="true",
@@ -444,7 +455,7 @@ class CliTests(unittest.TestCase):
 
     def test_ui_starts_the_ui_set_detached_behind_the_forwarder(self) -> None:
         project = str(self.scratch.project)
-        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
+        self.scratch.render_fixture("qwen3.8-27b-q4-mtp-2x128k")
         # The manifests' host ports are taken on a developer host; the
         # launches name the scratch port the fake engine and the listener use.
         port = str(self.scratch.ui_port)
@@ -454,10 +465,10 @@ class CliTests(unittest.TestCase):
             "FAKE_ENGINE_UI_PORT": str(self.scratch.ui_port),
         }
         self.expect_failure(
-            "is not a UI set", "ui", "coding", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, **common
+            "is not a UI set", "ui", "coding", "--preset", "qwen3.8-27b-q4-mtp-2x128k", "--dir", project, **common
         )
         self.expect_failure(
-            "unknown agent set: nope", "ui", "nope", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, **common
+            "unknown agent set: nope", "ui", "nope", "--preset", "qwen3.8-27b-q4-mtp-2x128k", "--dir", project, **common
         )
         self.expect_failure("unsafe agent set name", "ui", "../x", **common)
         self.expect_failure("no preset selected", "ui", "pi-web", "--dir", project, **common)
@@ -469,7 +480,7 @@ class CliTests(unittest.TestCase):
             "ui",
             "pi-web",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             project,
             FAKE_ENGINE_STATE="exited",
@@ -477,7 +488,7 @@ class CliTests(unittest.TestCase):
         )
         with self.scratch.ui_listener():
             started = self.succeed(
-                "ui", "pi-web", "--preset", "qwen3.8-27b-q4-2x128k", "--dir", project, "--port", port, **common
+                "ui", "pi-web", "--preset", "qwen3.8-27b-q4-mtp-2x128k", "--dir", project, "--port", port, **common
             )
         # The UI set is appended to LLM_AGENT_SETS, the image is built for
         # that selection, and the UI and its forwarder start detached under
@@ -487,8 +498,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("--profile ui --env-file pins.env build agent-ui", started)
         self.assertRegex(
             started,
-            r"--profile ui --env-file pins.env run --detach --no-deps -T "
-            r"-v \S+/pi/pi-web-state:/run/tokencrate/ui-state --name tokencrate-ui-pi-web agent-ui",
+            r"--profile ui --env-file pins.env run --detach --no-deps -T --name tokencrate-ui-pi-web agent-ui",
         )
         self.assertIn(
             "--profile ui --env-file pins.env run --detach --no-deps -T --service-ports --name "
@@ -497,32 +507,37 @@ class CliTests(unittest.TestCase):
         )
         self.assertNotIn("compose.agent-egress.yaml", started)
         self.assertNotIn("internet access", started)
-        self.assertIn(f"pi-web is ready at http://127.0.0.1:{self.scratch.ui_port}/ for {project}", started)
+        self.assertIn(
+            f"pi-web is ready at http://127.0.0.1:{self.scratch.ui_port}/?cwd={urllib.parse.quote(project, safe='')} "
+            f"for {project}",
+            started,
+        )
         self.assertIn("bash bin/tokencrate ui stop", started)
         [render_dir] = (p for p in (self.scratch.root / "build" / "agents" / "pi").iterdir() if p.is_dir())
         self.assertIn("agent set pi-web", (render_dir / "Dockerfile").read_text())
+        # A --sets that names the UI set already is taken as it is.
         with self.scratch.ui_listener():
-            paseo = self.succeed(
+            named = self.succeed(
                 "ui",
-                "paseo",
+                "pi-web",
                 "--preset",
-                "qwen3.8-27b-q4-2x128k",
+                "qwen3.8-27b-q4-mtp-2x128k",
                 "--sets",
-                "paseo",
+                "pi-web",
                 "--dir",
                 project,
                 "--port",
                 port,
-                **{**common, "FAKE_ENGINE_UI_SET": "paseo"},
+                **common,
             )
-        self.assertIn("Agent sets: paseo (image tag suffix ", paseo)
+        self.assertIn("Agent sets: pi-web (image tag suffix ", named)
         # --egress puts the UI container alone under the overlay.
         with self.scratch.ui_listener():
             egress = self.succeed(
                 "ui",
                 "pi-web",
                 "--preset",
-                "qwen3.8-27b-q4-2x128k",
+                "qwen3.8-27b-q4-mtp-2x128k",
                 "--dir",
                 project,
                 "--port",
@@ -544,7 +559,7 @@ class CliTests(unittest.TestCase):
                 "ui",
                 "pi-web",
                 "--preset",
-                "qwen3.8-27b-q4-2x128k",
+                "qwen3.8-27b-q4-mtp-2x128k",
                 "--dir",
                 project,
                 "--port",
@@ -570,7 +585,7 @@ class CliTests(unittest.TestCase):
             ),
             self.succeed("status", **marked),
         )
-        check = self.succeed("smoke", "--agent", "pi", "--preset", "qwen3.8-27b-q4-2x128k", "--egress", **marked)
+        check = self.succeed("smoke", "--agent", "pi", "--preset", "qwen3.8-27b-q4-mtp-2x128k", "--egress", **marked)
         self.assertIn(
             "-e 'TOKENCRATE_UI_TARGETS=egress:tokencrate-ui-pi-web:8504 tokencrate-ui-forward-pi-web:8080'", check
         )
@@ -624,18 +639,18 @@ class CliTests(unittest.TestCase):
             "--agent",
             "pi",
             "--basic",
-            LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k",
+            LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k",
         )
 
     def test_relative_storage_paths_resolve_from_the_repository_not_the_caller(self) -> None:
-        self.scratch.render_fixture("qwen3.8-27b-q4-2x128k")
+        self.scratch.render_fixture("qwen3.8-27b-q4-mtp-2x128k")
         foreign = self.scratch.tmp / "foreign-cwd"
         foreign.mkdir(exist_ok=True)
         output = self.succeed(
             "agent",
             "pi",
             "--preset",
-            "qwen3.8-27b-q4-2x128k",
+            "qwen3.8-27b-q4-mtp-2x128k",
             "--dir",
             str(self.scratch.project),
             cwd=foreign,
@@ -730,6 +745,7 @@ class CommandTableTests(unittest.TestCase):
         "--dir": ".",
         "--since": "7d",
         "--agent": "pi",
+        "--memory": "project",
     }
     FLAGS = sorted({flag for command in cli.COMMANDS for flag in command.flags} - {"--"})
 
@@ -780,6 +796,7 @@ class CommandTableTests(unittest.TestCase):
         for name, flag, expected in (
             ("bench", "--egress", "--egress is only valid with smoke --agent, agent, or ui"),
             ("bench", "--cloud", "--cloud is only valid with agent or ui"),
+            ("ui", "--memory", "--memory is only valid with agent"),
             ("stats", "--preset", "--preset is only valid with doctor, smoke, agent, or ui"),
             ("stats", "--presets", "--presets is only valid with bench"),
             ("bench", "--serve", "--serve is only valid with stats"),

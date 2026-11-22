@@ -172,11 +172,48 @@ class RegistryResolverTests(unittest.TestCase):
         with mock.patch.object(checkpins, "request_json", return_value={"version": "0.86.0"}) as request:
             result = resolve("PI_VERSION", {"PI_VERSION": "0.85.1"})
         self.assertEqual((result.key, result.latest), ("PI_VERSION", "0.86.0"))
-        self.assertIn("registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest", request.call_args.args[0])
+        self.assertIn("registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest", request.call_args_list[0].args[0])
         with mock.patch.object(checkpins, "request_json", return_value={"version": "18.1.18"}) as request:
             result = resolve("OMP_VERSION", {"OMP_VERSION": "18.1.18"})
         self.assertIn("registry.npmjs.org/@oh-my-pi%2Fpi-coding-agent/latest", request.call_args.args[0])
         self.assertEqual(result.latest, result.current)
+
+    def test_pi_notes_the_pi_the_newest_pi_web_pins(self) -> None:
+        def registry(pi_web: dict | Exception):
+            def answer(url: str):
+                if "pi-web" not in url:
+                    return {"version": "0.87.0"}
+                if isinstance(pi_web, Exception):
+                    raise pi_web
+                return pi_web
+
+            return answer
+
+        cases = {
+            "pi-web 0.20.0 pins pi 0.87.0: upgrade the pi-web set to it with PI_VERSION": {"version": "0.20.0"},
+            "pi-web 0.19.0 pins pi 0.86.0: raise PI_VERSION only to 0.86.0, with the pi-web set upgraded to 0.19.0": {
+                "version": "0.19.0"
+            },
+            "pi-web 0.18.0, its newest release, pins pi 0.85.1: keep PI_VERSION until pi-web pins a newer pi": {
+                "version": "0.18.0"
+            },
+        }
+        pins = {"0.20.0": "0.87.0", "0.19.0": "0.86.0", "0.18.0": "0.85.1"}
+        for note, payload in cases.items():
+            payload["dependencies"] = {checkpins.PI_PACKAGE: pins[payload["version"]]}
+            with mock.patch.object(checkpins, "request_json", side_effect=registry(payload)) as request:
+                result = resolve("PI_VERSION", {"PI_VERSION": "0.85.1"})
+            self.assertEqual(result.latest, "0.87.0")
+            self.assertEqual(result.notes[-1], "  " + note)
+            self.assertIn("registry.npmjs.org/@agegr%2Fpi-web/latest", request.call_args.args[0])
+        # A failed pi-web lookup is a note; the pi row stands.
+        with mock.patch.object(checkpins, "request_json", side_effect=registry(TokenCrateError("HTTP 503"))):
+            result = resolve("PI_VERSION", {"PI_VERSION": "0.85.1"})
+        self.assertEqual((result.latest, result.notes[-1].endswith("could not be read: HTTP 503")), ("0.87.0", True))
+        # A current pin needs no pi-web lookup.
+        with mock.patch.object(checkpins, "request_json", return_value={"version": "0.85.1"}) as request:
+            result = resolve("PI_VERSION", {"PI_VERSION": "0.85.1"})
+        self.assertEqual((result.latest, request.call_count), ("0.85.1", 1))
 
     def test_npm_rejects_prerelease_or_older_latest(self) -> None:
         with mock.patch.object(checkpins, "request_json", return_value={"version": "1.0.0-beta.1"}):

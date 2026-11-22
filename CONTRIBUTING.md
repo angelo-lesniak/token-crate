@@ -203,6 +203,9 @@ against its reason.
   attached only to internal networks ([Forwarder](docs/privacy.md#forwarder)).
   Reconsider if Docker publishes ports from internal networks or a UI
   authenticates and checks origins itself.
+- **The browser UI is agegr's pi-web.** It has the largest community of
+  the pi UIs; its exact pi pin holds back `PI_VERSION`. Reconsider if
+  pi-web lags pi releases by weeks or pi ships its own browser UI.
 - **Shared networks and targeted hardening, not per-session networks.**
   Sessions share `agents`, UIs share `ui`, and `--egress` or `--cloud`
   adds the default network with no gate ([Cloud
@@ -213,19 +216,33 @@ against its reason.
   Compose core carries the hardening, mounts, keys file, and egress
   overlay for every container. Reconsider if a provider stops honoring
   `run --name` or `--service-ports`.
-- **Two agents.** pi with `coding` includes the oh-my-pi features
-  expected to pay off on a local model; oh-my-pi stays as an alternative
-  although it needs its own image, pin, model-list dialect, entrypoint
-  branch, overlay, Compose service, and validation. Reconsider if GPU results show no benefit over pi
-  with `coding`, or if oh-my-pi still cannot be lockfile-pinned.
+- **Two agents.** pi with `coding` and the opt-in `roles`, `guard`, and
+  `mcp` sets covers the oh-my-pi features expected to pay off on a local
+  model; oh-my-pi stays as an alternative although it needs its own
+  image, pin, model-list dialect, entrypoint branch, overlay, Compose
+  service, and validation. Reconsider if GPU results show no benefit
+  over pi with those sets, or if oh-my-pi still cannot be
+  lockfile-pinned.
 - **`coding` and `metrics` are the default agent sets.** `coding` gives
   a first session the tools a coding agent is expected to have without
-  choosing sets, at the cost of more
-  tools and a larger request body before a task starts; its value on a
-  local model is a hypothesis. `metrics` changes no request and fills
-  the stats Timings table. Reconsider after comparing plain pi and the
-  bundle on the same coding tasks with a shipped 27B preset: completion,
-  wrong edits, tokens, turns, and wall time.
+  choosing sets, at the cost of more tools and a larger
+  request body before a task starts; its value on a local model is a
+  hypothesis. `metrics` changes no request and fills the stats Timings
+  table. Reconsider after comparing plain pi and the bundle on the same
+  coding tasks with a shipped 27B preset: completion, wrong edits,
+  tokens, turns, and wall time.
+- **`roles` is the only subagent provider.** pi fails to load a second
+  extension that registers the `subagent` tool, so `coding` ships none.
+  Reconsider if the manifest gains a key that declares conflicting sets.
+- **The loop guard is our own.** pi-warden's notice of a repeated
+  failing call reaches only the user, and the pi loop-guard extensions
+  have one author and a few stars each. Reconsider if pi-warden or pi
+  ships a guard the model sees.
+- **MCP is opt-in.** A session without the `mcp` set declares no MCP
+  tool. Reconsider if most selections add the set.
+- **Web search needs `--egress`, with no SearXNG.** A search service
+  that offline sessions reach would relay them to the internet.
+  Reconsider for a search index that needs no route out.
 - **`pocock-core,skill-crate` are the default skill sets.** An empty
   default would remove `skills fetch` from initial setup. Reconsider if
   the skill descriptions cost more context on a 27B model than their
@@ -269,16 +286,24 @@ against its reason.
   `tests/test_statspage.py` pins in both copies. Reconsider the exporter
   when the router serves counters without loading a model, and the second
   copy when the page can read the exporter instead.
+- **The memory server is an opt-in profile, as the dashboard is.** It
+  adds a container and extraction requests on the default preset.
+  Reconsider if most sessions use `--memory`.
+- **Hindsight online, over a network of its own.** A `--memory` session
+  with a route out is the user's choice, so the wrapper warns and does
+  not refuse. The server never joins the default network: its API
+  registers webhooks to public addresses, so any offline session could
+  send data out through it. Reconsider if Hindsight separates access per
+  bank.
 - **llama-server router mode.** The router loads presets, routes by
   `model`, loads the default at startup, and serves the built-in chat UI;
   a separate proxy would add a pinned component, a configuration format,
   and per-effort aliases, and clients already send `reasoning_effort` per
   request. Reconsider if router mode loses a required feature.
-- **Paseo's identity travels through the per-set state mount.** One
-  pairing serves every project ([Browser UIs](docs/agents.md#browser-uis));
-  the manifest has no identity key, and the quirk stays in the one
-  launcher that has it. Reconsider if a second UI needs cross-project
-  state the mount cannot carry.
+- **The judge is a separate opt-in service, never a router preset.** The
+  router holds one model (`--models-max 1`), so a judge preset would
+  swap out the session's model at every check. Reconsider if the router
+  keeps a second model loaded.
 - **Filesystem hardening covers the user's own storage.** The symlink
   refusals, owner checks, and per-directory modes also cover the model
   library, which only the host writes; they cost code size, not

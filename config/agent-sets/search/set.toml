@@ -1,0 +1,32 @@
+schema = 1
+description = "pi-web-access: web_search, fetch_content (readable page extracts), and get_search_content; they reach the internet only in an --egress session"
+pi_packages = ["node_modules/pi-web-access"]
+# The extension's settings, at the path it reads when XDG_CONFIG_HOME is
+# set (compose.yaml sets it):
+# - toolActivation eager: the three tools are declared from the first
+#   request; dynamic activation adds them mid-session, which changes the
+#   prompt prefix and makes llama.cpp process the whole conversation again.
+# - sourceCheck off: claim checking that web_search and fetch_content cover,
+#   for about 1 KB per request.
+# - allowedProviders: search runs on Exa (its keyless MCP endpoint, or the
+#   API with EXA_API_KEY) or on Brave, Tavily, or Jina with their keys from
+#   the --cloud keys file; never on a model provider (OpenAI, Gemini,
+#   Perplexity, xAI, Mistral) whose key the same file holds for models.
+# - youtube, video, and pdf: fetch_content reads a YouTube URL as a plain
+#   page and a PDF with the bundled unpdf, and refuses a local video file;
+#   their defaults send the URL, the file, or the PDF to Gemini or
+#   Perplexity whenever the keys file holds a key for them.
+# - summaryModel current: an auto-summary runs on the session's model, not
+#   on a cloud model the keys file can reach.
+build = [
+  "install -D -m 0644 web-search.json /opt/tokencrate/home-seed/.config/pi/web-search.json",
+]
+check = [
+  "node --check /opt/tokencrate/sets/search/node_modules/pi-web-access/dist/index.js",
+  "jq -e '.youtube.enabled == false and .video.enabled == false and .pdf.provider == \"unpdf\"' \"${XDG_CONFIG_HOME:-$HOME/.config}/pi/web-search.json\" >/dev/null",
+  "echo \"pi-web-access $(node -p 'require(\"/opt/tokencrate/sets/search/node_modules/pi-web-access/package.json\").version') parses and its settings are seeded\"",
+]
+note = "Without internet, web_search and fetch_content fail at once (fetch failed, EAI_AGAIN); do not retry them."
+
+[npm]
+omit_peer = true

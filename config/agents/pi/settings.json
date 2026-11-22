@@ -2,6 +2,8 @@
   "enableInstallTelemetry": false,
   "enableAnalytics": false,
   "defaultProjectTrust": "ask",
+  "extensions": ["-builtin:mcp"],
+  "cacheWarming": "off",
   "defaultThinkingLevel": "xhigh",
   "quietStartup": false,
   "collapseChangelog": true,

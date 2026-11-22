@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-agent-set-hindsight",
+  "private": true,
+  "description": "Hindsight's coding-agent integration, pinned by the lockfile; its pi entry is loaded through extension/.",
+  "dependencies": {
+    "@vectorize-io/hindsight-coding-agents": "0.8.7"
+  }
+}

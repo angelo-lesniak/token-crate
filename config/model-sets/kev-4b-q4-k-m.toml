@@ -1,0 +1,25 @@
+schema = 1
+description = "Kev-4B Q4_K_M (3.0 GB), a decision model for llama.cpp's /v1/systemone that the judge service runs; no preset loads it"
+upstream_model = "jaredpalmer/kev-4b"
+model_card = "https://huggingface.co/ggml-org/Kev-4B-GGUF/blob/f4624b6bb7072f1bab726a622c1cad3f96030b9e/README.md"
+# Kev's LoRA and decision head on Qwen3.5-4B-Base, converted into one GGUF
+# (decision type kev). It answers only /v1/systemone and generates no text,
+# so it is no router preset: the router keeps one model loaded, and a
+# judgment would swap the session's model out.
+mtp = false
+
+[[license]]
+name = "Apache License 2.0 (Kev-4B, as its model card declares)"
+url = "https://huggingface.co/jaredpalmer/kev-4b/blob/6cfce5c2fa4b4bd64026336ab649c5ca78857d52/README.md"
+
+[[license]]
+name = "Apache License 2.0 (Qwen3.5-4B-Base)"
+url = "https://huggingface.co/Qwen/Qwen3.5-4B-Base/blob/1001bb4d826a52d1f399e183466143f4da7b741b/LICENSE"
+
+[[file]]
+role = "weights"
+repository = "ggml-org/Kev-4B-GGUF"
+revision = "f4624b6bb7072f1bab726a622c1cad3f96030b9e"
+source = "Kev-4B-Q4_K_M.gguf"
+size = 3033489824
+sha256 = "33ae6b18926502b2209a1bf7d3b61a350d65938441515c686bb87d226a19eff9"

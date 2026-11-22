@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-agent-set-todo",
+  "private": true,
+  "description": "The rpiv-todo extension for pi, pinned by the lockfile; pi provides the peer packages.",
+  "dependencies": {
+    "@juicesharp/rpiv-todo": "2.15.0"
+  }
+}

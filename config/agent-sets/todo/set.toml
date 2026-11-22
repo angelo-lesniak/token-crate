@@ -1,0 +1,8 @@
+schema = 1
+description = "The rpiv-todo extension: a todo tool for multi-step work, shown as a live list above the editor; /todos prints it"
+pi_packages = ["node_modules/@juicesharp/rpiv-todo"]
+# An extension, not a binary; the package count covers it.
+check = []
+
+[npm]
+omit_peer = true

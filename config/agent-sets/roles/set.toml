@@ -1,0 +1,40 @@
+schema = 1
+description = "pi-subagents with four roles the session delegates to: scout, planner, worker, and an adversarial reviewer"
+# extension/ loads pi-subagents' extension without the package's skills and
+# prompts, which teach the workflow scripts the configuration turns off, and
+# ships the roles as package agents.
+pi_packages = ["extension"]
+# The package's built-in agents are removed: the roles replace scout,
+# worker, and reviewer, and the others need web tools or agent CLIs the
+# image lacks. The configuration (pi-subagents.json) goes where
+# pi-subagents reads it, in the agent home:
+# - disabledFeatures lists every optional feature group. Without
+#   workflow-scripts the tool takes plain `tasks` and `chain` lists instead
+#   of JavaScript; the other groups are tools the roles do not use.
+# - No schedules, missions, or resuming interrupted runs at session start:
+#   nothing runs on the model unless the session starts it.
+# - asyncByDefault false: a single child runs in the foreground, so the
+#   session sends no request while its child holds the slot.
+# - intercomBridge off: a child reports in its answer and gets no
+#   supervisor tool or its instructions.
+# - At most two children at once: a preset with two or more slots runs
+#   both in parallel.
+build = [
+  "rm node_modules/pi-subagents/agents/*.md",
+  "install -D -m 0644 pi-subagents.json /opt/tokencrate/home-seed/.pi/agent/extensions/subagent/config.json",
+]
+# pi loads every selected extension without a model and names one that
+# fails, such as a second extension registering the subagent tool, but exits
+# 0 either way.
+check = [
+  'out=$(pi --list-models 2>&1)',
+  'if grep -F "Failed to load extension" <<<"$out"; then exit 1; fi',
+  'test -f "$HOME/.pi/agent/extensions/subagent/config.json"',
+  'echo "pi loads pi-subagents $(jq -r .version /opt/tokencrate/sets/roles/node_modules/pi-subagents/package.json) with the roles $(cd /opt/tokencrate/sets/roles/extension/agents && echo *.md)"',
+]
+note = """Delegate with the subagent tool to four roles: scout (read-only recon), planner (read-only plan), worker (edits and runs checks), reviewer (adversarial review, runs tests).
+For a change across files: scout, then planner, then one worker, then reviewer; send blocker and major findings back to a worker and review again. Make small edits yourself.
+A child sees neither this conversation nor these notes: give it a self-contained task with the paths, the goal, and the plan or findings it needs. Read-only roles may run in parallel with tasks; never two workers at once."""
+
+[npm]
+omit_peer = true

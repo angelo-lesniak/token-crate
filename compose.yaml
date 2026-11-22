@@ -140,6 +140,11 @@ x-agent-environment: &agent-environment
   TOKENCRATE_PRESET: "${TOKENCRATE_PRESET:-}"
   # `?` rather than `:?`: an empty list is a documented setting.
   TOKENCRATE_SKILL_SETS: "${LLM_SKILL_SETS?exported by bin/tokencrate from .env}"
+  # The judge service the judge set asks, by name on the internal networks.
+  # The egress overlay empties it for every container with a route out,
+  # whose resolver could send the name off the machine; the wrapper passes
+  # such a start the judge's address on the default network instead.
+  TOKENCRATE_JUDGE_URL: http://judge:8080
   TOKENCRATE_PROJECT_DIR: "${LLM_AGENT_PROJECT_DIR:-/workspace}"
   # Optional settings: unset unless .env names an identity.
   GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-}"
@@ -162,7 +167,7 @@ services:
     # Model servers unload in seconds; a minute covers a busy one.
     stop_grace_period: 60s
     pids_limit: "${LLM_PIDS_LIMIT:?exported by bin/tokencrate from .env}"
-    tmpfs:
+    tmpfs: &llama-tmpfs
       - "/tmp:rw,nosuid,nodev,mode=1777,size=${LLM_TMPFS_SIZE:?exported by bin/tokencrate from .env}"
     ports:
       # Published on loopback only; no setting widens it. Container port 8080
@@ -172,7 +177,8 @@ services:
     # run the same image without a CDI device.
     networks: [default, agents, ui, dashboard]
     volumes:
-      - type: bind
+      - &models-mount
+        type: bind
         source: "${LLM_MODELS_DIR:?exported by bin/tokencrate from .env}"
         target: /models
         read_only: true
@@ -188,7 +194,8 @@ services:
         source: ./config/llama/ui-config.json
         target: /etc/tokencrate/ui-config.json
         read_only: true
-    environment:
+    # The judge service runs the same server with the same environment.
+    environment: &llama-environment
       # CDI is the only device source; the base image's inherited
       # NVIDIA_VISIBLE_DEVICES=all must not inject a second device set.
       NVIDIA_VISIBLE_DEVICES: void
@@ -216,6 +223,33 @@ services:
       # Set by `up`; a session start leaves it empty (the interpolation note).
       io.tokencrate.config-sha256: "${TOKENCRATE_CONFIG_SHA256:-}"
 
+  # The decision model of the judge agent set (profile `judge`, which `up`
+  # starts after the model when LLM_JUDGE_SERVER is true): a second
+  # llama-server from the llama image, without the router, that serves
+  # Kev-4B (model set kev-4b-q4-k-m) for /v1/systemone on the GPU beside
+  # the default preset. It sits on `agents` and `ui`, the networks of the
+  # offline sessions and the browser UIs, and on the default network, where
+  # sessions and UIs with a route out reach it by address, as they reach
+  # llama. It keeps no state, holds no secret, and calls out to nothing.
+  # The GPU device comes from compose.gpu.yaml, as for llama.
+  judge:
+    image: "tokencrate/llama:${LLAMA_CPP_TAG:?pin it in pins.env}"
+    profiles: ["judge"]
+    <<: *hardened
+    restart: "${RESTART_POLICY:?exported by bin/tokencrate from .env}"
+    stop_grace_period: 60s
+    pids_limit: "${LLM_PIDS_LIMIT:?exported by bin/tokencrate from .env}"
+    tmpfs: *llama-tmpfs
+    networks: [agents, ui, default]
+    entrypoint: ["/app/llama-server"]
+    command:
+      ["--host", "0.0.0.0", "--port", "8080",
+       "--model", "/models/ggml-org/Kev-4B-GGUF/Kev-4B-Q4_K_M.gguf", "--alias", "kev-4b",
+       "--ctx-size", "8192", "--parallel", "1", "--gpu-layers", "all", "--fit", "off", "--no-webui", "--no-slots"]
+    volumes:
+      - *models-mount
+    environment: *llama-environment
+
   agent-pi:
     <<: [*agent-common, *agent-pi-image]
     profiles: ["agent-pi"]
@@ -241,9 +275,6 @@ services:
     networks: [ui]
     labels: &ui-label
       io.tokencrate.ui-set: "${TOKENCRATE_UI_SET:-}"
-    # The UI launchers stop their daemon on TERM, and Paseo gives that
-    # stop 8 seconds; the 10-second default would cut it short.
-    stop_grace_period: 20s
     command: ["${TOKENCRATE_UI_COMMAND:-tokencrate-ui}"]
     environment:
       <<: *agent-environment
@@ -260,9 +291,7 @@ services:
       - *pi-etc-tokencrate-agent-generated
       - *agent-skills-mount
       - *agent-local-skills-mount
-      # The per-project UI state (`state` in the set's manifest). The per-set
-      # store, LLM_AGENTS_DIR/pi/<set>-state, is mounted by the `run -v` of
-      # `ui` at /run/tokencrate/ui-state (uis.UI_STATE_MOUNT), not here.
+      # The per-project UI state (`state` in the set's manifest).
       - type: bind
         source: "${TOKENCRATE_AGENT_HOME:-./data/agents/pi}/${TOKENCRATE_UI_STATE:-.ui-state}"
         target: "/home/agent/${TOKENCRATE_UI_STATE:-.ui-state}"
@@ -479,13 +508,58 @@ services:
       NVIDIA_VISIBLE_DEVICES: void
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
+  # The memory server of the hindsight agent set (profile `memory`, which
+  # `up` starts when LLM_MEMORY_SERVER is true). It sits on internal
+  # networks alone, so it has no route out: `agents` with the model and the
+  # offline sessions, and `memory` with the sessions that asked for it and
+  # have a route out (compose.agent-memory.yaml). Its embedding and
+  # reranking models are baked into the image;
+  # its embedded PostgreSQL (pg0) keeps the memories under
+  # LLM_AGENTS_DIR/hindsight. pg0 needs a passwd entry for its user: the
+  # image's own (UID 1000) on Docker, keep-id's on Podman.
+  hindsight:
+    image: "ghcr.io/vectorize-io/hindsight-api:${HINDSIGHT_TAG:?pin it in pins.env}@sha256:${HINDSIGHT_DIGEST:?pin it in pins.env}"
+    profiles: ["memory"]
+    <<: *hardened
+    pids_limit: 512
+    networks: [agents, memory]
+    shm_size: 1g
+    # The image's start script gives the API and PostgreSQL up to 60
+    # seconds to stop cleanly.
+    stop_grace_period: 75s
+    tmpfs:
+      - "/tmp:rw,nosuid,nodev,mode=1777,size=512m"
+    environment:
+      HOME: /home/hindsight
+      USER: hindsight
+      HF_HOME: /home/hindsight/.cache/huggingface
+      XDG_CACHE_HOME: /tmp/cache
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_BASE_URL: http://llama:8080/v1
+      HINDSIGHT_API_LLM_API_KEY: tokencrate
+      # `?`: an empty default preset is a setting `up` refuses with the
+      # memory server on, and every call interpolates this service.
+      HINDSIGHT_API_LLM_MODEL: "${LLM_DEFAULT_PRESET?exported by bin/tokencrate from .env}"
+      HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
+      HINDSIGHT_API_LLM_TIMEOUT: "3600"
+      HINDSIGHT_API_LLM_REASONING_EFFORT: low
+    volumes:
+      - type: bind
+        source: "${LLM_AGENTS_DIR:?exported by bin/tokencrate from .env}/hindsight"
+        target: /home/hindsight/.pg0
+
 networks:
   default:
   # Internal: containers on this network reach each other and no external
   # host. On Docker the bridge gateway would stay reachable, so host services
   # bound to all interfaces would be visible to an agent; compose.docker.yaml
-  # removes the gateway address from both internal networks.
+  # removes the gateway address from every internal network.
   agents:
+    internal: true
+  # The memory server, and the pi sessions with a route out that asked for it.
+  memory:
     internal: true
   # All browser UIs, the model, and their forwarders; no terminal agent.
   ui:

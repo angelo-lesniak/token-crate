@@ -19,8 +19,8 @@ from .live import LiveSampler, nvidia_smi_command
 from .page import html
 from .transcripts import Filter, read_sessions
 
-# `stats --serve` without `--port`, clear of the API (4207) and UI
-# (4224, 4250) defaults.
+# `stats --serve` without `--port`, clear of the API (4207) and UI (4224)
+# defaults.
 SERVE_PORT = 4210
 
 

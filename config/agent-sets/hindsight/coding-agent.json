@@ -1,0 +1,13 @@
+{
+  "serverMode": "self-hosted",
+  "apiUrl": "http://hindsight:8888",
+  "optInOnly": true,
+  "autoUpdate": false,
+  "codebaseSurvey": false,
+  "autoSeed": false,
+  "autoInject": "recall",
+  "pageRefreshEveryTurns": 1000,
+  "recallOptions": {
+    "max_tokens": 500
+  }
+}
