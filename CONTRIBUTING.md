@@ -6,8 +6,8 @@ file `pins.env`, and the [privacy defaults](docs/privacy.md).
 
 ## Tools
 
-Install Bash, Python 3.11 or newer, Git, Node.js, ShellCheck, and
-ripgrep; the static gate runs Node.js. Install the Python test
+Install Bash, Python 3.11 or newer, Git, Node.js, and ShellCheck; the
+static gate runs Node.js. Install the Python test
 dependencies in a virtual environment and activate it before running the
 tests, because `tests/static.sh` runs the `python3` on `PATH`:
 
