@@ -78,15 +78,23 @@ check; on an abliterated preset it can also be a reasoning loop.
 
 ## The `judge` set never advises
 
-The set is silent when `up` did not run with `LLM_JUDGE_SERVER=true`,
-and in an `--egress` or `--cloud` session or UI started before the
-judge service: the wrapper passes the service's address at the start.
-Otherwise the transcript holds the first failure as a `custom` entry
-with `"customType":"judge"`, such as `TypeError: EAI_AGAIN`. After a name that
-does not resolve, a server that does not serve `kev-4b`, or three failed
-requests in a row (refused, dropped, timed out, or an HTTP error), the
-judge is not asked again until pi restarts. A judge that is restarting
-fails for a moment; one still loading is asked at the next check.
+Look at the set's status in pi's footer or pi-web's bottom bar:
+
+- `judge: 0 asked, 0 advised`: the set is loaded and had nothing to ask
+  yet. The done check asks when a run ends with a final message, the
+  stall check only after repeated failures.
+- `judge: off` with a reason: the judge is not asked again until pi
+  restarts. The reasons are a name that does not resolve (`up` did not
+  run with `LLM_JUDGE_SERVER=true`), a server that does not serve
+  `kev-4b`, and three failed requests in a row (refused, dropped, timed
+  out, or an HTTP error). A judge that is restarting fails for a moment;
+  one still loading is asked at the next check. The transcript holds the
+  first failure as a `custom` entry with `"customType":"judge"`, such as
+  `TypeError: EAI_AGAIN`.
+- No status: the set is not in the session's selection, or the session
+  or UI has a route out (`--egress`, `--cloud`) and got no judge
+  address. The wrapper passes the address at the start, and only when
+  `LLM_JUDGE_SERVER` is true and the judge service runs.
 
 ## Ask for help
 

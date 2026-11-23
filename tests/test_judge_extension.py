@@ -22,26 +22,38 @@ EXTENSION = PROJECT_ROOT / "config" / "agent-sets" / "judge" / "judge" / "index.
 
 # Replays the steps against the extension factory, awaiting each handler as
 # pi does (a `wait` step sleeps), and prints what the extension did: its
-# handlers, steers, notices, session entries, the results of
-# agent_before_settle, and how many fetches it made.
+# handlers, steers, notices, failure entries and the entries of answered
+# questions (checks), every status it set, the results of
+# agent_before_settle, and how many fetches it made. A `start` step runs
+# session_start with the entries of a resumed session.
 DRIVER = r"""
 import { pathToFileURL } from "node:url";
 const module = await import(pathToFileURL(process.argv[1]).href);
 const steps = JSON.parse(process.argv[2]);
 const handlers = {};
-const out = { steers: [], notices: [], entries: [], settles: [], fetches: 0 };
+const out = { steers: [], notices: [], entries: [], checks: [], statuses: [], settles: [], fetches: 0 };
 const realFetch = globalThis.fetch;
 globalThis.fetch = (...args) => { out.fetches++; return realFetch(...args); };
 module.default({
   on(name, handler) { (handlers[name] ||= []).push(handler); },
-  appendEntry(type, data) { out.entries.push({ type, data }); },
+  appendEntry(type, data) { (data?.check ? out.checks : out.entries).push({ type, data }); },
   sendMessage(message, options) { out.steers.push({ content: message.content, deliverAs: options?.deliverAs }); },
   sendUserMessage(text) { out.steers.push({ content: text, deliverAs: "user" }); },
 });
 out.registered = Object.keys(handlers).sort();
-const ctx = { ui: { notify(text) { out.notices.push(text); } } };
+const ui = {
+  notify(text) { out.notices.push(text); },
+  setStatus(key, text) { out.statuses.push([key, text]); },
+};
+const ctx = { ui };
 for (const step of steps) {
   if (step.on === "wait") { await new Promise((resolve) => setTimeout(resolve, step.ms)); continue; }
+  if (step.on === "start") {
+    const branch = step.entries.map((data) => ({ type: "custom", customType: "judge", data }));
+    const resumed = { ...ctx, sessionManager: { getBranch: () => branch } };
+    for (const handler of handlers.session_start || []) await handler({ reason: "resume" }, resumed);
+    continue;
+  }
   for (const handler of handlers[step.on] || []) {
     const value = await handler(step.event, ctx);
     if (step.on === "agent_before_settle") out.settles.push(value ?? null);
@@ -238,7 +250,7 @@ class JudgeExtensionTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertEqual(self.drive([*user(), *stalled()], url)["registered"], [])
         # The service's name on the internal networks, or an address.
-        handlers = ["agent_before_settle", "before_agent_start", "input", "tool_result", "turn_end"]
+        handlers = ["agent_before_settle", "before_agent_start", "input", "session_start", "tool_result", "turn_end"]
         for url in ("http://judge:8080", "http://10.89.0.4:8080"):
             with self.subTest(url=url):
                 self.assertEqual(self.drive([], url)["registered"], handlers)
@@ -320,6 +332,21 @@ class JudgeExtensionTests(unittest.TestCase):
         first, second = self.judge.posts()
         self.assertEqual(first["state"]["request"], "Fix the failing tests in src/app.ts")
         self.assertEqual(second["state"]["request"], "make the tests pass")
+
+    def test_the_status_and_one_entry_per_answered_question_show_what_the_judge_did(self) -> None:
+        self.judge.answers = UNVERIFIED_DONE
+        resumed = [{"check": "stall", "verdicts": {"sameStrategy": 0.2, "progress": 0.9}, "advised": False}]
+        out = self.drive([{"on": "start", "entries": [*resumed, {"url": "x", "failure": "y"}]}, *user(), settle()])
+        self.assertEqual(out["statuses"][0], ["judge", "judge: 1 asked, 0 advised"])
+        self.assertEqual(out["statuses"][-1], ["judge", "judge: 2 asked, 1 advised"])
+        self.assertEqual(
+            out["checks"],
+            [{"type": "judge", "data": {"check": "done", "verdicts": {"done": 0.9, "verified": 0.1}, "advised": True}}],
+        )
+        # A question without an answer is no entry.
+        self.judge.delays = [None]
+        out = self.drive([*user(), settle()])
+        self.assertEqual((out["checks"], out["statuses"][-1]), ([], ["judge", "judge: 0 asked, 0 advised"]))
 
     def test_a_completed_run_that_claims_done_unverified_gets_one_continuation(self) -> None:
         self.judge.answers = UNVERIFIED_DONE
@@ -419,6 +446,7 @@ class JudgeExtensionTests(unittest.TestCase):
         first, given_up = out["entries"]
         self.assertTrue(first["data"]["failure"].startswith("TimeoutError"), first)
         self.assertEqual(given_up["data"]["failure"], "3 failed requests in a row; not asked again")
+        self.assertEqual(out["statuses"][-1], ["judge", "judge: off, 3 failed requests in a row"])
 
     def test_a_refused_connection_is_tried_again_until_three_in_a_row(self) -> None:
         # A judge that restarts refuses connections for a moment; nothing
@@ -437,6 +465,7 @@ class JudgeExtensionTests(unittest.TestCase):
         self.assertEqual(out["fetches"], 1)
         (entry,) = out["entries"]
         self.assertIn(entry["data"]["failure"], ("TypeError: ENOTFOUND", "TypeError: EAI_AGAIN"))
+        self.assertEqual(out["statuses"][-1], ["judge", "judge: off, no judge service"])
 
     def test_only_a_server_that_names_the_judge_model_is_asked(self) -> None:
         self.judge.answers = UNVERIFIED_DONE
@@ -451,6 +480,7 @@ class JudgeExtensionTests(unittest.TestCase):
         out = self.drive([*user(), settle(), *user(), settle()])
         self.assertEqual((out["fetches"], self.judge.posts()), (1, []))
         self.assertIn("does not name kev-4b", out["entries"][0]["data"]["failure"])
+        self.assertEqual(out["statuses"][-1], ["judge", "judge: off, the server does not serve kev-4b"])
         # A server without the endpoint counts as a failed request.
         self.judge.requests.clear()
         self.judge.models = (404, {"error": "not found"})

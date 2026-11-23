@@ -40,6 +40,13 @@ the pinned versions. What decides a selection:
 | `odin` | Odin with SDL2 and Vulkan; there is no display, so SDL uses its dummy drivers |
 | `pi-web` | The pi-web browser UI (`ui pi-web`) |
 
+`guard` and `judge` show what they did in a status in pi's footer and
+in pi-web's bottom bar, such as `guard: 2 reminders, 1 steer` or
+`judge: 4 asked, 1 advised`. Each reminder, blocked call, steer, and
+stopped run of the guard, and each question the judge answered with its
+verdicts, is also a `loop-guard` or `judge` entry in the session file,
+which the model never reads.
+
 Every tool schema is sent with every request, so select a set only for
 projects that need it: `roles`, `memory`, `todo`, and `search` each add
 about 5 KB to a request, `guard` about 3 KB, and `hindsight` about 11 KB

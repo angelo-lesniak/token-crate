@@ -30,10 +30,12 @@ const callsOf = (run) => {
 
 export class DoneCheck {
   #judge;
+  #report;
   #asked = false;
 
-  constructor(judge) {
+  constructor(judge, report) {
     this.#judge = judge;
+    this.#report = report;
   }
 
   newPrompt() {
@@ -47,7 +49,10 @@ export class DoneCheck {
     const final = text(run.filter((message) => message.role === "assistant").at(-1)?.content).slice(-2000);
     if (!final) return undefined;
     const answers = await this.#judge.ask({ request, final, calls: callsOf(run).slice(-20) }, QUESTIONS, { signal });
-    if (!(answers?.done?.noul >= 0.8 && answers?.verified?.noul < 0.5)) return undefined;
+    if (!answers) return undefined;
+    const advise = answers.done?.noul >= 0.8 && answers.verified?.noul < 0.5;
+    this.#report.answered("done", answers, advise);
+    if (!advise) return undefined;
     this.#asked = true;
     return {
       entries: [...event.entries, { type: "custom_message", customType: "judge", content: FOLLOW_UP, display: true }],

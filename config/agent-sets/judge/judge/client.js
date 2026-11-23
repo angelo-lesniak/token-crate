@@ -10,7 +10,8 @@
 // recreated, and a server that answers with other models is not the judge
 // and is not asked again; one still loading (503) is asked at the next check.
 // The first failure, and giving up after three, are recorded once each as a
-// `judge` entry in the session file, which the model never reads.
+// `judge` entry in the session file, which the model never reads; `onOff`
+// hears why the judge is not asked again.
 
 const TIMEOUT_MS = 5000;
 // The judge service's --alias (compose.yaml).
@@ -22,6 +23,7 @@ const MAX_FAILURES = 3;
 export class Judge {
   #origin;
   #appendEntry;
+  #onOff;
   #unreachable = false;
   #recorded = false;
   #failures = 0; // since the last answer
@@ -29,9 +31,10 @@ export class Judge {
   #pending = 0;
   #queue = Promise.resolve();
 
-  constructor(origin, appendEntry) {
+  constructor(origin, appendEntry, onOff = () => {}) {
     this.#origin = origin;
     this.#appendEntry = appendEntry;
+    this.#onOff = onOff;
   }
 
   // `optional` questions (on task) are skipped while another is pending;
@@ -62,7 +65,7 @@ export class Judge {
       // An abort is the user's, not the judge's.
       if (error.name === "AbortError") return undefined;
       this.#record(`${error.name}: ${error.cause?.code ?? error.message}`);
-      if (NO_JUDGE.has(error.cause?.code)) this.#unreachable = true;
+      if (NO_JUDGE.has(error.cause?.code)) this.#stop("no judge service");
       else this.#failed();
       return undefined;
     } finally {
@@ -78,8 +81,13 @@ export class Judge {
 
   #failed() {
     if (++this.#failures < MAX_FAILURES) return;
-    this.#unreachable = true;
+    this.#stop(`${MAX_FAILURES} failed requests in a row`);
     this.#appendEntry("judge", { url: this.#origin, failure: `${MAX_FAILURES} failed requests in a row; not asked again` });
+  }
+
+  #stop(reason) {
+    this.#unreachable = true;
+    this.#onOff(reason);
   }
 
   #record(failure) {
@@ -99,7 +107,7 @@ export class Judge {
     }
     const models = (await response.json())?.data ?? [];
     if (!models.some((model) => model.id === MODEL || model.aliases?.includes(MODEL))) {
-      this.#unreachable = true;
+      this.#stop(`the server does not serve ${MODEL}`);
       this.#record(`/v1/models does not name ${MODEL}: ${JSON.stringify(models.map((model) => model.id)).slice(0, 300)}`);
       return false;
     }

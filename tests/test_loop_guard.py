@@ -24,12 +24,15 @@ function session() {
   const notices = [];
   let aborts = 0;
   let pending = false;
+  const entries = [];
+  const statuses = [];
   factory({
     on(name, handler) { handlers[name] = handler; },
     sendMessage(message, options) { steers.push({ message, options }); },
+    appendEntry(type, data) { entries.push({ type, data }); },
   });
   const ctx = {
-    ui: { notify(text) { notices.push(text); } },
+    ui: { notify(text) { notices.push(text); }, setStatus(key, text) { statuses.push([key, text]); } },
     abort() { aborts += 1; },
     hasPendingMessages: () => pending,
   };
@@ -40,7 +43,7 @@ function session() {
   const turn = (calls) => {
     const parts = calls.map(([name, args]) => ({ type: "toolCall", id: `c${++ids}`, name, arguments: args }));
     const message = { role: "assistant", content: parts };
-    const before = { steers: steers.length, notices: notices.length, aborts };
+    const before = { steers: steers.length, notices: notices.length, aborts, entries: entries.length };
     const outcome = { block: false, terminate: false, notes: [], reasons: [], terminated: [] };
     handlers.message_end({ message }, ctx);
     const toolResults = [];
@@ -75,7 +78,16 @@ function session() {
     outcome.steers = steers.slice(before.steers);
     outcome.notices = notices.slice(before.notices);
     outcome.aborts = aborts - before.aborts;
+    // The interventions the turn recorded, and the status after it.
+    outcome.recorded = entries.slice(before.entries).map((entry) => entry.data.kind);
+    outcome.status = statuses.at(-1)?.[1];
     return outcome;
+  };
+  // session_start of a resumed session with these entries on its branch.
+  const start = (kinds) => {
+    const branch = kinds.map((kind) => ({ type: "custom", customType: "loop-guard", data: { kind, text: "" } }));
+    handlers.session_start({ reason: "resume" }, { ...ctx, sessionManager: { getBranch: () => branch } });
+    return statuses.at(-1)?.[1];
   };
   const input = (source) => handlers.input({ text: "next", source });
   const child = (name, args, result) => {
@@ -86,7 +98,7 @@ function session() {
     const patch = handlers.tool_result({ ...call, content, isError: Boolean(result.isError) }, ctx);
     return decision ?? patch ?? null;
   };
-  return { turn, input, child, queue: (value) => { pending = value; } };
+  return { turn, input, child, start, entries, queue: (value) => { pending = value; } };
 }
 
 const ok = (text) => ({ text });
@@ -276,6 +288,17 @@ const editOf = (oldText, result) => ["edit", { path: "src/a.ts", edits: [{ oldTe
   out.afterHaltInput = s.turn([["read", { path: "c.txt" }, ok("other")]]);
 }
 
+// A resumed session counts the interventions it recorded before.
+{
+  const s = session();
+  out.resumed = s.start(["reminder", "reminder", "steer", "unknown"]);
+  out.fresh = session().start([]);
+  const r = session();
+  const read = () => r.turn([["read", { path: "a.txt" }, ok("same")]]);
+  range(3, read);
+  out.recordedEntry = r.entries[0];
+}
+
 // Calls a tool issues itself (codemode) are not counted and not judged.
 {
   const s = session();
@@ -448,6 +471,28 @@ class LoopGuardTests(unittest.TestCase):
         # A stopped run stays stopped for a run an extension starts.
         self.assertTrue(self.out["haltedAfterExtensionInput"]["terminate"])
         self.assertFalse(self.out["afterHaltInput"]["block"])
+
+    def test_each_intervention_is_recorded_and_counted_in_the_status(self) -> None:
+        # One entry per reminder, block, steer, and end of a run; the refusals
+        # after the end count with it.
+        recorded = {name: [turn["recorded"] for turn in self.out[name]] for name in ("repeat", "failures", "invalid")}
+        self.assertEqual(
+            recorded["repeat"],
+            [[], [], ["reminder"], ["reminder"], ["block"], ["block"], ["block"], ["stop"], []],
+        )
+        self.assertEqual(recorded["failures"][4], ["reminder", "steer"])
+        self.assertEqual(recorded["invalid"][2:], [["steer"]] * 5 + [["stop"]])
+        self.assertEqual(self.out["repeat"][1]["status"], "guard: watching")
+        self.assertEqual(self.out["repeat"][-1]["status"], "guard: 2 reminders, 3 blocks, 1 stopped run")
+        self.assertEqual(self.out["failures"][-1]["status"], "guard: 6 reminders, 1 steer, 1 stopped run")
+        entry = self.out["recordedEntry"]
+        self.assertEqual(entry["type"], "loop-guard")
+        self.assertEqual(entry["data"]["kind"], "reminder")
+        self.assertIn("returned the same result 3 times in a row", entry["data"]["text"])
+
+    def test_a_resumed_session_counts_its_earlier_interventions(self) -> None:
+        self.assertEqual(self.out["resumed"], "guard: 2 reminders, 1 steer")
+        self.assertEqual(self.out["fresh"], "guard: watching")
 
     def test_calls_a_tool_issues_are_ignored(self) -> None:
         self.assertEqual(self.out["children"], [None] * 1200)

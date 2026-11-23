@@ -9,9 +9,11 @@ const QUESTIONS = {
 
 export class OnTaskCheck {
   #judge;
+  #report;
 
-  constructor(judge) {
+  constructor(judge, report) {
     this.#judge = judge;
+    this.#report = report;
   }
 
   // Not awaited: the notice is for the user, so the tool result does not wait for it.
@@ -21,7 +23,10 @@ export class OnTaskCheck {
     this.#judge
       .ask({ request, edit }, QUESTIONS, { optional: true, signal: ctx.signal })
       .then((answers) => {
-        if (answers?.onTask?.noul < 0.3) ctx.ui.notify(`judge: an edit by ${event.toolName} looks unrelated to the request`, "warning");
+        if (!answers) return;
+        const advise = answers.onTask?.noul < 0.3;
+        this.#report.answered("onTask", answers, advise);
+        if (advise) ctx.ui.notify(`judge: an edit by ${event.toolName} looks unrelated to the request`, "warning");
       })
       .catch(() => {});
   }

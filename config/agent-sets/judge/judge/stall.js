@@ -48,6 +48,7 @@ const normalise = (output) =>
 
 export class StallCheck {
   #judge;
+  #report;
   #steered = false;
   // The last tool results since the last prompt, and the count since the
   // last question.
@@ -55,8 +56,9 @@ export class StallCheck {
   #sinceAsked = Infinity;
   #observed = new Set(); // the calls of this turn that tool_result saw
 
-  constructor(judge) {
+  constructor(judge, report) {
     this.#judge = judge;
+    this.#report = report;
   }
 
   newRun() {
@@ -89,7 +91,10 @@ export class StallCheck {
     this.#sinceAsked = 0;
     const calls = this.#attempts.map(({ target, ...attempt }) => attempt);
     const answers = await this.#judge.ask({ request, calls }, QUESTIONS, { signal });
-    if (!(answers?.sameStrategy?.noul >= 0.9 && answers?.progress?.noul < 0.5)) return undefined;
+    if (!answers) return undefined;
+    const advise = answers.sameStrategy?.noul >= 0.9 && answers.progress?.noul < 0.5;
+    this.#report.answered("stall", answers, advise);
+    if (!advise) return undefined;
     this.#steered = true;
     return ADVICE;
   }
