@@ -3,6 +3,6 @@
   "private": true,
   "description": "agegr's pi-web, pinned by the lockfile. It pins pi exactly; the set links the image's pi in place of the copy npm installs, so PI_VERSION in pins.env must equal that pin.",
   "dependencies": {
-    "@agegr/pi-web": "0.17.0"
+    "@agegr/pi-web": "0.18.0"
   }
 }
