@@ -57,6 +57,24 @@ class IntegrationCleanupTests(unittest.TestCase):
                         with self.assertRaisesRegex(AssertionError, "no completed assistant answer"):
                             check.test_pi_runs_each_selection()
 
+    def test_two_ci_jobs_split_the_selections_so_each_image_is_built_once(self) -> None:
+        def job(name: str) -> tuple[list[str], tuple[str, ...]]:
+            with mock.patch.dict(os.environ, {"TOKENCRATE_CI_JOB": name}):
+                suite = integration.load_tests(unittest.TestLoader(), unittest.TestSuite(), None)
+                return sorted(test._testMethodName for test in suite), integration.selections()
+
+        owned = []
+        for name in ("sets-a", "sets-b"):
+            tests, selections = job(name)
+            self.assertEqual(tests, ["test_agent_checks_pass", "test_pi_runs_each_selection"])
+            owned.extend(selections)
+        self.assertEqual(sorted(owned), sorted(integration.SELECTIONS))
+        tests, _ = job("clients")
+        self.assertIn("test_omp_check_passes", tests)
+        self.assertNotIn("test_agent_checks_pass", tests)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(integration.selections(), integration.SELECTIONS)
+
     def test_the_entry_point_lets_a_ctrl_c_reach_the_class_cleanups(self) -> None:
         # Without catchbreak a KeyboardInterrupt unwinds past doClassCleanups:
         # the stack stays up and the fixture copies stay in tracked config/.

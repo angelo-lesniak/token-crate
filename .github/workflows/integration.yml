@@ -54,18 +54,21 @@ jobs:
     # No GPU on the runner: the same images serve the fixture models on the
     # CPU and the wrapper runs its real commands against them. Each matrix
     # job starts its own stack and runs the tests that CI_JOBS in
-    # tests/integration.py assigns to it.
+    # tests/integration.py assigns to it; sets-a and sets-b split the agent
+    # set selections (SELECTION_JOBS), so each image is built once a run.
     name: integration (${{ matrix.job }})
     strategy:
       fail-fast: false
       matrix:
-        job: [clients, pi, probes]
+        job: [clients, sets-a, sets-b, probes]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CONTAINER_ENGINE: docker
       LLM_GPU: "false"
       TOKENCRATE_CI_JOB: ${{ matrix.job }}
+      # Output reaches the log as it happens, so its timestamps are true.
+      PYTHONUNBUFFERED: "1"
       # omp's cold ~16,000-token prompt takes over ten minutes on the CPU.
       TOKENCRATE_CONCURRENT_AGENTS: pi
     steps:

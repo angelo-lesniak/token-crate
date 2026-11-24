@@ -56,6 +56,15 @@ SELECTIONS = (
     "coding,guard,judge,todo,mcp,search",
     "roles,memory,hindsight,metrics",
 )
+# The two CI jobs that own the selections: a job builds each of its
+# selections' images once, for the agent check and the pi prompt. The
+# split balances the jobs by their build and CPU prompt times; `coding`
+# and `coding,metrics` share a job, where the second prompt reuses the
+# first one's prompt cache.
+SELECTION_JOBS = {
+    "sets-a": ("coding", "coding,metrics", "coding,debug,dotnet,web,browser", "roles,memory,hindsight,metrics"),
+    "sets-b": ("coding,debug,odin", "coding,guard,judge,todo,mcp,search"),
+}
 # A prompt the agent never answers has nothing to wake it: a lost model
 # response leaves the process in its event loop with no request open, and
 # the agent has no timeout of its own. The bound is generous because the
@@ -192,14 +201,15 @@ class IntegrationTests(unittest.TestCase):
         )
 
     def test_agent_checks_pass(self) -> None:
-        for sets in SELECTIONS:
+        for sets in selections():
             with self.subTest(agent="pi", sets=sets):
                 tokencrate("smoke", "--agent", "pi", "--sets", sets)
-        with self.subTest(agent="omp"):
-            tokencrate("smoke", "--agent", "omp")
+
+    def test_omp_check_passes(self) -> None:
+        tokencrate("smoke", "--agent", "omp")
 
     def test_pi_runs_each_selection(self) -> None:
-        for sets in SELECTIONS:
+        for sets in selections():
             with self.subTest(sets=sets):
                 result = self.prompt(
                     f"pi ({sets})",
@@ -459,15 +469,21 @@ class IntegrationTests(unittest.TestCase):
 # CI runs the suite as parallel jobs, each with its own stack. Every test
 # names its job here, so a new test cannot drop out of CI unnoticed.
 CI_JOBS = {
-    "test_agent_checks_pass": "clients",
-    "test_concurrent_clients": "clients",
-    "test_home_lifecycle_pi": "clients",
-    "test_home_lifecycle_omp": "clients",
-    "test_home_lifecycle_pi_web": "clients",
-    "test_pi_runs_each_selection": "pi",
-    "test_probes_swap_the_loaded_model": "probes",
-    "test_thinking_level_reaches_the_template": "probes",
+    "test_agent_checks_pass": ("sets-a", "sets-b"),
+    "test_omp_check_passes": ("clients",),
+    "test_concurrent_clients": ("clients",),
+    "test_home_lifecycle_pi": ("clients",),
+    "test_home_lifecycle_omp": ("clients",),
+    "test_home_lifecycle_pi_web": ("clients",),
+    "test_pi_runs_each_selection": ("sets-a", "sets-b"),
+    "test_probes_swap_the_loaded_model": ("probes",),
+    "test_thinking_level_reaches_the_template": ("probes",),
 }
+
+
+def selections() -> tuple[str, ...]:
+    """The selections of this CI job (TOKENCRATE_CI_JOB), or all of them."""
+    return SELECTION_JOBS.get(os.environ.get("TOKENCRATE_CI_JOB", ""), SELECTIONS)
 
 
 def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: str | None) -> unittest.TestSuite:
@@ -475,12 +491,14 @@ def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: 
     every = set(unittest.TestLoader().getTestCaseNames(IntegrationTests))
     if every != CI_JOBS.keys():
         raise RuntimeError(f"CI_JOBS does not match the tests: {sorted(every ^ CI_JOBS.keys())}")
+    if sorted(sets for owned in SELECTION_JOBS.values() for sets in owned) != sorted(SELECTIONS):
+        raise RuntimeError("SELECTION_JOBS must hold every selection once")
     job = os.environ.get("TOKENCRATE_CI_JOB")
     if not job:
         return tests
-    if job not in CI_JOBS.values():
+    if not any(job in jobs for jobs in CI_JOBS.values()):
         raise RuntimeError(f"TOKENCRATE_CI_JOB={job} names no job in CI_JOBS")
-    selected = [name for name in loader.getTestCaseNames(IntegrationTests) if CI_JOBS[name] == job]
+    selected = [name for name in loader.getTestCaseNames(IntegrationTests) if job in CI_JOBS[name]]
     return unittest.TestSuite(IntegrationTests(name) for name in selected)
 
 
