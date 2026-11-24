@@ -9,8 +9,11 @@ images and the running stack by tests/integration.py.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -965,6 +968,29 @@ class ProjectContractTests(unittest.TestCase):
         for line in USAGE.splitlines():
             if line.startswith("  bin/tokencrate "):
                 self.assertIn(line.strip(), cli_page, f"docs/cli.md must show the usage line verbatim: {line.strip()}")
+
+    @unittest.skipUnless(shutil.which("node"), "node is required to run the image checks")
+    def test_image_checks_that_drive_a_sets_own_code_pass_against_the_tree(self) -> None:
+        # An image check that imports a set's extension, and nothing from
+        # node_modules, runs here too, with the set's directory in place of
+        # its path in the image: a change to the extension that breaks the
+        # check fails before an image is built.
+        sets_dir = PROJECT_ROOT / "config" / "agent-sets"
+        environment = {**os.environ, "TOKENCRATE_JUDGE_URL": "http://judge:8080"}
+        ran = []
+        for manifest in sorted(sets_dir.glob("*/set.toml")):
+            for command in tomllib.loads(manifest.read_text(encoding="utf-8")).get("check", []):
+                if 'import("/opt/tokencrate/sets/' not in command or "node_modules" in command:
+                    continue
+                ran.append(manifest.parent.name)
+                local = command.replace("/opt/tokencrate/sets/", f"{sets_dir}/")
+                with self.subTest(set=manifest.parent.name, check=command[:80]):
+                    run = subprocess.run(
+                        ["bash", "-c", local], capture_output=True, text=True, env=environment, timeout=60, check=False
+                    )
+                    self.assertEqual(run.returncode, 0, run.stderr[-1500:])
+        self.assertGreaterEqual(ran.count("guard"), 2)
+        self.assertGreaterEqual(ran.count("judge"), 3)
 
 
 if __name__ == "__main__":
