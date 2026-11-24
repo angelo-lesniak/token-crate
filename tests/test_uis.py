@@ -6,8 +6,10 @@ import contextlib
 import dataclasses
 import io
 import json
+import os
 import socket
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.support import Scratch, free_port
@@ -41,7 +43,7 @@ class UiTests(unittest.TestCase):
         self.scratch = Scratch()
         self.addCleanup(self.scratch.close)
         self.settings = env.load(
-            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-2x128k")
+            self.scratch.root, self.scratch.environment(LLM_DEFAULT_PRESET="qwen3.8-27b-q4-mtp-2x128k")
         )
         self.engine = engine.Engine("docker", self.settings)
 
@@ -74,7 +76,7 @@ class UiTests(unittest.TestCase):
             with patch.object(self.engine, "containers", return_value=[container("pi-web", 1, port)]):
                 self.engine.require_port(uis.container_names("pi-web")[1], port)
                 with self.assertRaisesRegex(TokenCrateError, "belongs to another container"):
-                    self.engine.require_port(uis.container_names("paseo")[1], port)
+                    self.engine.require_port(uis.container_names("custom")[1], port)
                 # Owning another port never excuses a conflict on this port.
                 with self.assertRaisesRegex(TokenCrateError, "cannot use host port"):
                     with patch.object(self.engine, "containers", return_value=[container("pi-web", 1, "1")]):
@@ -108,21 +110,21 @@ class UiTests(unittest.TestCase):
 
     def test_status_reports_the_project_and_the_access_from_the_agent_container(self):
         owned = [container("pi-web", role) for role in (0, 1)]
-        owned += [container("paseo", role, "4250", access="cloud") for role in (0, 1)]
+        owned += [container("custom", role, "4444", access="cloud") for role in (0, 1)]
         owned[0]["Config"]["Env"].append("TOKENCRATE_PROJECT_DIR=/projects/selected")
         owned[1]["State"] = {"Status": "running"}
         with patch.object(uis, "containers", return_value=owned), contextlib.redirect_stdout(io.StringIO()) as output:
             uis.print_status(self.engine)
         lines = output.getvalue().splitlines()
-        self.assertEqual(lines[0], "UI paseo: forwarder unknown http://127.0.0.1:4250/ project=unknown cloud")
+        self.assertEqual(lines[0], "UI custom: forwarder unknown http://127.0.0.1:4444/ project=unknown cloud")
         self.assertEqual(lines[1], "UI pi-web: forwarder running http://127.0.0.1:4224/ project=/projects/selected")
         self.assertEqual(uis.access(container("web", access="egress")), "egress")
         # A UI whose forwarder never started (the second `run` failed) still
         # holds its project and, with --cloud, the keys: it must show.
-        orphan = [container("custom", access="cloud")]
+        orphan = [container("other", access="cloud")]
         with patch.object(uis, "containers", return_value=orphan), contextlib.redirect_stdout(io.StringIO()) as output:
             uis.print_status(self.engine)
-        self.assertEqual(output.getvalue(), "UI custom: forwarder missing project=unknown cloud\n")
+        self.assertEqual(output.getvalue(), "UI other: forwarder missing project=unknown cloud\n")
 
     def test_label_discovery_keeps_the_ui_containers_of_the_project(self):
         # The engine lists the project's containers; the UI label picks the
@@ -153,7 +155,7 @@ class UiTests(unittest.TestCase):
                 uis.containers(self.engine)
 
     def test_targeted_stop_stop_all_and_logs_need_no_manifest_or_launch_environment(self):
-        owned = [container(name, role) for name in ("pi-web", "paseo") for role in (0, 1)]
+        owned = [container(name, role) for name in ("pi-web", "custom") for role in (0, 1)]
         self.engine.command = Mock(return_value=Mock(returncode=0))
         with patch.object(uis, "containers", return_value=owned), contextlib.redirect_stdout(io.StringIO()):
             uis.stop(self.engine, "pi-web")
@@ -164,8 +166,8 @@ class UiTests(unittest.TestCase):
             self.engine.command.reset_mock()
             with self.assertRaisesRegex(TokenCrateError, "several UIs"):
                 uis.logs(self.engine)
-            uis.logs(self.engine, "paseo")
-            ui_name = uis.container_names("paseo")[0]
+            uis.logs(self.engine, "custom")
+            ui_name = uis.container_names("custom")[0]
             self.engine.command.assert_called_once_with("logs", "--follow", ui_name, check=False)
             self.engine.command.reset_mock()
             uis.stop(self.engine)
@@ -177,8 +179,8 @@ class UiTests(unittest.TestCase):
             self.assertEqual(uis.logs(self.engine), 0)
 
     def test_failed_build_does_not_start_containers_and_failed_start_keeps_them(self):
-        running = [container("paseo", role) for role in (0, 1)]
-        sibling = [container("pi-web", role) for role in (0, 1)]
+        running = [container("pi-web", role) for role in (0, 1)]
+        sibling = [container("custom", role) for role in (0, 1)]
         with (
             patch.object(uis, "containers", return_value=running + sibling),
             patch.object(self.engine, "require_port"),
@@ -189,37 +191,20 @@ class UiTests(unittest.TestCase):
         ):
             self.engine.compose = Mock(side_effect=TokenCrateError("failed build"))
             with self.assertRaisesRegex(TokenCrateError, "failed build"):
-                uis.start(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+                uis.start(self.settings, self.engine, None, "pi-web", "", str(self.scratch.project))
             self.assertEqual(len(self.engine.compose.call_args_list), 1)
             self.assertEqual(self.engine.compose.call_args.args[0], "build")
             removed.assert_not_called()
             self.engine.compose = Mock()
             with self.assertRaisesRegex(TokenCrateError, "failed readiness"):
-                uis.start(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+                uis.start(self.settings, self.engine, None, "pi-web", "", str(self.scratch.project))
             # The set's own pair is replaced after the build; the UI and the
             # forwarder start under their fixed names, the UI alone under
             # the overlay when asked; a failed pair stays for logs.
             removed.assert_called_once_with(running)
             calls = self.engine.compose.call_args_list
-            ui_name, forward_name = uis.container_names("paseo")
-            # The set's shared directory is mounted by the run, not by a
-            # Compose file: Paseo's launcher keeps its daemon identity there.
-            store = self.settings.agents_dir / "pi" / "paseo-state"
-            self.assertEqual(
-                calls[1].args,
-                (
-                    "run",
-                    "--detach",
-                    "--no-deps",
-                    "-T",
-                    "-v",
-                    f"{store}:{uis.UI_STATE_MOUNT}",
-                    "--name",
-                    ui_name,
-                    "agent-ui",
-                ),
-            )
-            self.assertEqual(oct(store.stat().st_mode & 0o777), "0o700")
+            ui_name, forward_name = uis.container_names("pi-web")
+            self.assertEqual(calls[1].args, ("run", "--detach", "--no-deps", "-T", "--name", ui_name, "agent-ui"))
             self.assertFalse(calls[1].kwargs["egress"])
             self.assertEqual(
                 calls[2].args,
@@ -227,17 +212,28 @@ class UiTests(unittest.TestCase):
             )
             self.assertNotIn("egress", calls[2].kwargs)
             self.assertFalse(any("down" in call.args for call in calls))
-            self.assertEqual(calls[1].kwargs["TOKENCRATE_UI_SET"], "paseo")
-            self.assertEqual(calls[2].kwargs["TOKENCRATE_UI_HOST_PORT"], "4250")
-            self.assertEqual(agentsets.load_set(self.scratch.root, "paseo").ui.host_port, 4250)
+            self.assertEqual(calls[1].kwargs["TOKENCRATE_UI_SET"], "pi-web")
+            self.assertEqual(calls[2].kwargs["TOKENCRATE_UI_HOST_PORT"], "4224")
+            self.assertEqual(agentsets.load_set(self.scratch.root, "pi-web").ui.host_port, 4224)
+
+    def test_the_printed_address_opens_the_project(self):
+        entry = uis.ui_entry(self.settings, "pi-web")
+        self.assertEqual(
+            uis.address(entry, "4224", Path("/srv/my project")), "http://127.0.0.1:4224/?cwd=%2Fsrv%2Fmy%20project"
+        )
+        # A path that is not UTF-8 is quoted byte by byte.
+        undecodable = Path(os.fsdecode(b"/srv/caf\xe9"))
+        self.assertEqual(uis.address(entry, "4224", undecodable), "http://127.0.0.1:4224/?cwd=%2Fsrv%2Fcaf%E9")
+        plain = dataclasses.replace(entry, ui=dataclasses.replace(entry.ui, path="/"))
+        self.assertEqual(uis.address(plain, "4224", Path("/srv/x")), "http://127.0.0.1:4224/")
 
     def test_a_name_held_by_another_checkout_is_refused_and_its_container_kept(self):
         # The fixed names are not project-scoped. This project owns no UI
         # of the set, yet another project's container holds the name: the
         # failed `run` would stop that UI in its unwind, so the launch
         # refuses before removing or running anything.
-        ui_name = uis.container_names("paseo")[0]
-        other = json.dumps(container("paseo", project="other-checkout"))
+        ui_name = uis.container_names("pi-web")[0]
+        other = json.dumps(container("pi-web", project="other-checkout"))
         self.engine.command = Mock(return_value=Mock(returncode=0, stdout=other))
         with (
             patch.object(uis, "containers", return_value=[]),
@@ -252,25 +248,17 @@ class UiTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 TokenCrateError,
                 f"^the container {ui_name} belongs to another checkout's UI; "
-                "free it there with: bash bin/tokencrate ui stop paseo$",
+                "free it there with: bash bin/tokencrate ui stop pi-web$",
             ):
-                uis.start(self.settings, self.engine, None, "paseo", "", str(self.scratch.project))
+                uis.start(self.settings, self.engine, None, "pi-web", "", str(self.scratch.project))
         self.assertEqual([call.args[0] for call in self.engine.compose.call_args_list], ["build"])
         self.assertEqual({call.args[0] for call in self.engine.command.call_args_list}, {"inspect"})
         removed.assert_not_called()
         # A name the engine does not know, and one of this project's, pass.
         self.engine.command = Mock(return_value=Mock(returncode=1, stdout="", stderr="No such container"))
         self.assertFalse(self.engine.foreign_container(ui_name))
-        self.engine.command = Mock(return_value=Mock(returncode=0, stdout=json.dumps(container("paseo"))))
+        self.engine.command = Mock(return_value=Mock(returncode=0, stdout=json.dumps(container("pi-web"))))
         self.assertFalse(self.engine.foreign_container(ui_name))
-
-    def test_the_shared_ui_directory_is_a_real_path(self) -> None:
-        store = uis.ui_state_store(self.settings, "pi-web")
-        self.assertEqual(store, self.settings.agents_dir / "pi" / "pi-web-state")
-        self.assertEqual(uis.ui_state_store(self.settings, "pi-web"), store)
-        (self.settings.agents_dir / "pi" / "custom-state").symlink_to(store)
-        with self.assertRaisesRegex(TokenCrateError, "custom-state is a symbolic link"):
-            uis.ui_state_store(self.settings, "custom")
 
     def test_readiness_checks_both_containers_by_name(self):
         self.engine.container_state = Mock(side_effect=["running", "exited"])
@@ -287,7 +275,7 @@ class UiTests(unittest.TestCase):
         # The UI of a set started with --egress or --cloud marks its name
         # and its default-network address for expected DNS resolution.
         # Every target must still refuse TCP connections.
-        owned = [container("custom", access="egress"), container("custom", 1), container("paseo", 1)]
+        owned = [container("custom", access="egress"), container("custom", 1), container("other", 1)]
         with patch.object(self.engine, "containers", return_value=owned):
             targets = uis.peer_targets(self.engine).split()
         self.assertEqual(
@@ -298,7 +286,7 @@ class UiTests(unittest.TestCase):
                 "egress:10.89.1.7:8504",
                 "tokencrate-ui-forward-custom:8080",
                 "10.89.0.5:8080",
-                "tokencrate-ui-forward-paseo:8080",
+                "tokencrate-ui-forward-other:8080",
                 "10.89.0.5:8080",
             ],
         )

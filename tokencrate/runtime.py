@@ -86,6 +86,13 @@ def config_digest(settings: Settings) -> str:
 DASHBOARD_SERVICES = ("llama-exporter", "victoriametrics", "grafana")
 DASHBOARD_GPU_SERVICE = "gpu-exporter"
 DASHBOARD_RETENTION = "90 days"
+# The judge service (LLM_JUDGE_SERVER=true) serves this model set's weights,
+# at the path its command in compose.yaml names, and takes about this much
+# GPU memory beside the default preset.
+JUDGE_MODEL_SET = "kev-4b-q4-k-m"
+JUDGE_VRAM_GIB = 4
+# The judge service's --port (compose.yaml).
+JUDGE_PORT = 8080
 
 
 def start_stack(settings: Settings, engine: Engine, configuration: presets.Configuration, timeout: int) -> None:
@@ -93,10 +100,12 @@ def start_stack(settings: Settings, engine: Engine, configuration: presets.Confi
     image, start the llama service in the background, and wait until it is
     ready. The rendered preset file's hash travels as a container label, so
     Compose recreates the container when the file changed and keeps it
-    otherwise. With LLM_DASHBOARD=true the dashboard profile follows. The
-    stack lock covers the Compose `up` calls and the stack record only: the
-    image build is content-addressed and the readiness wait polls, so a
-    `down` meanwhile removes the container and the wait reports that."""
+    otherwise. With LLM_DASHBOARD=true the dashboard profile follows, and
+    with LLM_MEMORY_SERVER=true the memory server, and with
+    LLM_JUDGE_SERVER=true the judge service. The stack lock covers
+    the Compose `up` calls and the stack record only: the image build is
+    content-addressed and the readiness wait polls, so a `down` meanwhile
+    removes the container and the wait reports that."""
     # The ports are judged first so a taken one fails before the build,
     # and again under the lock, which is the judgement that counts.
     engine.require_port("llama", settings.port)
@@ -104,6 +113,15 @@ def start_stack(settings: Settings, engine: Engine, configuration: presets.Confi
         if settings.dashboard_port == settings.port:
             raise TokenCrateError("LLM_DASHBOARD_PORT must differ from LLM_PORT")
         engine.require_port("grafana", settings.dashboard_port)
+    if settings.memory_server and not settings.default_preset:
+        raise TokenCrateError("LLM_MEMORY_SERVER needs LLM_DEFAULT_PRESET, the preset the memory server extracts with")
+    if settings.judge_server and presets.missing_files(
+        configuration.model_sets[JUDGE_MODEL_SET], models_directory(settings)
+    ):
+        raise TokenCrateError(
+            f"LLM_JUDGE_SERVER needs the model set {JUDGE_MODEL_SET} "
+            f"(run: bash bin/tokencrate models fetch {JUDGE_MODEL_SET}, or set LLM_JUDGE_SERVER=false)"
+        )
     rendered = render(settings, configuration)
     default_preset = settings.default_preset
     if default_preset and default_preset not in {item.preset.name for item in rendered if item.loadable}:
@@ -123,6 +141,15 @@ def start_stack(settings: Settings, engine: Engine, configuration: presets.Confi
         with engine.lock("up"):
             engine.require_port("grafana", settings.dashboard_port)
             start_dashboard(settings, engine)
+    if settings.memory_server:
+        with engine.lock("up"):
+            engine.compose("up", "--no-build", "--detach", "hindsight", profiles=("memory",))
+        print(f"Memory server started for agent pi --memory (its database is under {settings.agents_dir}/hindsight)")
+    if settings.judge_server:
+        with engine.lock("up"):
+            engine.compose("up", "--no-build", "--detach", "judge", profiles=("judge",))
+        wait_for_judge(engine, timeout)
+        print(f"Judge service ready for the judge agent set (Kev-4B, model set {JUDGE_MODEL_SET})")
 
 
 def start_dashboard(settings: Settings, engine: Engine) -> None:
@@ -173,7 +200,7 @@ def require_isolated_networks(engine: Engine) -> None:
     overlay, or by hand under the project's name, would keep its options
     silently. `up` refuses before any download, and every agent session
     refuses before its container starts, until the network is gone."""
-    for network in ("agents", "ui", "dashboard"):
+    for network in ("agents", "ui", "dashboard", "memory"):
         document = engine.network_document(network, missing_ok=True)
         if document is None:
             continue
@@ -309,6 +336,26 @@ def wait_until_ready(settings: Settings, engine: Engine, timeout: int, **poll_op
             f"preset {preset} is {status or 'not listed'} instead of loaded{cause}. "
             "Check the logs: bash bin/tokencrate logs"
         )
+
+
+def wait_for_judge(engine: Engine, timeout: int, **poll_options) -> None:
+    """Wait until the judge service answers /health. llama-server listens
+    before it loads Kev-4B and answers 503 until then; the judge publishes
+    no port, so the check runs in its container."""
+    ids = engine.container_ids("judge", all_states=True)
+    container_id = ids[0] if ids else ""
+    logs = f"{engine.name} logs {container_id or 'the judge container'}"
+    remedy = f"Check its logs: {logs}, or set LLM_JUDGE_SERVER=false"
+    probe = ("exec", container_id, "curl", "-sf", "-o", "/dev/null", f"http://127.0.0.1:{JUDGE_PORT}/health")
+    for _ in poll(
+        lambda: engine.container_state(container_id) if container_id else "removed",
+        timeout,
+        stopped=f"the judge container is {{state}} before it was ready. {remedy}",
+        timed_out=f"the judge did not become ready within {timeout}s. {remedy}",
+        **poll_options,
+    ):
+        if engine.command(*probe, capture=True, check=False).returncode == 0:
+            return
 
 
 def print_containers(settings: Settings, engine: Engine) -> None:

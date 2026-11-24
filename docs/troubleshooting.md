@@ -49,24 +49,13 @@ open. Open it directly, not through a page of another site.
 [Forwarder](privacy.md#forwarder) lists the values a reverse proxy must
 pass on.
 
-## Paseo asks to pair again or shows the previous project
-
-After a relaunch for another project, reload the page. For a fresh
-identity, stop the UI (`bash bin/tokencrate ui stop paseo`) and delete
-`daemon-keypair.json` and `server-id` from the per-set store
-`LLM_AGENTS_DIR/pi/paseo-state/` and from the `.paseo` directory of
-every project's agent home. Deleting them from the store alone changes
-nothing, because the next start copies a project's identity back into
-it.
-
 ## pi reports `Summarization failed` and refuses the next prompt
 
 After a turn that fills the preset's slot ends with `length`, pi's
 compaction can fail with `Summarization failed: generation hit the
 token cap and the summary is incomplete`; the agent then stays busy and
-refuses the next prompt. In PI WEB, reopen the conversation: it
-compacts and continues. No recovery in terminal pi is known; start a
-new session, on a preset with a larger slot if the slot fills often.
+refuses the next prompt. No recovery is known; start a new session, on
+a preset with a larger slot if the slot fills often.
 
 ## pi compacts after almost every tool call on a 32K preset
 
@@ -86,6 +75,26 @@ return no answer. Lower the effort for the prompt or raise the client's
 token limit ([Reasoning effort](models.md#reasoning-effort)). In
 [`smoke`](cli.md#smoke), the same ending fails the `reply terminates`
 check; on an abliterated preset it can also be a reasoning loop.
+
+## The `judge` set never advises
+
+Look at the set's status in pi's footer or pi-web's bottom bar:
+
+- `judge: 0 asked, 0 advised`: the set is loaded and had nothing to ask
+  yet. The done check asks when a run ends with a final message, the
+  stall check only after repeated failures.
+- `judge: off` with a reason: the judge is not asked again until pi
+  restarts. The reasons are a name that does not resolve (`up` did not
+  run with `LLM_JUDGE_SERVER=true`), a server that does not serve
+  `kev-4b`, and three failed requests in a row (refused, dropped, timed
+  out, or an HTTP error). A judge that is restarting fails for a moment;
+  one still loading is asked at the next check. The transcript holds the
+  first failure as a `custom` entry with `"customType":"judge"`, such as
+  `TypeError: EAI_AGAIN`.
+- No status: the set is not in the session's selection, or the session
+  or UI has a route out (`--egress`, `--cloud`) and got no judge
+  address. The wrapper passes the address at the start, and only when
+  `LLM_JUDGE_SERVER` is true and the judge service runs.
 
 ## Ask for help
 

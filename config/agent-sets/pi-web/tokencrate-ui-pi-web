@@ -1,29 +1,32 @@
 #!/usr/bin/env bash
-# Starts PI WEB inside the pi container: the session daemon, then the web
-# server, on the port the set declares. The wrapper's entrypoint has
-# prepared the agent home and changed into the project directory.
+# Starts pi-web (agegr/pi-web) inside the pi container on the port the set
+# declares: one Next.js server that runs every session in its own process
+# through pi's SDK, with the agent home the entrypoint prepared, in the
+# project directory the entrypoint changed into.
 set -Eeuo pipefail
 
 # The port the set manifest declares, passed in by the wrapper, which
 # hands the same value to the forwarder; declaring it twice would let the
 # two drift, and a mismatch shows only as the `ui` start timeout.
 readonly PORT=${TOKENCRATE_UI_PORT:?the wrapper sets this from the set manifest}
-readonly DATA_DIR="$HOME/.pi-web"
-readonly SOCKET=/run/tokencrate/pi-web-sessiond.sock
+# TOKENCRATE_PREFIX puts the fixed container paths below a temporary root
+# for the launcher test of the static gate; it is empty in the container.
+readonly PREFIX=${TOKENCRATE_PREFIX:-}
+readonly PACKAGE="$PREFIX/opt/tokencrate/sets/pi-web/node_modules/@agegr/pi-web"
+# The package's `.next` links here (the set's build line).
+readonly NEXT_DIR="$PREFIX/run/tokencrate/pi-web-next"
+# pi-web keeps the sidebar (pins, archive, project order and names, read
+# times) in this file beside pi's own files in the agent home, which is a
+# tmpfs; the retained copy is in the set's state directory.
+readonly STATE_NAME=pi-web-session-state.json
+readonly LIVE_STATE="$HOME/.pi/agent/$STATE_NAME"
+readonly RETAINED_STATE="$HOME/.pi-web/$STATE_NAME"
+readonly SAVE_INTERVAL=5
 
-export PI_WEB_PORT=$PORT PI_WEB_DATA_DIR=$DATA_DIR PI_WEB_SESSIOND_SOCKET=$SOCKET
-# No release check and no model-catalog refresh: the container has no
-# route out unless the UI was started with --egress or --cloud, and the
-# failures would only fill the log.
-export PI_WEB_OFFLINE=1 PI_WEB_SKIP_VERSION_CHECK=1
-# Keep the model's tool vocabulary the same as in the terminal: no
-# PI WEB session-spawning or session-messaging tools (the coding set has a
-# subagent tool) and no PI WEB environment facts in the system prompt.
-export PI_WEB_SPAWN_SESSIONS=false PI_WEB_SUBSESSIONS=false PI_WEB_SESSION_MESSAGES=false PI_WEB_ENVIRONMENT_FACTS=false
-# The address the daemon listens on: the container's address on the UI
+# The address the server listens on: the container's address on the UI
 # network, where the forwarder reaches it by name. A UI started with
 # --egress or --cloud has a second interface, on the default network,
-# which carries the default route; a daemon on every interface would
+# which carries the default route; a server on every interface would
 # answer there too, past the forwarder's Host check (the host on Docker,
 # egress sessions on both engines). The image has no `ip`, so node reads
 # the route table and the interfaces.
@@ -50,74 +53,88 @@ ui_address() {
   '
 }
 
-mkdir -p "$DATA_DIR"
-# The project directory is the only project; PI WEB lists it at once. Of
-# the pi packages PI WEB bundles, only session naming (one short title
-# request to the session's model) is kept; relays and workflows are
-# recorded as dismissed so the daemon does not add them to pi's package
-# list at every start (the entrypoint would remove them again).
-node - "$DATA_DIR" "$PWD" "$HOME/.pi/agent" <<'JS'
+# A regular file or nothing: the retained directory is the host's.
+regular_or_absent() {
+  if [[ -L "$1" || ( -e "$1" && ! -f "$1" ) ]]; then
+    echo "TokenCrate UI: $1 must be a regular file; move it aside" >&2
+    exit 1
+  fi
+}
+
+# Copies one file into the retained directory by a rename, so a reader
+# never sees half of it. The host owns that directory: a link or a
+# directory planted at either name fails the copy instead of redirecting it.
+retain() {
+  rm -f "$2.tmp" 2>/dev/null || true
+  cp -T --no-dereference --remove-destination "$1" "$2.tmp" && mv -T "$2.tmp" "$2"
+}
+
+# pi-web replaces the file by a rename, so a copy that differs is the
+# whole of a later version. A file it could not parse it sets aside as
+# <name>.corrupt-<time> and starts over; the set-aside copy is retained
+# before the fresh state replaces the saved one. A failed save is reported
+# and retried; it does not stop the UI.
+save_state() {
+  local file
+  for file in "$LIVE_STATE".corrupt-*; do
+    [[ -f "$file" && ! -L "$file" && ! -e "${RETAINED_STATE%/*}/${file##*/}" ]] || continue
+    retain "$file" "${RETAINED_STATE%/*}/${file##*/}" || echo "TokenCrate UI: could not keep $file" >&2
+  done
+  [[ -f "$LIVE_STATE" && ! -L "$LIVE_STATE" ]] && ! cmp -s "$LIVE_STATE" "$RETAINED_STATE" || return 0
+  retain "$LIVE_STATE" "$RETAINED_STATE" || echo "TokenCrate UI: could not save $RETAINED_STATE" >&2
+}
+
+# The build output, assembled in the run directory from links to the files
+# the image ships, with fresh preview-mode secrets in the two files that
+# hold them. Next.js skips pi-web's Host and Origin checks for a request
+# that carries the published preview id, and pi-web replaces it only in
+# the prerender manifest, while Next.js reads it from server/preview-props.json.
+link_entries() {
+  local entry
+  shopt -s nullglob dotglob
+  for entry in "$1"/*; do
+    [[ "${entry##*/}" == "$3" ]] || ln -s "$entry" "$2/"
+  done
+  shopt -u nullglob dotglob
+}
+rm -rf "$NEXT_DIR"
+mkdir -p "$NEXT_DIR/server"
+link_entries "$PACKAGE/.next-image" "$NEXT_DIR" server
+link_entries "$PACKAGE/.next-image/server" "$NEXT_DIR/server" preview-props.json
+rm "$NEXT_DIR/prerender-manifest.json"
+node - "$PACKAGE/.next-image" "$NEXT_DIR" <<'JS'
 const fs = require("fs");
-const path = require("path");
 const crypto = require("crypto");
-const [dataDir, project, profileDir] = process.argv.slice(2);
-const now = new Date().toISOString();
-const projectsFile = path.join(dataDir, "projects.json");
-const dismissalsFile = path.join(dataDir, "pi-package-dismissals.json");
-for (const file of [projectsFile, dismissalsFile]) {
-  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
-  if (stat && !stat.isFile()) throw new Error(`TokenCrate UI: ${file} must be a regular file; move it aside`);
-}
-const read = (file, fallback) => {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch (error) { return fallback; }
+const [image, live] = process.argv.slice(2);
+// The lengths Next.js generates at build time.
+const preview = {
+  previewModeId: crypto.randomBytes(16).toString("hex"),
+  previewModeSigningKey: crypto.randomBytes(32).toString("hex"),
+  previewModeEncryptionKey: crypto.randomBytes(32).toString("hex"),
 };
-const write = (file, value) => {
-  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-  try {
-    fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-    fs.renameSync(temporary, file);
-  } finally { fs.rmSync(temporary, { force: true }); }
-};
-const projects = read(projectsFile, { projects: [] });
-if (!Array.isArray(projects.projects)) projects.projects = [];
-if (!projects.projects.some((entry) => entry && entry.path === project)) {
-  projects.projects.push({ id: crypto.randomUUID(), name: path.basename(project), path: project, createdAt: now });
-  write(projectsFile, projects);
-}
-const dismissals = read(dismissalsFile, { dismissals: [] });
-if (!Array.isArray(dismissals.dismissals)) dismissals.dismissals = [];
-const dismissed = ["@jmfederico/pi-relay", "@jmfederico/pi-web-workflows"];
-const missing = dismissed.filter((packageId) => !dismissals.dismissals.some((entry) => entry && entry.packageId === packageId && entry.profileDir === profileDir));
-if (missing.length > 0) {
-  for (const packageId of missing) dismissals.dismissals.push({ profileDir, packageId, dismissedAt: now });
-  write(dismissalsFile, dismissals);
-}
+const manifest = JSON.parse(fs.readFileSync(`${image}/prerender-manifest.json`, "utf8"));
+manifest.preview = { ...manifest.preview, ...preview };
+fs.writeFileSync(`${live}/prerender-manifest.json`, JSON.stringify(manifest));
+const props = JSON.parse(fs.readFileSync(`${image}/server/preview-props.json`, "utf8"));
+fs.writeFileSync(`${live}/server/preview-props.json`, JSON.stringify({ ...props, ...preview }));
 JS
 
-rm -f "$SOCKET"
+regular_or_absent "$RETAINED_STATE"
+regular_or_absent "$RETAINED_STATE.tmp"
+rm -f "$RETAINED_STATE.tmp"
+[[ ! -f "$RETAINED_STATE" ]] || cp "$RETAINED_STATE" "$LIVE_STATE"
+
 address=$(ui_address)
-export PI_WEB_HOST=$address
-pi-web-sessiond &
-sessiond=$!
-ready=false
-for _ in $(seq 1 60); do
-  [[ -S "$SOCKET" ]] && { ready=true; break; }
-  kill -0 "$sessiond" 2>/dev/null || { wait "$sessiond" || true; echo "TokenCrate UI: pi-web-sessiond exited before it listened" >&2; exit 1; }
-  sleep 0.5
-done
-# Falling through silently turned a daemon that never listens into the
-# wrapper's start timeout instead of a message from the launcher.
-if [[ "$ready" != true ]]; then
-  echo "TokenCrate UI: pi-web-sessiond did not create $SOCKET within 30 seconds" >&2
-  kill "$sessiond" 2>/dev/null || true
-  exit 1
-fi
-pi-web-server &
+pi-web --hostname "$address" --port "$PORT" --no-open &
 server=$!
-trap 'kill "$sessiond" "$server" 2>/dev/null || true' EXIT
+( while sleep "$SAVE_INTERVAL"; do save_state; done ) &
+saver=$!
+# The server gets the container's stop signal and its grace period; the
+# last state is saved after it has exited.
+trap 'kill "$saver" 2>/dev/null || true; kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true; save_state' EXIT
 # Bash runs no EXIT trap for an untrapped fatal signal, so a container stop
-# would leave both processes to the engine's kill; Paseo traps TERM too.
+# would leave the server to the engine's kill.
 trap 'exit 143' TERM INT
-echo "TokenCrate UI: PI WEB listens on $address:$PORT inside the container"
+echo "TokenCrate UI: pi-web listens on $address:$PORT inside the container"
 # The first process to exit ends the session; the trap stops the other.
-wait -n "$sessiond" "$server"
+wait -n "$server" "$saver"

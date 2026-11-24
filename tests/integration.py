@@ -6,7 +6,7 @@ the two default skill sets, and runs `up` (which waits for the default
 preset). The checks run the smoke and bench probes (which swap the loaded
 model between the two fixture presets), the agent check and a prompt for
 each agent (pi for every shipped toolchain selection), the thinking-level
-check, and the home lifecycle of both agents and both browser UIs on the
+check, and the home lifecycle of both agents and pi-web on the
 images the run builds. `down`, the removal of the fixture copies, reports,
 and scratch homes follow; the model files and images stay for the next
 run. It needs a container engine and network access (the pinned images,
@@ -48,7 +48,23 @@ MODEL_SETS = ("ci-tiny", "ci-small")
 PRESETS = ("ci-tiny", "ci-small", "ci-think")
 SKILL_SETS = ("pocock-core", "skill-crate")
 # Every shipped agent-set selection: the agent check and a prompt run for each.
-SELECTIONS = ("coding", "coding,metrics", "coding,debug,dotnet,web,browser", "coding,debug,odin")
+SELECTIONS = (
+    "coding",
+    "coding,metrics",
+    "coding,debug,dotnet,web,browser",
+    "coding,debug,odin",
+    "coding,guard,judge,todo,mcp,search",
+    "roles,memory,hindsight,metrics",
+)
+# The two CI jobs that own the selections: a job builds each of its
+# selections' images once, for the agent check and the pi prompt. The
+# split balances the jobs by their build and CPU prompt times; `coding`
+# and `coding,metrics` share a job, where the second prompt reuses the
+# first one's prompt cache.
+SELECTION_JOBS = {
+    "sets-a": ("coding", "coding,metrics", "coding,debug,dotnet,web,browser", "roles,memory,hindsight,metrics"),
+    "sets-b": ("coding,debug,odin", "coding,guard,judge,todo,mcp,search"),
+}
 # A prompt the agent never answers has nothing to wake it: a lost model
 # response leaves the process in its event loop with no request open, and
 # the agent has no timeout of its own. The bound is generous because the
@@ -161,20 +177,16 @@ class IntegrationTests(unittest.TestCase):
     def test_concurrent_clients(self) -> None:
         from tests.concurrent_clients import run
 
-        # Fresh state is part of this test: retained Paseo provider settings
-        # must not silently select a different effective model.
+        # Fresh state is part of this test: retained UI settings must not
+        # silently select a different effective model.
         project = self.scratch / "concurrent-project"
         project.mkdir()
-        identity = self.settings.agents_dir / "pi" / "paseo-state"
-        had_identity = identity.exists()
         try:
             run(ROOT, project)
         finally:
             for directory in (project, project.with_name(project.name + "-peer")):
                 for agent in agenthome.AGENTS:
                     shutil.rmtree(session.agent_home_directory(self.settings, agent, directory), ignore_errors=True)
-            if not had_identity:
-                shutil.rmtree(identity, ignore_errors=True)
 
     def test_probes_swap_the_loaded_model(self) -> None:
         self.probe("smoke", "--preset", "ci-small")
@@ -189,14 +201,15 @@ class IntegrationTests(unittest.TestCase):
         )
 
     def test_agent_checks_pass(self) -> None:
-        for sets in SELECTIONS:
+        for sets in selections():
             with self.subTest(agent="pi", sets=sets):
                 tokencrate("smoke", "--agent", "pi", "--sets", sets)
-        with self.subTest(agent="omp"):
-            tokencrate("smoke", "--agent", "omp")
+
+    def test_omp_check_passes(self) -> None:
+        tokencrate("smoke", "--agent", "omp")
 
     def test_pi_runs_each_selection(self) -> None:
-        for sets in SELECTIONS:
+        for sets in selections():
             with self.subTest(sets=sets):
                 result = self.prompt(
                     f"pi ({sets})",
@@ -274,9 +287,6 @@ class IntegrationTests(unittest.TestCase):
 
     def test_home_lifecycle_pi_web(self) -> None:
         self.home_lifecycle("pi", ui="pi-web")
-
-    def test_home_lifecycle_paseo(self) -> None:
-        self.home_lifecycle("pi", ui="paseo")
 
     def home_lifecycle(self, agent: str, ui: str | None = None) -> None:
         """The agent home without a model: the production service rendered
@@ -373,15 +383,14 @@ class IntegrationTests(unittest.TestCase):
             container's own name."""
             script = f"test -f {HOME}/.{agent}/agent/models.{'json' if agent == 'pi' else 'yml'}"
             if ui:
-                path = "api/health" if ui == "paseo" else ""
                 # Loopback first: a container without a network (this
                 # fixture) resolves nothing, and an unbounded lookup would
                 # spend the deadline on resolver timeouts.
                 script += (
-                    f' && (curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:{port}/{path}" && exit 0;'
+                    f' && (curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:{port}/" && exit 0;'
                     ' for address in $(timeout 3 getent ahostsv4 "$(cat /etc/hostname)" 2>/dev/null'
                     " | awk '{print $1}' | sort -u); do"
-                    f' curl -sf --max-time 5 -o /dev/null "http://$address:{port}/{path}" && exit 0; done; exit 1)'
+                    f' curl -sf --max-time 5 -o /dev/null "http://$address:{port}/" && exit 0; done; exit 1)'
                 )
             deadline = time.monotonic() + 65
             quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "timeout": 30}
@@ -413,19 +422,6 @@ class IntegrationTests(unittest.TestCase):
             compose("up", "--no-build", "--detach", "first")
             first = container("first")
             check(first)
-            if ui == "paseo":
-                # The workspace registration follows the daemon's health response.
-                deadline = time.monotonic() + 30
-                while str(project) not in execute(first, "paseo workspace ls --json"):
-                    self.assertLess(time.monotonic(), deadline, "Paseo did not register the workspace")
-                    time.sleep(0.5)
-            identity = {
-                p.name: p.read_bytes()
-                for p in (home / ".paseo").glob("*")
-                if p.name in ("server-id", "daemon-keypair.json")
-            }
-            if ui == "paseo":
-                self.assertEqual(len(identity), 2, "Paseo did not create its identity")
             print(execute(first, f"du -sk {HOME}"), flush=True)
             execute(first, f"touch {HOME}/planted; mkdir -p {HOME}/.cache; touch {HOME}/.cache/unlisted")
             if agent == "pi":
@@ -441,7 +437,7 @@ class IntegrationTests(unittest.TestCase):
             other = container("peer")
             # The peer runs no UI launcher, so it only needs the generated config.
             execute(other, f"for i in {{1..100}}; do test -f {HOME}/.{agent}/agent/models.* && break; sleep .1; done")
-            absent(other, "planted", ".pi-web/lifecycle-marker", ".paseo/lifecycle-marker")
+            absent(other, "planted", ".pi-web/lifecycle-marker")
             fixture(other)
             if agent == "pi":
                 self.assertNotIn("lifecycleMarker", settings_json(other))
@@ -462,8 +458,6 @@ class IntegrationTests(unittest.TestCase):
                     self.assertEqual(
                         execute(first, f"cat {HOME}/{relative}/lifecycle-marker"), "retained", (action, relative)
                     )
-                for filename, data in identity.items():
-                    self.assertEqual((home / ".paseo" / filename).read_bytes(), data, (action, filename))
             self.assertEqual((home / "host-unlisted").read_text(), "host data")
         except BaseException:
             print(compose("logs", "--no-color"), flush=True)
@@ -475,16 +469,21 @@ class IntegrationTests(unittest.TestCase):
 # CI runs the suite as parallel jobs, each with its own stack. Every test
 # names its job here, so a new test cannot drop out of CI unnoticed.
 CI_JOBS = {
-    "test_agent_checks_pass": "clients",
-    "test_concurrent_clients": "clients",
-    "test_home_lifecycle_pi": "clients",
-    "test_home_lifecycle_omp": "clients",
-    "test_home_lifecycle_pi_web": "clients",
-    "test_home_lifecycle_paseo": "clients",
-    "test_pi_runs_each_selection": "pi",
-    "test_probes_swap_the_loaded_model": "probes",
-    "test_thinking_level_reaches_the_template": "probes",
+    "test_agent_checks_pass": ("sets-a", "sets-b"),
+    "test_omp_check_passes": ("clients",),
+    "test_concurrent_clients": ("clients",),
+    "test_home_lifecycle_pi": ("clients",),
+    "test_home_lifecycle_omp": ("clients",),
+    "test_home_lifecycle_pi_web": ("clients",),
+    "test_pi_runs_each_selection": ("sets-a", "sets-b"),
+    "test_probes_swap_the_loaded_model": ("probes",),
+    "test_thinking_level_reaches_the_template": ("probes",),
 }
+
+
+def selections() -> tuple[str, ...]:
+    """The selections of this CI job (TOKENCRATE_CI_JOB), or all of them."""
+    return SELECTION_JOBS.get(os.environ.get("TOKENCRATE_CI_JOB", ""), SELECTIONS)
 
 
 def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: str | None) -> unittest.TestSuite:
@@ -492,12 +491,14 @@ def load_tests(loader: unittest.TestLoader, tests: unittest.TestSuite, pattern: 
     every = set(unittest.TestLoader().getTestCaseNames(IntegrationTests))
     if every != CI_JOBS.keys():
         raise RuntimeError(f"CI_JOBS does not match the tests: {sorted(every ^ CI_JOBS.keys())}")
+    if sorted(sets for owned in SELECTION_JOBS.values() for sets in owned) != sorted(SELECTIONS):
+        raise RuntimeError("SELECTION_JOBS must hold every selection once")
     job = os.environ.get("TOKENCRATE_CI_JOB")
     if not job:
         return tests
-    if job not in CI_JOBS.values():
+    if not any(job in jobs for jobs in CI_JOBS.values()):
         raise RuntimeError(f"TOKENCRATE_CI_JOB={job} names no job in CI_JOBS")
-    selected = [name for name in loader.getTestCaseNames(IntegrationTests) if CI_JOBS[name] == job]
+    selected = [name for name in loader.getTestCaseNames(IntegrationTests) if job in CI_JOBS[name]]
     return unittest.TestSuite(IntegrationTests(name) for name in selected)
 
 

@@ -26,6 +26,7 @@ COPIED = (
     "compose.podman.yaml",
     "compose.docker.yaml",
     "compose.agent-egress.yaml",
+    "compose.agent-memory.yaml",
     "pins.env",
     ".env.example",
 )

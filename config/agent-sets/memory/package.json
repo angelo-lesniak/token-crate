@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-agent-set-memory",
+  "private": true,
+  "description": "The pi-memory extension, pinned by the lockfile; pi provides the peer packages.",
+  "dependencies": {
+    "pi-memory": "0.4.2"
+  }
+}

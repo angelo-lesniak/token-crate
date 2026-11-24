@@ -100,12 +100,12 @@ class EntrypointTests(unittest.TestCase):
     def test_the_settings_are_the_repository_file_plus_the_preset_and_the_image_package_list(self) -> None:
         # The image declares the pi packages it ships and the files it seeds
         # into the agent home.
-        packages = ["/opt/tokencrate/sets/coding/node_modules/pi-lens", "/opt/tokencrate/sets/coding/subagent"]
+        packages = ["/opt/tokencrate/sets/coding/node_modules/pi-lens", "/opt/tokencrate/sets/roles/extension"]
         (self.image / "pi-packages.txt").write_text("".join(f"{package}\n" for package in packages))
         seed = self.image / "home-seed"
-        (seed / ".pi" / "agent" / "agents").mkdir(parents=True)
+        (seed / ".pi" / "agent" / "extensions" / "subagent").mkdir(parents=True)
         (seed / ".pi" / "agent" / "AGENTS.md").write_text("tools note\n")
-        (seed / ".pi" / "agent" / "agents" / "scout.md").write_text("---\nname: scout\n---\n")
+        (seed / ".pi" / "agent" / "extensions" / "subagent" / "config.json").write_text("{}\n")
         (seed / ".nuget" / "NuGet").mkdir(parents=True)
         (seed / ".nuget" / "NuGet" / "NuGet.Config").write_text("<configuration/>\n")
         result = self.run_entrypoint("pi", "true")
@@ -120,7 +120,7 @@ class EntrypointTests(unittest.TestCase):
         }
         self.assertEqual(self.settings(), expected)
         self.assertEqual((self.home / ".pi" / "agent" / "AGENTS.md").read_text(), "tools note\n")
-        self.assertEqual((self.home / ".pi" / "agent" / "agents" / "scout.md").read_text(), "---\nname: scout\n---\n")
+        self.assertEqual((self.home / ".pi" / "agent" / "extensions" / "subagent" / "config.json").read_text(), "{}\n")
         self.assertTrue((self.home / ".nuget" / "NuGet" / "NuGet.Config").is_file())
 
     def test_a_compaction_override_in_the_settings_wins_over_the_slot_cap(self) -> None:
@@ -166,6 +166,12 @@ class EntrypointTests(unittest.TestCase):
             ("OPENAI_API_KEY=sk\r\n", "line 1 has a carriage return"),
             ("# fine\nPATH=/evil\n", "line 2 sets PATH, which the agent image owns"),
             ("TOKENCRATE_PRESET=other\n", "sets TOKENCRATE_PRESET"),
+            # The judge's address, which only the wrapper passes.
+            ("TOKENCRATE_JUDGE_URL=http://example.invalid\n", "sets TOKENCRATE_JUDGE_URL"),
+            # The directories pi and the sets read their seeded configuration from.
+            ("PI_CODING_AGENT_DIR=/tmp/x\n", "sets PI_CODING_AGENT_DIR"),
+            ("XDG_CONFIG_HOME=/tmp/x\n", "sets XDG_CONFIG_HOME"),
+            ("XDG_STATE_HOME=/tmp/x\n", "sets XDG_STATE_HOME"),
             ("IFS=x\n", "sets IFS"),
             # The image's privacy switches (services/agents/Dockerfile and the
             # sets' ENV lines) and the variables that load code into node.
@@ -178,6 +184,15 @@ class EntrypointTests(unittest.TestCase):
             ("NUGET_PACKAGES=/tmp/x\n", "sets NUGET_PACKAGES"),
             ("NPM_CONFIG_UPDATE_NOTIFIER=true\n", "sets NPM_CONFIG_UPDATE_NOTIFIER"),
             ("NODE_OPTIONS=--require=/tmp/x.js\n", "sets NODE_OPTIONS"),
+            # The memory sets' store and server, which `agent pi --memory` sets.
+            ("PI_MEMORY_DIR=/tmp/x\n", "sets PI_MEMORY_DIR"),
+            ("HINDSIGHT_API_URL=https://example.invalid\n", "sets HINDSIGHT_API_URL"),
+            ("HINDSIGHT_OPT_IN_PATHS=/\n", "sets HINDSIGHT_OPT_IN_PATHS"),
+            ("PI_WEB_SKIP_VERSION_CHECK=0\n", "sets PI_WEB_SKIP_VERSION_CHECK"),
+            ("NEXT_TELEMETRY_DISABLED=0\n", "sets NEXT_TELEMETRY_DISABLED"),
+            ("NEXT_PRIVATE_DEBUG=1\n", "sets NEXT_PRIVATE_DEBUG"),
+            ("SKILLS_API_URL=https://example.invalid\n", "sets SKILLS_API_URL"),
+            ("PI_OAUTH_CALLBACK_HOST=0.0.0.0\n", "sets PI_OAUTH_CALLBACK_HOST"),
         ):
             with self.subTest(content=content):
                 keys.write_text(content)
@@ -193,6 +208,35 @@ class EntrypointTests(unittest.TestCase):
         self.assertIn("not mounted as a regular file", missing.stderr)
         keys.mkdir()
         self.assertIn("not mounted as a regular file", self.run_entrypoint("omp", "true").stderr)
+
+    def test_a_cloud_session_keeps_subagents_without_a_model_of_their_own_on_the_preset(self) -> None:
+        (self.prefix / "etc" / "tokencrate" / "cloud-keys").write_text("OPENAI_API_KEY=sk\n")
+        for extra, expected in (
+            ({"TOKENCRATE_CLOUD": "1"}, {"defaultModel": "tokencrate/fixture-preset"}),
+            # Offline, the subagents inherit the session model, the preset.
+            ({}, None),
+        ):
+            with self.subTest(extra=extra):
+                result = self.run_entrypoint("pi", "true", **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                settings = self.settings()
+                self.assertEqual(
+                    (settings["defaultProvider"], settings["defaultModel"]), ("tokencrate", "fixture-preset")
+                )
+                self.assertEqual(settings.get("subagents"), expected)
+
+    def test_the_guard_set_reaches_every_subagent_when_the_image_ships_it(self) -> None:
+        # A roles child loads no extension of the session; the guard set's
+        # packages are given to every child as its own.
+        guard = ["/opt/tokencrate/sets/guard/node_modules/pi-warden", "/opt/tokencrate/sets/guard/loop"]
+        packages = ["/opt/tokencrate/sets/roles/extension", *guard, "/opt/tokencrate/sets/judge/judge"]
+        (self.image / "pi-packages.txt").write_text("".join(f"{package}\n" for package in packages))
+        result = self.run_entrypoint("pi", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.settings()["subagents"], {"defaultSubagentOnlyExtensions": guard})
+        (self.image / "pi-packages.txt").write_text("/opt/tokencrate/sets/roles/extension\n")
+        self.assertEqual(self.run_entrypoint("pi", "true").returncode, 0)
+        self.assertNotIn("subagents", self.settings())
 
     def test_a_skill_whose_frontmatter_name_differs_from_its_directory_is_refused(self) -> None:
         self.make_skill(self.fetched / "one", "tdd")

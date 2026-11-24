@@ -1,0 +1,13 @@
+{
+  "toolActivation": "eager",
+  "tools": {
+    "sourceCheck": { "enabled": false }
+  },
+  "webSearch": {
+    "allowedProviders": ["exa", "brave", "tavily", "jina"]
+  },
+  "youtube": { "enabled": false },
+  "video": { "enabled": false },
+  "pdf": { "provider": "unpdf" },
+  "summaryModel": "current"
+}

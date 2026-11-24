@@ -1,0 +1,26 @@
+schema = 1
+description = "pi-memory: long-term notes, a daily log, and a scratchpad as Markdown files, injected into the system prompt; retained between sessions with agent --memory"
+pi_packages = ["node_modules/pi-memory"]
+# The store's path, which `agent --memory` binds from the host; without the
+# flag it is a directory of the home tmpfs and lasts one container. Its
+# memory_search tool needs qmd, which downloads embedding models at first
+# use, so the image ships without it and the tool answers with install
+# instructions.
+check = [
+  'test "$PI_MEMORY_DIR" = "$HOME/.pi/agent/memory"',
+  'mkdir -p "$PI_MEMORY_DIR" && test -w "$PI_MEMORY_DIR"',
+  '! command -v qmd',
+  'test "$PI_MEMORY_EXIT_SUMMARY" = 0',
+  'echo "pi-memory $(jq -r .version /opt/tokencrate/sets/memory/node_modules/pi-memory/package.json) keeps its store in $PI_MEMORY_DIR, with no summary at quit"',
+]
+note = "memory_search is unavailable (no qmd in this image); read memory files with memory_read."
+
+[env]
+PI_MEMORY_DIR = "/home/agent/.pi/agent/memory"
+# No summary at quit: it sends up to 80,000 characters of the conversation
+# to the session's model and gives up after 10 seconds, which a local model
+# is unlikely to meet once the session is long.
+PI_MEMORY_EXIT_SUMMARY = "0"
+
+[npm]
+omit_peer = true

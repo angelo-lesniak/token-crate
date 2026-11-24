@@ -1,0 +1,32 @@
+schema = 1
+description = "pi-warden's offline checks (holds on destructive commands, masked credentials, a stop for a reply that repeats itself) and a loop guard that reminds, blocks, and then stops a model that repeats its tool calls, goes round in cycles, keeps failing on one file or command, or runs past a tool call budget; both also run in roles children"
+# loop/ is the guard the model sees: pi-warden's notice of a repeated
+# failing call reaches only the user.
+pi_packages = ["node_modules/pi-warden", "loop"]
+# Jev judgments need consent (this file, or PI_WARDEN_ENABLED=1) and a key;
+# with neither, pi-warden creates no client and sends nothing. The seed
+# replaces the user file at every start, so a /warden enable lasts one
+# container. The rules guard only judges; switched on, it would also hash
+# the project's changed files into its .git at every prompt. Standing
+# preferences are off: their store is in the home tmpfs, so a lesson
+# warden_remember saved would not reach a later container, and the tool
+# answers that it records nothing instead. pi-warden declares its three
+# tools whatever the settings say.
+build = [
+  "install -D -m 0644 pi-warden.json /opt/tokencrate/home-seed/.pi/agent/pi-warden/config.json",
+]
+# The library import resolves pi-warden's dependencies and reads the seeded
+# user file the way the extension does.
+check = [
+  '''test "$(node -e 'import("/opt/tokencrate/sets/guard/node_modules/pi-warden/dist/index.js").then((w) => { const c = w.loadConfig(); console.log(c.typesafe, c.prefs.enabled) })')" = "false false"''',
+  # Eight identical turns through the loop guard's handlers, without a
+  # model: the fifth to the eighth are blocked, and the eighth ends the run.
+  '''node --input-type=module -e 'const on = {}; (await import("/opt/tokencrate/sets/guard/loop/index.js")).default({ on: (name, handler) => (on[name] = handler), sendMessage() {}, appendEntry() {} }); const message = { role: "assistant", content: [{ type: "toolCall", id: "c", name: "bash", arguments: { command: "false" } }] }; for (let turn = 1; turn <= 8; turn++) { on.message_end({ message }); const result = on.tool_call({ toolName: "bash", toolCallId: "c", input: { command: "false" } }, { ui: { notify() {} } }); on.turn_end({ message, toolResults: [{ toolCallId: "c", content: [] }] }); if (Boolean(result?.block) !== turn >= 5 || Boolean(result?.terminate) !== (turn === 8)) process.exit(1); }'''',
+  # Eight edits of one file, each with other text and the same error: one
+  # steering message at the fifth, and the ninth edit ends the run.
+  '''node --input-type=module -e 'const on = {}; let steers = 0; (await import("/opt/tokencrate/sets/guard/loop/index.js")).default({ on: (name, handler) => (on[name] = handler), sendMessage: () => steers++, appendEntry() {} }); const ctx = { ui: { notify() {} } }; for (let n = 1; n <= 9; n++) { const id = `e${n}`; const input = { path: "a.ts", edits: [{ oldText: `${n}`, newText: "" }] }; const message = { role: "assistant", content: [{ type: "toolCall", id, name: "edit", arguments: input }] }; on.message_end({ message }); const result = on.tool_call({ toolName: "edit", toolCallId: id, input }, ctx); if (Boolean(result?.terminate) !== (n === 9)) process.exit(1); if (!result) on.tool_result({ toolName: "edit", toolCallId: id, input, content: [{ type: "text", text: "Could not find the exact text in a.ts." }], isError: true }, ctx); on.turn_end({ message, toolResults: [] }); } if (steers !== 1) process.exit(1)'''',
+  'echo "pi-warden $(jq -r .version /opt/tokencrate/sets/guard/node_modules/pi-warden/package.json) loads with Jev judgments and standing preferences off; the loop guard blocks the fifth identical turn, ends the run at the eighth, and ends it after eight failed edits of one file"',
+]
+
+[npm]
+omit_peer = true

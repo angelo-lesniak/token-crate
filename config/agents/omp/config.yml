@@ -12,5 +12,9 @@ shellPath: /bin/bash
 # and stores its completion in the home, which is a fresh tmpfs at every
 # start: it would open at every interactive session and can reach no
 # provider from here. The model comes from the generated list instead.
+# The startup version check asks the npm registry for the latest omp; omp
+# skips it only when this key is off, whatever PI_OFFLINE,
+# PI_SKIP_VERSION_CHECK, or PI_TELEMETRY say.
 startup:
   setupWizard: false
+  checkUpdate: false

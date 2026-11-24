@@ -39,6 +39,9 @@ shell_files=(
 for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
+for file in config/agent-sets/guard/loop/*.js config/agent-sets/judge/judge/*.js; do
+  node --check "$file"
+done
 node --check config/agent-sets/metrics/timings/index.js
 node --check services/agents/ui-forward.js
 node --check services/dashboard/llama-exporter.js
@@ -87,27 +90,24 @@ else
   skip 'ShellCheck lint (shellcheck not found; syntax checks only)'
 fi
 
-if command -v rg >/dev/null 2>&1; then
-  # No tracked file may name a machine-specific host path. /home/agent, the
-  # fixed home inside agent containers, is the one allowed /home literal;
-  # each match is printed on its own line so that a line can hold both.
-  # The first alternative is spelled with a class so it does not match this
-  # script. Without a work tree (a `git archive` extract) the whole
-  # directory is scanned.
-  scan_paths() {
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git ls-files -z
-    else
-      printf '.\0'
-    fi
-  }
-  if scan_paths | xargs -0 rg -n -o '/mnt/host[s]hare|/home/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+' \
-    | grep -v ':/home/agent$'; then
-    printf 'static: machine-specific absolute host paths remain\n' >&2
-    exit 1
+# No tracked file may name a machine-specific host path. /home/agent and
+# /home/hindsight, the fixed homes inside the agent and memory-server
+# containers, are the allowed /home literals; each match is printed on its
+# own line so that a line can hold both. Binary files are skipped.
+# The first alternative is spelled with a class so it does not match this
+# script. Without a work tree (a `git archive` extract) the whole directory
+# is scanned.
+scan_paths() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git ls-files -z
+  else
+    printf '.\0'
   fi
-else
-  skip 'absolute host path scan (rg not found)'
+}
+if scan_paths | xargs -0 grep -rsnoIHE '/mnt/host[s]hare|/home/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+' \
+  | grep -Ev ':/home/(agent|hindsight)$'; then
+  printf 'static: machine-specific absolute host paths remain\n' >&2
+  exit 1
 fi
 
 # The pi service builds a Dockerfile the wrapper renders per agent-set
@@ -149,6 +149,10 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   render_compose docker --file compose.yaml --file compose.docker.yaml --profile dashboard
   render_compose docker --file compose.yaml --file compose.gpu.yaml --file compose.docker.yaml \
     --profile dashboard --profile dashboard-gpu
+  render_compose docker --file compose.yaml --file compose.docker.yaml --profile memory
+  TOKENCRATE_MEMORY_ADDRESS=10.89.9.2 render_compose docker --file compose.yaml --file compose.docker.yaml \
+    --file compose.agent-egress.yaml --file compose.agent-memory.yaml --profile agent-pi --profile memory
+  render_compose docker --file compose.yaml --file compose.gpu.yaml --file compose.docker.yaml --profile judge
 fi
 
 if [[ "$compose_validated" != true ]]; then

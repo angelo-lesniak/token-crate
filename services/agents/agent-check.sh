@@ -168,6 +168,20 @@ else
   fi
 fi
 
+# A session with a route out gets the judge by address or not at all: a
+# name would go to whichever resolver answers it. Offline, the judge set's
+# own check expects the name, which resolves on the internal networks only.
+if [[ -n "$egress" ]]; then
+  judge_url=${TOKENCRATE_JUDGE_URL:-}
+  if [[ -z "$judge_url" ]]; then
+    report ok 'no judge URL (no judge service running, or no judge set selected)'
+  elif [[ "$judge_url" =~ ^http://[0-9]{1,3}(\.[0-9]{1,3}){3}:8080$ ]]; then
+    report ok "the judge is given by address: $judge_url"
+  else
+    report fail "the judge URL names a host instead of an address: $judge_url"
+  fi
+fi
+
 # `touch /` fails for any unprivileged user; the mount options are the proof.
 if awk '$2 == "/" && $4 ~ /(^|,)ro(,|$)/ { found = 1 } END { exit !found }' /proc/self/mounts; then
   report ok 'the root filesystem is mounted read-only'

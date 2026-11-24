@@ -69,6 +69,10 @@ render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml \
 render --file compose.yaml --file compose.podman.yaml --profile ui
 render --file compose.yaml --file compose.podman.yaml --profile dashboard
 render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml --profile dashboard --profile dashboard-gpu
+render --file compose.yaml --file compose.podman.yaml --profile memory
+TOKENCRATE_MEMORY_ADDRESS=10.89.9.2 render --file compose.yaml --file compose.podman.yaml \
+  --file compose.agent-egress.yaml --file compose.agent-memory.yaml --profile agent-pi
+render --file compose.yaml --file compose.gpu.yaml --file compose.podman.yaml --profile judge
 
 # Network placement: agents join only the internal network unless the egress
 # overlay is added; llama joins the published default network and the agents
@@ -117,6 +121,19 @@ if grep -Fq -- '--network=tokencrate_agents' "$network_log"; then
   printf 'podman-compose compatibility: an egress session is still on the agents network\n' >&2
   exit 1
 fi
+grep -Eq -- '(-e|--env)[ =]TOKENCRATE_JUDGE_URL=( |$)' "$network_log" \
+  || { printf 'podman-compose compatibility: the egress overlay did not empty the judge URL\n' >&2; exit 1; }
+# With the judge running, the wrapper's `run -e` replaces the empty URL with
+# the judge's address.
+run_args=(-e TOKENCRATE_JUDGE_URL=http://10.89.0.9:8080)
+run_logged agent-pi "${podman_files[@]}" --file compose.agent-egress.yaml --profile agent-pi
+run_args=()
+grep -Fq -- 'TOKENCRATE_JUDGE_URL=http://10.89.0.9:8080' "$network_log" \
+  || { printf 'podman-compose compatibility: run -e did not pass the judge address\n' >&2; exit 1; }
+if grep -Eq -- 'TOKENCRATE_JUDGE_URL=(http://judge|( |$))' "$network_log"; then
+  printf 'podman-compose compatibility: an egress session kept a judge URL besides the address\n' >&2
+  exit 1
+fi
 
 # `agent --cloud`: the `run -v` binds the key file read-only, on top of the
 # service's own volumes. Only its path reaches the command line, never a key.
@@ -131,6 +148,78 @@ grep -Fq -- '/opt/tokencrate/skills' "$network_log" \
   || { printf 'podman-compose compatibility: run -v replaced the service volumes instead of adding to them\n' >&2; exit 1; }
 if grep -Fq -- 'sk-fixture-not-a-key' "$network_log"; then
   printf 'podman-compose compatibility: a key reached the podman command line\n' >&2
+  exit 1
+fi
+
+# `agent pi --memory`: the `run` binds the store and passes the memory
+# server's bank, on top of the service's own volumes and environment.
+run_args=(-v "$TEST_ROOT/memory:/home/agent/.pi/agent/memory" -e HINDSIGHT_BANK_ID=tokencrate::x)
+run_logged agent-pi "${podman_files[@]}" --profile agent-pi
+run_args=()
+grep -Fq -- "$TEST_ROOT/memory:/home/agent/.pi/agent/memory" "$network_log" \
+  || { printf 'podman-compose compatibility: run -v did not bind the memory store\n' >&2; exit 1; }
+grep -Fq -- 'HINDSIGHT_BANK_ID=tokencrate::x' "$network_log" \
+  || { printf 'podman-compose compatibility: run -e did not pass the memory bank\n' >&2; exit 1; }
+grep -Fq -- '/home/agent/.pi/agent/sessions' "$network_log" \
+  || { printf 'podman-compose compatibility: run -v replaced the service volumes instead of adding to them\n' >&2; exit 1; }
+
+# `agent pi --memory` with a route out and the hindsight set: the default
+# network and the server's internal one, never the agents network, and the
+# server's name as a hosts entry.
+export TOKENCRATE_MEMORY_ADDRESS=10.89.9.2
+run_logged agent-pi "${podman_files[@]}" --file compose.agent-egress.yaml --file compose.agent-memory.yaml --profile agent-pi
+unset TOKENCRATE_MEMORY_ADDRESS
+for network in default memory; do
+  grep -Eq -- "--network=tokencrate_$network(:|\$| )" "$network_log" \
+    || { printf 'podman-compose compatibility: an online memory session does not join %s\n' "$network" >&2; exit 1; }
+done
+if grep -Eq -- '--network=tokencrate_(agents|ui|ui-publish|dashboard|dashboard-publish)' "$network_log"; then
+  printf 'podman-compose compatibility: an online memory session joined a network other than default and memory\n' >&2
+  exit 1
+fi
+grep -Eq -- '--add-host[= ]hindsight:10\.89\.9\.2' "$network_log" \
+  || { printf 'podman-compose compatibility: an online memory session has no hosts entry for the server\n' >&2; exit 1; }
+
+# The memory server: the internal agents and memory networks, read-only, keep-id.
+run_logged hindsight "${podman_files[@]}" --profile memory
+grep -Fq -- '--network=tokencrate_agents' "$network_log" \
+  || { printf 'podman-compose compatibility: hindsight does not join the agents network\n' >&2; exit 1; }
+grep -Fq -- '--network=tokencrate_memory' "$network_log" \
+  || { printf 'podman-compose compatibility: hindsight does not join the memory network\n' >&2; exit 1; }
+if grep -Eq -- '--network=tokencrate_(default|ui|ui-publish|dashboard|dashboard-publish)' "$network_log"; then
+  printf 'podman-compose compatibility: hindsight joined a network other than agents and memory\n' >&2
+  exit 1
+fi
+grep -Fq -- '--read-only' "$network_log" \
+  || { printf 'podman-compose compatibility: hindsight is not read-only\n' >&2; exit 1; }
+grep -Fq -- 'keep-id' "$network_log" \
+  || { printf 'podman-compose compatibility: hindsight does not use keep-id\n' >&2; exit 1; }
+
+# The judge server: the agents, ui, and default networks (sessions with a
+# route out reach it there by address), read-only, keep-id, and the GPU
+# device only through the gpu overlay.
+run_logged judge "${podman_files[@]}" --profile judge
+grep -Fq -- '--network=tokencrate_agents' "$network_log" \
+  || { printf 'podman-compose compatibility: judge does not join the agents network\n' >&2; exit 1; }
+grep -Eq -- '--network=tokencrate_ui(:|$| )' "$network_log" \
+  || { printf 'podman-compose compatibility: judge does not join the ui network\n' >&2; exit 1; }
+grep -Fq -- '--network=tokencrate_default' "$network_log" \
+  || { printf 'podman-compose compatibility: judge does not join the default network\n' >&2; exit 1; }
+if grep -Eq -- '--network=tokencrate_(ui-publish|dashboard|dashboard-publish)' "$network_log"; then
+  printf 'podman-compose compatibility: judge joined a network other than agents, ui, and default\n' >&2
+  exit 1
+fi
+grep -Fq -- '--read-only' "$network_log" \
+  || { printf 'podman-compose compatibility: judge is not read-only\n' >&2; exit 1; }
+grep -Fq -- 'keep-id' "$network_log" \
+  || { printf 'podman-compose compatibility: judge does not use keep-id\n' >&2; exit 1; }
+grep -Fq -- '--device' "$network_log" \
+  || { printf 'podman-compose compatibility: judge has no GPU device with the gpu overlay\n' >&2; exit 1; }
+grep -Fq -- '--entrypoint' "$network_log" \
+  || { printf 'podman-compose compatibility: judge keeps the router entrypoint\n' >&2; exit 1; }
+run_logged judge --file compose.yaml --file compose.podman.yaml --env-file pins.env --profile judge
+if grep -Fq -- '--device' "$network_log"; then
+  printf 'podman-compose compatibility: judge has a GPU device without the gpu overlay\n' >&2
   exit 1
 fi
 

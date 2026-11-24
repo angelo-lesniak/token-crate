@@ -9,8 +9,11 @@ images and the running stack by tests/integration.py.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -23,7 +26,7 @@ except ImportError:
     ) from None
 
 from tests.support import HOME_IN_CONTAINER, home_tmpfs_directories
-from tokencrate import PROJECT_ROOT, agenthome, agentsets, env, presets, session, uis
+from tokencrate import PROJECT_ROOT, agenthome, agentsets, env, presets, runtime, session, uis
 from tokencrate.cli import USAGE
 from tokencrate.env import PIN_KEYS
 
@@ -36,6 +39,10 @@ UI_SERVICES = ("agent-ui", "ui-forward")
 # The dashboard profile: the exporter on the Node image, VictoriaMetrics, Grafana,
 # and with the GPU the DCGM exporter in its own profile.
 DASHBOARD_SERVICES = ("llama-exporter", "victoriametrics", "grafana", "gpu-exporter")
+# The memory server of the hindsight set (profile `memory`).
+MEMORY_SERVICE = "hindsight"
+# The decision model of the judge set (profile `judge`).
+JUDGE_SERVICE = "judge"
 # What each service may carry, so a second key cannot undo a hardening one
 # (`privileged`, `pid`, `network_mode`, `cap_add`, `devices`), and its bind
 # targets outside the home, so no service gains a bind the tests do not
@@ -56,12 +63,15 @@ SERVICE_KEYS = {
     | {"image", "build", "restart", "stop_grace_period", "ports", "volumes", "environment", "labels"},
     "agent-pi": AGENT_KEYS,
     "agent-omp": AGENT_KEYS,
-    "agent-ui": AGENT_KEYS | {"labels", "stop_grace_period", "command"},
+    "agent-ui": AGENT_KEYS | {"labels", "command"},
     "ui-forward": HARDENED_KEYS | {"image", "profiles", "labels", "ports", "environment", "volumes", "command"},
     "llama-exporter": HARDENED_KEYS | {"image", "profiles", "environment", "volumes", "command"},
     "victoriametrics": HARDENED_KEYS | {"image", "profiles", "volumes", "command"},
     "grafana": HARDENED_KEYS | {"image", "profiles", "ports", "environment", "volumes"},
     "gpu-exporter": HARDENED_KEYS | {"image", "profiles", "environment"},
+    "hindsight": HARDENED_KEYS | {"image", "profiles", "shm_size", "stop_grace_period", "environment", "volumes"},
+    "judge": HARDENED_KEYS
+    | {"image", "profiles", "restart", "stop_grace_period", "entrypoint", "command", "volumes", "environment"},
 }
 AGENT_MOUNTS = {
     "${LLM_AGENT_PROJECT_DIR:-/workspace}",
@@ -84,6 +94,8 @@ MOUNT_TARGETS = {
     "victoriametrics": {"/etc/tokencrate/scrape.yaml", "/victoria-metrics-data"},
     "grafana": {"/etc/tokencrate/provisioning"},
     "gpu-exporter": set(),
+    "hindsight": {"/home/hindsight/.pg0"},
+    "judge": {"/models"},
 }
 # Where a bind may come from: the checkout, a storage setting, or the
 # per-start project and home. The engine socket and a host directory have
@@ -94,6 +106,7 @@ MOUNT_SOURCES = (
     "${LLM_MODELS_DIR:?",
     "${LLM_SKILLS_DIR:?",
     "${LLM_LOCAL_SKILLS_DIR:?",
+    "${LLM_AGENTS_DIR:?",
     "${LLM_AGENT_PROJECT_DIR:-",
     "${TOKENCRATE_AGENT_HOME:-",
 )
@@ -110,11 +123,13 @@ COMPOSE_FILES = (
     "compose.podman.yaml",
     "compose.docker.yaml",
     "compose.agent-egress.yaml",
+    "compose.agent-memory.yaml",
 )
 # The internal networks: agents and the model; the browser UI, the model, and
-# the forwarder; the dashboard profile and the model. ui-publish carries the
+# the forwarder; the dashboard profile and the model; the memory server and
+# the sessions with a route out that asked for it. ui-publish carries the
 # forwarder's published port alone, dashboard-publish Grafana's.
-INTERNAL_NETWORKS = ("agents", "ui", "dashboard")
+INTERNAL_NETWORKS = ("agents", "ui", "dashboard", "memory")
 # The variables one agent or UI start sets, and the label `up` sets: the
 # only ones a Compose file may give a fallback, because both parsers
 # interpolate every service on every call (compose.yaml, the interpolation
@@ -317,7 +332,9 @@ class ProjectContractTests(unittest.TestCase):
             "the llama service must set LLAMA_ARG_OFFLINE=1 so no model server downloads files at start",
         )
         gpu_services = load_yaml("compose.gpu.yaml").get("services", {})
-        self.assertEqual(set(gpu_services), {"llama", "gpu-exporter"}, "compose.gpu.yaml covers the GPU users")
+        self.assertEqual(
+            set(gpu_services), {"llama", JUDGE_SERVICE, "gpu-exporter"}, "compose.gpu.yaml covers the GPU users"
+        )
         for name, service in gpu_services.items():
             devices = [str(device) for device in service.get("devices") or []]
             self.assertEqual(len(devices), 1, f"compose.gpu.yaml must request one device for {name}")
@@ -329,8 +346,10 @@ class ProjectContractTests(unittest.TestCase):
     def test_the_network_layout_contains_agents_and_publishes_on_loopback_alone(self) -> None:
         # The placement the privacy model rests on, as invariants over who
         # shares a network with whom (tests/podman-compose.sh proves the same
-        # from the rendered `run` arguments): the model is the only service
-        # with a route out that is not a publisher; a publisher sits alone on
+        # from the rendered `run` arguments): the model and the judge server
+        # are the only services with a route out that are not publishers,
+        # the judge so that sessions with a route out reach it by address,
+        # as they reach the model; a publisher sits alone on
         # its publish network and holds no agent; a terminal agent reaches the
         # model and the other offline sessions; a browser UI reaches the model and its
         # forwarder; the dashboard reaches the model and itself; every
@@ -338,7 +357,7 @@ class ProjectContractTests(unittest.TestCase):
         compose = load_yaml("compose.yaml")
         networks = compose.get("networks") or {}
         internal = {name for name, network in networks.items() if (network or {}).get("internal")}
-        self.assertEqual(internal, set(INTERNAL_NETWORKS), "the internal networks are agents, ui, and dashboard")
+        self.assertEqual(internal, set(INTERNAL_NETWORKS), "the internal networks are agents, ui, dashboard, memory")
         publish = {name for name in networks if name.endswith("-publish")}
         self.assertEqual(
             set(networks) - internal, {"default", *publish}, "every other network is default or a publisher's"
@@ -346,8 +365,9 @@ class ProjectContractTests(unittest.TestCase):
         services = compose.get("services") or {}
         self.assertEqual(
             set(services),
-            {"llama", *AGENT_SERVICES, *UI_SERVICES, *DASHBOARD_SERVICES},
-            "compose.yaml must define exactly the llama, agent, UI, and dashboard services; helpers run in-process",
+            {"llama", *AGENT_SERVICES, *UI_SERVICES, *DASHBOARD_SERVICES, MEMORY_SERVICE, JUDGE_SERVICE},
+            "compose.yaml must define exactly the llama, agent, UI, dashboard, memory, and judge services; "
+            "helpers run in-process",
         )
         placement = {name: set(service.get("networks") or ["default"]) for name, service in services.items()}
         for name, joined in placement.items():
@@ -356,7 +376,7 @@ class ProjectContractTests(unittest.TestCase):
         def neighbours(name: str) -> set[str]:
             return {other for other, joined in placement.items() if other != name and joined & placement[name]}
 
-        self.assertEqual({name for name, joined in placement.items() if "default" in joined}, {"llama"})
+        self.assertEqual({name for name, joined in placement.items() if "default" in joined}, {"llama", JUDGE_SERVICE})
         publishers = {name for name, service in services.items() if service.get("ports")}
         for network in publish:
             members = {name for name, joined in placement.items() if network in joined}
@@ -376,11 +396,24 @@ class ProjectContractTests(unittest.TestCase):
         for name in AGENT_SERVICES:
             self.assertEqual(
                 neighbours(name),
-                {"llama", *AGENT_SERVICES} - {name},
-                f"a terminal agent ({name}) reaches the model and the other offline sessions, nothing else",
+                {"llama", MEMORY_SERVICE, JUDGE_SERVICE, *AGENT_SERVICES} - {name},
+                f"a terminal agent ({name}) reaches the model, the memory and judge servers, and the other "
+                "offline sessions",
             )
         self.assertEqual(
-            neighbours("agent-ui"), {"llama", "ui-forward"}, "a browser UI reaches the model and its forwarder"
+            neighbours(MEMORY_SERVICE),
+            {"llama", JUDGE_SERVICE, *AGENT_SERVICES},
+            "the memory server reaches the model and the offline sessions, nothing else",
+        )
+        self.assertEqual(
+            neighbours(JUDGE_SERVICE),
+            {"llama", MEMORY_SERVICE, *AGENT_SERVICES, *UI_SERVICES},
+            "the judge server shares the offline sessions' and the browser UIs' networks, and the model's",
+        )
+        self.assertEqual(
+            neighbours("agent-ui"),
+            {"llama", "ui-forward", JUDGE_SERVICE},
+            "a browser UI reaches the model, the judge server, and its forwarder",
         )
         for name in DASHBOARD_SERVICES:
             self.assertLessEqual(
@@ -422,12 +455,13 @@ class ProjectContractTests(unittest.TestCase):
                 outside_home = {target for target in targets if not target.startswith(HOME_IN_CONTAINER)}
                 self.assertEqual(outside_home, MOUNT_TARGETS[name], f"{name} binds a target the contracts do not name")
         overlays = {
-            "compose.gpu.yaml": {"llama": {"devices"}, "gpu-exporter": {"devices"}},
+            "compose.gpu.yaml": {"llama": {"devices"}, JUDGE_SERVICE: {"devices"}, "gpu-exporter": {"devices"}},
             "compose.podman.yaml": {name: {"userns_mode"} for name in compose["services"]},
+            # The route out, and no judge name with it.
             "compose.agent-egress.yaml": {
-                "agent-pi": {"networks"},
-                "agent-omp": {"networks"},
-                "agent-ui": {"networks", "labels"},
+                "agent-pi": {"networks", "environment"},
+                "agent-omp": {"networks", "environment"},
+                "agent-ui": {"networks", "labels", "environment"},
             },
         }
         for relative, expected in overlays.items():
@@ -599,6 +633,75 @@ class ProjectContractTests(unittest.TestCase):
             read_only=True,
         )
 
+    def test_the_memory_server_is_hardened_pinned_offline_and_extracts_with_the_default_preset(self) -> None:
+        compose = load_yaml("compose.yaml")
+        service = self.service(compose, MEMORY_SERVICE)
+        self.assert_hardened(MEMORY_SERVICE, service)
+        self.assertEqual(service.get("profiles"), ["memory"])
+        self.assertRegex(
+            str(service.get("image")),
+            r"^ghcr\.io/vectorize-io/hindsight-api:\$\{HINDSIGHT_TAG:\?[^}]*\}@sha256:\$\{HINDSIGHT_DIGEST:\?",
+        )
+        self.assertEqual(
+            service.get("networks"),
+            ["agents", "memory"],
+            "the memory server sits on internal networks alone: its API registers webhooks to public addresses",
+        )
+        self.assertNotIn("ports", service)
+        # The image's start script gives PostgreSQL up to 60 seconds to stop.
+        self.assertEqual(service.get("stop_grace_period"), "75s")
+        environment = service.get("environment") or {}
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            self.assertEqual(environment.get(key), "1", f"the memory server must set {key}=1 (its models are baked in)")
+        self.assertEqual(environment.get("HINDSIGHT_API_LLM_BASE_URL"), "http://llama:8080/v1")
+        self.assertEqual(
+            environment.get("HINDSIGHT_API_LLM_MODEL"), "${LLM_DEFAULT_PRESET?exported by bin/tokencrate from .env}"
+        )
+        self.assertEqual(environment.get("HINDSIGHT_API_LLM_MAX_CONCURRENT"), "1")
+        self.assert_mount(
+            MEMORY_SERVICE,
+            service,
+            "/home/hindsight/.pg0",
+            "${LLM_AGENTS_DIR:?exported by bin/tokencrate from .env}/hindsight",
+            read_only=False,
+        )
+
+    def test_the_judge_server_is_the_llama_server_on_the_judge_model_set(self) -> None:
+        compose = load_yaml("compose.yaml")
+        llama, judge = self.service(compose, "llama"), self.service(compose, JUDGE_SERVICE)
+        self.assert_hardened(JUDGE_SERVICE, judge)
+        self.assertEqual(judge.get("profiles"), ["judge"])
+        for key in ("image", "environment", "tmpfs", "restart", "stop_grace_period", "pids_limit"):
+            self.assertEqual(judge.get(key), llama.get(key), f"the judge server must share llama's {key}")
+        self.assertEqual(judge.get("volumes"), [find_mount(llama, "/models")], "the judge mounts the library alone")
+        self.assertEqual(
+            judge.get("networks"),
+            ["agents", "ui", "default"],
+            "the judge server sits with the offline sessions, the browser UIs, and on the default network",
+        )
+        self.assertNotIn("ports", judge)
+        self.assertNotIn("devices", judge, "the GPU device request belongs in compose.gpu.yaml")
+        # The router's entrypoint is replaced by one server on the judge's
+        # model set, at the path the renderer would give its weights.
+        self.assertEqual(judge.get("entrypoint"), ["/app/llama-server"])
+        command = judge.get("command") or []
+        weights = presets.load(PROJECT_ROOT / "config", 0).model_sets[runtime.JUDGE_MODEL_SET].weights
+        self.assertEqual(command[command.index("--model") + 1], presets.model_path(weights.destination))
+        self.assertEqual(command[command.index("--port") + 1], "8080", "the judge set asks judge:8080")
+        # The judge set asks only a server whose /v1/models names this alias.
+        alias = command[command.index("--alias") + 1]
+        self.assertIn(f'const MODEL = "{alias}";', read_text("config/agent-sets/judge/judge/client.js"))
+        # The judge set takes the service from the environment, which names
+        # it for the offline services and the browser UIs; a start with a
+        # route out gets an address from the wrapper (session.judge_url).
+        self.assertIn("process.env.TOKENCRATE_JUDGE_URL", read_text("config/agent-sets/judge/judge/index.js"))
+        for name in (*AGENT_SERVICES, "agent-ui"):
+            self.assertEqual(
+                self.service(compose, name).get("environment", {}).get("TOKENCRATE_JUDGE_URL"),
+                "http://judge:8080",
+                name,
+            )
+
     def test_only_the_egress_overlay_moves_a_session_to_the_default_network(self) -> None:
         # The overlay replaces the network list (`!override`, which the
         # loader honours): an egress session is on the default network only,
@@ -616,6 +719,35 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(ui.get("networks"), ["ui", "default"], "compose.agent-egress.yaml must add default to the UI")
         self.assertEqual(ui.get("labels"), {uis.EGRESS_LABEL: "1"}, "the overlay must label an egress UI")
         self.assertNotIn("ui-forward", egress, "the forwarder never gets a route out")
+        # With a route out the bare name `judge` could resolve outside, so no
+        # container the overlay touches is given the name; the wrapper's
+        # `run` passes an address when the judge runs.
+        for name in (*AGENT_SERVICES, "agent-ui"):
+            self.assertEqual(
+                egress.get(name, {}).get("environment"),
+                {"TOKENCRATE_JUDGE_URL": ""},
+                f"compose.agent-egress.yaml must empty the judge URL for {name}",
+            )
+
+    def test_the_memory_overlay_gives_one_online_session_the_server_by_address(self) -> None:
+        # The server joins no network with a route out; the session joins the
+        # server's internal network, and a hosts entry keeps the name away
+        # from the resolver of the default network.
+        overlay = load_yaml("compose.agent-memory.yaml")
+        self.assertEqual(set(overlay), {"services"})
+        self.assertEqual(
+            overlay["services"],
+            {
+                "agent-pi": {
+                    "networks": ["default", "memory"],
+                    "extra_hosts": ["hindsight:${TOKENCRATE_MEMORY_ADDRESS:?set by bin/tokencrate}"],
+                }
+            },
+            "only a pi session joins the memory network",
+        )
+        placement = load_yaml("compose.yaml")["services"]
+        members = {name for name, service in placement.items() if "memory" in (service.get("networks") or [])}
+        self.assertEqual(members, {MEMORY_SERVICE}, "the memory network holds no service that has a route out")
 
     def test_no_compose_file_carries_the_cloud_keys(self) -> None:
         # The keys reach a container only as the file the `run -v` of
@@ -699,8 +831,21 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(
             pi_settings.get("defaultProjectTrust"), "ask", "config/agents/pi/settings.json must set defaultProjectTrust"
         )
-        autolearn = load_yaml("config/agents/omp/config.yml").get("autolearn") or {}
-        self.assertIs(autolearn.get("enabled"), False, "config/agents/omp/config.yml must disable autolearn")
+        # MCP is pi's built-in extension; the mcp agent set brings it back.
+        self.assertIn("-builtin:mcp", pi_settings.get("extensions") or [], "pi's MCP extension must be off by default")
+        # pi's `idle` default sends cache-refresh requests to a cloud
+        # provider for up to 30 minutes after a run.
+        self.assertEqual(pi_settings.get("cacheWarming"), "off", "config/agents/pi/settings.json must set cacheWarming")
+        omp = load_yaml("config/agents/omp/config.yml")
+        self.assertIs(
+            (omp.get("autolearn") or {}).get("enabled"), False, "config/agents/omp/config.yml must disable autolearn"
+        )
+        # omp asks the npm registry for its latest version unless this is off.
+        self.assertIs(
+            (omp.get("startup") or {}).get("checkUpdate"),
+            False,
+            "config/agents/omp/config.yml must set startup.checkUpdate",
+        )
 
     def test_the_agent_images_switch_install_telemetry_off_before_installing(self) -> None:
         dockerfile = read_text("services/agents/Dockerfile")
@@ -823,6 +968,29 @@ class ProjectContractTests(unittest.TestCase):
         for line in USAGE.splitlines():
             if line.startswith("  bin/tokencrate "):
                 self.assertIn(line.strip(), cli_page, f"docs/cli.md must show the usage line verbatim: {line.strip()}")
+
+    @unittest.skipUnless(shutil.which("node"), "node is required to run the image checks")
+    def test_image_checks_that_drive_a_sets_own_code_pass_against_the_tree(self) -> None:
+        # An image check that imports a set's extension, and nothing from
+        # node_modules, runs here too, with the set's directory in place of
+        # its path in the image: a change to the extension that breaks the
+        # check fails before an image is built.
+        sets_dir = PROJECT_ROOT / "config" / "agent-sets"
+        environment = {**os.environ, "TOKENCRATE_JUDGE_URL": "http://judge:8080"}
+        ran = []
+        for manifest in sorted(sets_dir.glob("*/set.toml")):
+            for command in tomllib.loads(manifest.read_text(encoding="utf-8")).get("check", []):
+                if 'import("/opt/tokencrate/sets/' not in command or "node_modules" in command:
+                    continue
+                ran.append(manifest.parent.name)
+                local = command.replace("/opt/tokencrate/sets/", f"{sets_dir}/")
+                with self.subTest(set=manifest.parent.name, check=command[:80]):
+                    run = subprocess.run(
+                        ["bash", "-c", local], capture_output=True, text=True, env=environment, timeout=60, check=False
+                    )
+                    self.assertEqual(run.returncode, 0, run.stderr[-1500:])
+        self.assertGreaterEqual(ran.count("guard"), 2)
+        self.assertGreaterEqual(ran.count("judge"), 3)
 
 
 if __name__ == "__main__":

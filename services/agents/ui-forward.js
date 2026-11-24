@@ -2,13 +2,14 @@
 // container. It runs in its own container on the UI's internal network and
 // on a publishing network of its own, because Docker never programs a
 // published port for a container that sits only on an internal network. It
-// is HTTP-aware for one reason: PI WEB checks nothing about where a request
-// comes from, so this forwarder refuses a request whose Host is not the
-// published address, whose Origin names another site, or whose
-// Sec-Fetch-Site says the browser sent it from another origin while no
-// Origin names the UI. Without that, any web page open in the same browser
-// could drive the agent through the loopback port. Clients that are not
-// browsers send neither Origin nor Sec-Fetch-Site and are allowed.
+// is HTTP-aware for one reason: the published port must not depend on what
+// the UI behind it checks about where a request comes from, so this
+// forwarder refuses a request whose Host is not the published address, whose
+// Origin names another site, or whose Sec-Fetch-Site says the browser sent
+// it from another origin while no Origin names the UI. Without that, any web
+// page open in the same browser could drive the agent through the loopback
+// port. Clients that are not browsers send neither Origin nor Sec-Fetch-Site
+// and are allowed.
 //
 // Usage: node ui-forward.js <target host> <target port> <listen port> <published port>
 "use strict";
@@ -32,14 +33,26 @@ function allowed(headers) {
   if (origin !== undefined) return origin.startsWith("http://") && allowedHosts.has(origin.slice(7));
   // Origin is set by the browser and names the page that sent the request;
   // a page cannot forge it, so an Origin of the UI itself settles the
-  // question even when Sec-Fetch-Site says cross-site: Paseo's web client
-  // connects to localhost when the page was opened as 127.0.0.1, and the
-  // browser calls the two loopback names different sites. Without an
+  // question even when Sec-Fetch-Site says cross-site: the browser calls
+  // the loopback names (127.0.0.1, localhost, [::1]) different sites, and
+  // a page opened under one may reach the UI under another. Without an
   // Origin, a browser still names the relation between the page and the
   // request; only a page of the UI itself (same-origin) or a typed address
   // (none) may pass.
   const site = headers["sec-fetch-site"];
   return site === undefined || site === "same-origin" || site === "none";
+}
+
+// Model output reaches the page: a Markdown image or media element whose
+// address names another site would make the browser send what the model
+// put in that address there, past the containers' missing route out. The
+// browser enforces this policy beside any the UI sends, so images and media
+// load only from the UI itself and from data: and blob: addresses.
+const POLICY = "img-src 'self' data: blob:; media-src 'self' data: blob:";
+
+function withPolicy(headers) {
+  const existing = headers["content-security-policy"];
+  return { ...headers, "content-security-policy": existing === undefined ? POLICY : [].concat(existing, POLICY) };
 }
 
 function refuse(headers) {
@@ -49,20 +62,20 @@ function refuse(headers) {
 
 const server = http.createServer((request, response) => {
   if (!allowed(request.headers)) {
-    response.writeHead(403, { "content-type": "text/plain" });
+    response.writeHead(403, withPolicy({ "content-type": "text/plain" }));
     response.end(refuse(request.headers));
     return;
   }
   const upstream = http.request(
     { host: targetHost, port: Number(targetPort), method: request.method, path: request.url, headers: request.headers, agent: false },
     (reply) => {
-      response.writeHead(reply.statusCode, reply.headers);
+      response.writeHead(reply.statusCode, withPolicy(reply.headers));
       reply.on("error", () => response.destroy());
       reply.pipe(response);
     },
   );
   upstream.on("error", () => {
-    if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
+    if (!response.headersSent) response.writeHead(502, withPolicy({ "content-type": "text/plain" }));
     response.end("TokenCrate: the UI container does not answer yet\n");
   });
   request.on("error", () => upstream.destroy());

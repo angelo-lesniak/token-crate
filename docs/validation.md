@@ -9,15 +9,15 @@ on the date.
 
 | Procedure | GPU host, rootless Podman | Virtual machine, rootless Podman | Virtual machine, Docker Engine |
 | --- | --- | --- | --- |
-| [Static gate](#static-gate-and-cpu-integration-check) | not run (no Node.js) | 2026-11-13 in strict mode | does not apply |
-| [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-11-09, `LLM_GPU=true` | 2026-11-14 | 2026-11-09, Engine 29.9.2 with Docker Compose 5.6.1 |
-| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-11-13 and 2026-11-14, scripted part, for every preset the pinned build loads (driver 615.78.08, Podman 6.1.4); 2026-11-09 for its hands-on checks | does not apply | does not apply |
-| [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-11-14 for `coding`, `coding,metrics`, `coding,web`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, and oh-my-pi, and for `coding` with PI WEB running, with and without `--egress`; 2026-11-09 for `coding` with both browser UIs running; 2026-09-20 for `coding,pi-web` and `coding,paseo` | 2026-11-14 for `coding`, `coding,metrics`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, and oh-my-pi; 2026-09-20 for `coding,pi-web` and `coding,paseo` | 2026-11-09 for the same selections as the virtual machine with Podman; 2026-09-20 for `coding,pi-web` and `coding,paseo` |
-| [Agent home check](#agent-home-check) | 2026-11-09 | 2026-11-14 | 2026-11-09 |
-| [Cross-project containment check](#cross-project-containment-check) | 2026-11-09, with both UIs running and with an `--egress` PI WEB | 2026-09-20, with a `--cloud` UI | 2026-09-20, with a `--cloud` UI, Engine 29.8.1 |
-| [Independent-client check](#independent-client-check) | 2026-11-09 scripted; 2026-09-20 by hand | 2026-11-14 | 2026-11-09 |
-| [Cloud check](#cloud-check) | 2026-11-09, a free OpenRouter model through `agent pi --cloud` and `ui paseo --cloud` | 2026-09-20, placeholder key | 2026-09-20, `ui pi-web --cloud` with a placeholder key only, Engine 29.8.1 |
-| [Dashboard and stats check](#dashboard-and-stats-check) | 2026-11-09, with the GPU exporter, except Grafana's access checks (step 2) | 2026-11-09, on the CPU fixture preset, without an agent turn | not run |
+| [Static gate](#static-gate-and-cpu-integration-check) | not run (no Node.js) | 2026-11-22 in strict mode | does not apply |
+| [CPU integration check](#static-gate-and-cpu-integration-check) | 2026-11-09, `LLM_GPU=true` | 2026-11-22 | 2026-11-09, Engine 29.9.2 with Docker Compose 5.6.1 |
+| [NVIDIA host baseline](#nvidia-host-baseline) | 2026-11-13 and 2026-11-14, scripted part, for every preset the pinned build loads except the Qwen3.8-27B ones with several slots, and 2026-11-22 `smoke` and `bench` for those (driver 615.78.08, Podman 6.1.4); 2026-11-09 for its hands-on checks | does not apply | does not apply |
+| [Agent check](#nvidia-host-baseline) (`smoke --agent`) | 2026-11-19 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,guard,judge,todo,mcp,search`, `roles,guard,memory,hindsight,metrics`, and oh-my-pi, for `coding,guard,judge` with the judge service, with and without `--egress`, and for `coding` with pi-web running, with and without `--egress`; 2026-11-22 for `coding`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,guard,judge,todo,mcp,search`, `roles,guard,memory,hindsight,metrics`, and `coding,guard,judge` with the judge service, with and without `--egress`; 2026-11-14 for `coding,metrics` and `coding,web` | 2026-11-18 for `coding`, `coding,metrics`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, `coding,guard,judge,todo,mcp,search`, `roles,memory,hindsight,metrics`, `coding,pi-web`, and oh-my-pi, without the judge and memory services; 2026-11-22 for `coding,guard,judge,roles,todo`, and, with the memory server, for `roles,guard,memory,hindsight,metrics`, `hindsight,search` with and without `--egress`, and oh-my-pi with and without `--egress` | 2026-11-09 for `coding`, `coding,metrics`, `coding,debug,dotnet,web,browser`, `coding,debug,odin`, and oh-my-pi |
+| [Agent home check](#agent-home-check) | 2026-11-09 | 2026-11-22 | 2026-11-09 |
+| [Cross-project containment check](#cross-project-containment-check) | 2026-11-09, with a browser UI running and with an `--egress` UI | 2026-11-22, with an `--egress` and a `--cloud` UI and with online `--memory` sessions | 2026-09-20, with a `--cloud` UI, Engine 29.8.1 |
+| [Independent-client check](#independent-client-check) | 2026-11-09 scripted; 2026-09-20 by hand | 2026-11-22 | 2026-11-09 |
+| [Cloud check](#cloud-check) | 2026-11-09, a free OpenRouter model through `agent pi --cloud` | 2026-11-22, placeholder key | 2026-09-20, `ui --cloud` with a placeholder key only, Engine 29.8.1 |
+| [Dashboard and stats check](#dashboard-and-stats-check) | 2026-11-09, with the GPU exporter, except Grafana's access checks (step 2) | 2026-11-22, on the CPU fixture preset, without an agent turn | not run |
 
 Each run used the pins of its date.
 
@@ -30,7 +30,7 @@ No run covers:
   accepts (the runs used 29.7.2 and newer);
 - on Docker Engine: the UI daemon's bind address, a `--cloud` terminal
   session and the removal of its container on `SIGTERM`, the llama API's
-  CORS setting, and the dashboard profile;
+  CORS setting, the dashboard profile, and the memory server;
 - `glm-5.3-flash-q2-uncensored-64k`, which waits behind the
   [build gate](models.md#build-gate);
 - a 16 GB card: `gpt-oss-20b-32k` and `qwen3.8-27b-q3-32k` were
@@ -46,19 +46,30 @@ No run covers:
   seeded `xhigh`;
 - oh-my-pi's language-server, subagent, and MCP features;
 - pi's project trust: that `defaultProjectTrust: ask` keeps a project's
-  `.pi/` resources from loading until the prompt is accepted, and that
-  they do not load in Paseo, which shows no trust prompt;
+  `.pi/` resources from loading until the prompt is accepted;
 - the dashboard profile over weeks (the 90-day retention, Grafana's
   growth on its tmpfs);
-- a cloud answer through pi's interactive model picker, PI WEB's browser
-  session, or Paseo's create-agent form, a paid provider, and the
-  reported cost: every recorded cloud answer came from a scripted prompt
-  on a free model;
+- a cloud answer through pi's interactive model picker or a pi-web
+  session, a paid provider, and the reported cost: every
+  recorded cloud answer came from a scripted prompt on a free model;
 - these [router
   observations](../CONTRIBUTING.md#router-behavior-the-wrapper-relies-on)
   on the pinned build: readiness, `POST /tokenize` without a model, a
   `/metrics` request loading a preset, and the preset-file rules;
 - a reverse proxy in front of the loopback ports;
+- the loop guard's thresholds in real sessions, the `mcp` set with a
+  server, and `roles` on a live cloud provider;
+- pi-web started with `--egress` on the GPU host, and pi-web on Docker
+  Engine and with `--cloud`;
+- how well Kev-4B's verdicts fit agent work;
+- a `--memory` session with `hindsight` and a route out on the GPU host
+  and on Docker Engine;
+- the memory server over real sessions: what it extracts, and its
+  requests competing with the session for a one-slot preset;
+- on the Qwen3.8-27B presets with several slots: agent sessions, and a
+  long prompt's return from the cache in system memory after more or
+  longer requests than two of 50K;
+- pi's `edit` tool on agent work with the Qwen presets;
 - answer quality, refusals included: what three bits cost the 27B on
   agent work, and plain pi against the `coding` bundle on the same
   tasks.
@@ -88,7 +99,7 @@ bash bin/tokencrate doctor
 bash bin/tokencrate up --model-sets qwen3.8-27b-ud-q4-k-xl
 bash bin/tokencrate status
 bash bin/tokencrate smoke
-bash bin/tokencrate bench --presets qwen3.8-27b-q4-2x128k,qwen3.8-27b-q4-mtp-128k
+bash bin/tokencrate bench --presets qwen3.8-27b-q4-mtp-2x128k,qwen3.8-27b-q4-mtp-128k
 ```
 
 Then `smoke --preset` and `bench --presets` for every other shipped preset
@@ -120,13 +131,13 @@ Run on both engines after a change to the agent volumes in
 python3 tests/integration.py -k home_lifecycle
 ```
 
-This runs the pi, oh-my-pi, PI WEB, and Paseo home checks, with the
+This runs the pi, oh-my-pi, and pi-web home checks, with the
 integration setup and `down` around them. They verify the home tmpfs
 ownership, that nothing outside the retained directories enters or
-outlives the home, that a transcript saved in one container reopens in a
-peer and after stop/start and recreation, and that Paseo keeps its
-identity. They run with networking disabled and no model, so they do not
-test the production network, forwarder, or model.
+outlives the home, and that a transcript saved in one container reopens
+in a peer and after stop/start and recreation. They run with networking
+disabled and no model, so they do not test the production network,
+forwarder, or model.
 
 ### Cross-project containment check
 
@@ -141,9 +152,8 @@ skip these fixture steps and pass `--preset <id>` to every `ui` and
 `smoke --agent` command below.
 
 1. `bash bin/tokencrate up --model-sets ci-small`, then
-   `bash bin/tokencrate ui pi-web --dir <project-a>` and
-   `bash bin/tokencrate ui paseo --dir <project-a>`.
-2. `bash bin/tokencrate smoke --agent pi`: every UI container and
+   `bash bin/tokencrate ui pi-web --dir <project-a>`.
+2. `bash bin/tokencrate smoke --agent pi`: the UI container and its
    forwarder unreachable by name and address; on Docker, no gateway
    address on the agents network.
 3. `bash bin/tokencrate smoke --agent pi --egress`: a default route, and
@@ -165,15 +175,16 @@ with its own Compose project and free host ports, on each engine:
 python3 tests/integration.py -k concurrent_clients
 ```
 
-It checks four live clients on one router and model process,
-containment from both terminal agents with and without egress, and the
-forwarders' `Host` and `Origin` checks.
+It checks three live clients on one router and model process,
+containment from both terminal agents with and without egress, the
+forwarder's `Host` and `Origin` checks, and pi-web's transcript and
+sidebar state across a stop and restart.
 
-For browser and terminal-screen acceptance, follow the [four-client
-workflow](agents.md#use-four-clients-with-one-model) with separate
-conversations: confirm the effective preset in each client, especially
-Paseo's retained profile, and record the assistant responses and the
-router and model-process identities before and after.
+For browser and terminal-screen acceptance, follow the [three-client
+workflow](agents.md#use-three-clients-with-one-model) with separate
+conversations: confirm the effective preset in each client, and record
+the assistant responses and the router and model-process identities
+before and after.
 
 ### Cloud check
 
@@ -198,10 +209,9 @@ directory and write `local/cloud-keys.env` with one placeholder key
    resolution as `[info]`, every UI address and forwarder as
    `not reachable`, and 0 failures.
 4. With a real key for a provider that offers a free model, one prompt
-   through `bash bin/tokencrate agent pi --cloud --dir <project-a>` and
-   one through `paseo run --provider pi` inside a `--cloud` Paseo
-   container; afterwards, search the agent homes under `LLM_AGENTS_DIR`
-   for the key value and find nothing.
+   through `bash bin/tokencrate agent pi --cloud --dir <project-a>`;
+   afterwards, search the agent homes under `LLM_AGENTS_DIR` for the key
+   value and find nothing.
 5. `bash bin/tokencrate ui stop`, `bash bin/tokencrate down`, and remove
    the keys file.
 

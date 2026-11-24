@@ -1,0 +1,9 @@
+{
+  "name": "tokencrate-mcp",
+  "private": true,
+  "type": "module",
+  "description": "pi's built-in MCP client, which the shared settings switch off, loaded as a package.",
+  "pi": {
+    "extensions": ["./index.js"]
+  }
+}

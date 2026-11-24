@@ -73,7 +73,7 @@ KNOWN_KEYS = {
 }
 ASSET_KEYS = {"url", "sha256", "sha512", "into", "strip", "mode"}
 UI_KEYS = {"command", "port", "state"}
-UI_OPTIONAL_KEYS = {"host_port"}
+UI_OPTIONAL_KEYS = {"host_port", "path"}
 # A UI set's name ends the names of its two containers, `tokencrate-ui-<set>`
 # and `tokencrate-ui-forward-<set>`: a DNS label (63 characters), and no
 # set may name another set's forwarder.
@@ -84,6 +84,10 @@ UI_ACTIONS = ("stop", "logs")
 # is a sibling of them, never one of them.
 RESERVED_HOME_DIRECTORIES = {".", "..", ".pi", ".omp", ".agents", ".config", ".local", ".cache"}
 COMMAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# The path of the address `ui` prints: URL characters and the {project}
+# placeholder, no fragment.
+UI_PATH_RE = re.compile(r"^/(?:[A-Za-z0-9._~/?=&%+-]|\{project\})*$")
+PROJECT_PLACEHOLDER = "{project}"
 STATE_RE = re.compile(r"^\.?[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -106,13 +110,15 @@ class UiSpec:
     """A set's `[ui]` table: the program `ui <set>` runs instead of `pi` (a
     name on the image's PATH, no arguments), the container port it listens
     on, the home directory that holds its state (the one UI path bound
-    from the host per project), and the host port it publishes by default
-    (None: `--port`)."""
+    from the host per project), the host port it publishes by default
+    (None: `--port`), and the path of the address `ui` prints, in which
+    {project} stands for the project directory."""
 
     command: str
     port: int
     state: str
     host_port: int | None
+    path: str = "/"
 
 
 @dataclass(frozen=True)
@@ -222,7 +228,7 @@ def read_ui(table: dict, name: str, context: str) -> UiSpec | None:
             "and not start with forward-",
         )
     if not isinstance(ui, dict) or not UI_KEYS <= set(ui) <= UI_KEYS | UI_OPTIONAL_KEYS:
-        raise fail(context, "ui must be a table with command, port, and state, and at most host_port")
+        raise fail(context, "ui must be a table with command, port, and state, and at most host_port and path")
     if not isinstance(ui["command"], str) or not COMMAND_RE.fullmatch(ui["command"]):
         raise fail(context, f"ui command must be a program name without a path or arguments: {ui['command']!r}")
     for key in ("port", "host_port"):
@@ -232,7 +238,12 @@ def read_ui(table: dict, name: str, context: str) -> UiSpec | None:
     state = ui["state"]
     if not isinstance(state, str) or not STATE_RE.fullmatch(state) or state in RESERVED_HOME_DIRECTORIES:
         raise fail(context, f"ui state must name one directory below the agent home, not the agent's own: {state!r}")
-    return UiSpec(ui["command"], ui["port"], state, ui.get("host_port"))
+    path = ui.get("path", "/")
+    if not isinstance(path, str) or not UI_PATH_RE.fullmatch(path):
+        raise fail(
+            context, f"ui path must start with / and hold URL characters and {PROJECT_PLACEHOLDER} only: {path!r}"
+        )
+    return UiSpec(ui["command"], ui["port"], state, ui.get("host_port"), path)
 
 
 def read_manifest(directory: Path, source: str) -> AgentSet:
@@ -397,14 +408,16 @@ def render_set(entry: AgentSet) -> str:
     out.append(f"COPY {entry.source} {target}\n")
     if entry.npm or entry.build:
         out.append(f"WORKDIR {target}\n")
+        # The install and the build lines are one layer, so what a build line
+        # removes from the install never reaches the image.
+        lines = list(entry.build)
         if entry.npm:
             omit = " --omit=peer" if entry.npm["omit_peer"] else ""
-            out.append(run_lines([f"npm ci --ignore-scripts{omit}", "npm audit signatures", "npm cache clean --force"]))
-        if entry.build:
-            # JSON keeps real line breaks inside Bash's script: Dockerfile
-            # continuations would let an inline comment swallow later steps.
-            command = ["/bin/bash", "-e", "-o", "pipefail", "-c", "\n".join(entry.build)]
-            out.append("RUN " + json.dumps(command) + "\n")
+            lines[:0] = [f"npm ci --ignore-scripts{omit}", "npm audit signatures", "npm cache clean --force"]
+        # JSON keeps real line breaks inside Bash's script: Dockerfile
+        # continuations would let an inline comment swallow later steps.
+        command = ["/bin/bash", "-e", "-o", "pipefail", "-c", "\n".join(lines)]
+        out.append("RUN " + json.dumps(command) + "\n")
         out.append("WORKDIR /\n")
     return "".join(out)
 

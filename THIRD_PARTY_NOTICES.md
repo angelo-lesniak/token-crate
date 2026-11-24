@@ -17,7 +17,7 @@ upstream software under its own licenses:
 | Set | Software | License |
 | --- | --- | --- |
 | `coding` | pi-lens | MIT, with bundled tree-sitter grammars and ast-grep under their own licenses |
-| `coding` | pi-hashline-edit-pro, `@narumitw/pi-plan-mode`, `@juicesharp/rpiv-advisor`, and the dependencies the lockfile names | MIT |
+| `coding` | `@narumitw/pi-plan-mode`, `@juicesharp/rpiv-advisor`, and the dependencies the lockfile names | MIT |
 | `debug` | The PieX `extensions/dap` source at a pinned commit, installed as `piex-dap` | MIT |
 | `browser` | `@narumitw/pi-chrome-devtools` and the dependencies the lockfile names | MIT |
 | `browser` | Debian's Chromium | BSD-3-Clause with bundled components under their own licenses |
@@ -29,15 +29,15 @@ upstream software under its own licenses:
 | `odin` | Odin compiler and its vendor libraries | zlib and the vendor libraries' own licenses |
 | `odin` | OLS | MIT |
 | `odin` | Debian's LLVM, SDL2, Vulkan, and shaderc packages | Their own licenses |
-| `pi-web` | PI WEB (`@jmfederico/pi-web`), node-pty, and the dependencies the lockfile names | MIT |
-| `paseo` | Paseo (`@getpaseo/cli` and its `@getpaseo/*` packages) | No license field on npm; the upstream repository's LICENSE is Apache-2.0 with carve-outs |
-| `paseo` | Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | "SEE LICENSE IN README.md" on npm |
-| `paseo` | OpenAI SDK | Apache-2.0 |
-| `paseo` | MCP SDK, Express, and the other dependencies the lockfile names | MIT and their own licenses |
-
-TokenCrate runs none of the Paseo dependencies below `@getpaseo/*`; whether
-the Claude Agent SDK's terms allow its presence in a locally built, never
-redistributed image was not reviewed.
+| `pi-web` | pi-web (`@agegr/pi-web`), Next.js, React, xterm.js, node-pty, and the dependencies the lockfile names | MIT (dependencies also MPL-2.0 for web-push and Next.js's bundled `@vercel/og`, Apache-2.0 for sharp with libvips under LGPL-3.0-or-later, CC-BY-4.0, PSF-2.0, BlueOak-1.0.0, BSD-3-Clause, 0BSD) |
+| `guard` | `pi-warden`, `pi-typesafe`, `@typesafe-ai/sdk`, and the dependencies the lockfile names | MIT |
+| `guard` | A loop guard with detectors reimplemented from oh-my-pi, OpenHands, `@wkqco33/pi-loop-guard`, pi-warden, and Qwen Code | MIT; Apache-2.0 for the parts from Qwen Code |
+| `judge` | An extension whose questions and output masking follow pi-warden and Gemini CLI | MIT; Apache-2.0 for the parts from Gemini CLI |
+| `todo` | `@juicesharp/rpiv-todo` and the dependencies the lockfile names | MIT |
+| `search` | `pi-web-access` and the dependencies the lockfile names | MIT (dependencies MIT, ISC, BSD-2-Clause, BSD-3-Clause, Apache-2.0) |
+| `memory` | `pi-memory` | MIT |
+| `hindsight` | `@vectorize-io/hindsight-coding-agents`, a bundle with its dependencies inlined | MIT (the Hindsight repository's; the package names none), bundled dependencies under their own licenses |
+| `roles` | `pi-subagents` and the dependencies the lockfile names | MIT (dependencies MIT, ISC, Apache-2.0) |
 
 Anyone redistributing an image is responsible for preserving required notices
 and reviewing the licenses introduced by the pinned packages.
@@ -65,6 +65,14 @@ and with the GPU a third, NVIDIA's DCGM exporter
 <https://github.com/NVIDIA/dcgm-exporter>, whose image also carries
 DCGM under NVIDIA's own license). The provisioned dashboard and
 datasource files under `config/dashboard/` are TokenCrate's own.
+
+The memory server (`LLM_MEMORY_SERVER=true`) runs Hindsight's API image
+as pinned in `pins.env`, without modifying or redistributing it
+(`ghcr.io/vectorize-io/hindsight-api`, MIT;
+<https://github.com/vectorize-io/hindsight>). The image carries the
+embedding model BAAI/bge-small-en-v1.5 (MIT), the reranker
+hindsight-ai/hs-rerank-1 (MIT), and an embedded PostgreSQL (pg0, MIT)
+with PostgreSQL and pgvector (PostgreSQL License).
 
 The shipped chat template under `config/chat-templates/` is a modified copy of
 the template embedded in the Qwen3.8 GGUF files (Apache License 2.0).

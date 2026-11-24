@@ -1,0 +1,28 @@
+schema = 1
+description = "Hindsight's pi integration: recalled project memory in each turn and hindsight_* tools from the memory server; inert without agent --memory and LLM_MEMORY_SERVER=true"
+pi_packages = ["extension"]
+# The integration reads coding-agent.json (HINDSIGHT_CONFIG), which wins
+# over the HINDSIGHT_* variables for every key it sets, so `agent --memory`
+# can only add the bank (HINDSIGHT_BANK_ID) and approve the project
+# (HINDSIGHT_OPT_IN_PATHS). Without that approval (optInOnly) the
+# integration registers no tool, injects nothing, and sends no request.
+# Its other keys keep the extraction model's work off the session's slot
+# where a setting allows it: no git-history seed (300 commit messages on a
+# cold bank) and no codebase survey (a headless agent run); recall before a
+# turn instead of reflect (an LLM loop per prompt); the tool guide on the
+# first turn only, not re-sent into every user message. Each turn's recall
+# stays in that turn's user message, so its budget (2000 tokens upstream)
+# is cut to 500 tokens a turn.
+# autoUpdate concerns a copy staged by the upstream installer, which this
+# image does not use; false keeps it off regardless.
+check = [
+  '''node -e 'const c = require(process.env.HINDSIGHT_CONFIG); process.exit(c.apiUrl === "http://hindsight:8888" && c.optInOnly === true ? 0 : 1)' ''',
+  'test -z "${HINDSIGHT_OPT_IN_PATHS:-}"',
+  'test -f /opt/tokencrate/sets/hindsight/node_modules/@vectorize-io/hindsight-coding-agents/dist/pi.js',
+  'echo "hindsight-coding-agents $(jq -r .version /opt/tokencrate/sets/hindsight/node_modules/@vectorize-io/hindsight-coding-agents/package.json) points at http://hindsight:8888, inert without --memory"',
+]
+
+[env]
+HINDSIGHT_CONFIG = "/opt/tokencrate/sets/hindsight/coding-agent.json"
+
+[npm]

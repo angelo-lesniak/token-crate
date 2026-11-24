@@ -109,7 +109,7 @@ class PresetTests(unittest.TestCase):
         arguments = {
             "output_dir": output,
             "models_root": models_root,
-            "default_preset": "qwen3.8-27b-q4-2x128k",
+            "default_preset": "qwen3.8-27b-q4-mtp-2x128k",
         }
         pinned_build = overrides.pop("pinned_build", 10920)
         # `check` selects the sibling that writes nothing, which takes
@@ -154,7 +154,7 @@ class PresetTests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
         # Only the default preset loads at start; the file is plain `key = value` lines.
         self.assertEqual(text.count("load-on-startup = true"), 1)
-        self.assertIn("\n[qwen3.8-27b-q4-2x128k]\nmodel = /models/", text)
+        self.assertIn("\n[qwen3.8-27b-q4-mtp-2x128k]\nmodel = /models/", text)
         records = {item.preset.name: item for item in rendered}
         self.assertEqual(list(records), SHIPPED_PRESETS)
         for name in LOADABLE_PRESETS:
@@ -178,7 +178,7 @@ class PresetTests(unittest.TestCase):
         # The Flash-Next presets reuse the 27B's patched template, which
         # their file embeds, and never draft with MTP.
         flash = config["qwen3.8-flash-next-q4-128k"]
-        self.assertEqual(flash["chat-template-file"], config["qwen3.8-27b-q4-2x128k"]["chat-template-file"])
+        self.assertEqual(flash["chat-template-file"], config["qwen3.8-27b-q4-mtp-2x128k"]["chat-template-file"])
         self.assertNotIn("spec-type", flash)
         # One entry per loadable preset in each agent's list, no per-effort
         # entries: the agents switch effort per turn.
@@ -204,7 +204,7 @@ class PresetTests(unittest.TestCase):
         rendered, _, output = self.render(self.config_with_cases(case=case))
         config = read_ini(output / "models.ini")
         section = config["case"]
-        sibling = config["qwen3.8-27b-q4-2x128k"]
+        sibling = config["qwen3.8-27b-q4-mtp-2x128k"]
         self.assertEqual(
             (section["model"], section["chat-template-file"]), (sibling["model"], sibling["chat-template-file"])
         )
@@ -289,13 +289,13 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(list(config), ["*", *GPT_OSS_PRESETS])
         self.assertNotIn("load-on-startup", (output / "models.ini").read_text(encoding="utf-8"))
         states = {item.preset.name: item for item in rendered}
-        self.assertFalse(states["qwen3.8-27b-q4-2x128k"].loadable)
+        self.assertFalse(states["qwen3.8-27b-q4-mtp-2x128k"].loadable)
         self.assertEqual(
-            states["qwen3.8-27b-q4-2x128k"].missing, ["unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"]
+            states["qwen3.8-27b-q4-mtp-2x128k"].missing, ["unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"]
         )
         self.assertTrue(states["gpt-oss-20b-2x128k"].loadable)
         self.assertIn(
-            "qwen3.8-27b-q4-2x128k: skipped (missing unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf)", stdout
+            "qwen3.8-27b-q4-mtp-2x128k: skipped (missing unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf)", stdout
         )
         self.assertIn(f"Rendered {len(GPT_OSS_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into", stdout)
         self.assertEqual(presets.rendered_model_ids(output), set(GPT_OSS_PRESETS))
@@ -396,7 +396,7 @@ class PresetTests(unittest.TestCase):
         rendered, stdout, output = self.render(config_dir)
         states = {item.preset.name: item for item in rendered}
         self.assertEqual((states["gpt-oss-20b-2x128k"].loadable, states["gpt-oss-20b-2x128k"].wait), (False, wait))
-        self.assertTrue(states["qwen3.8-27b-q4-2x128k"].loadable)
+        self.assertTrue(states["qwen3.8-27b-q4-mtp-2x128k"].loadable)
         self.assertIn(f"gpt-oss-20b-2x128k: {wait}\n", stdout)
         self.assertIn(
             f"Rendered {len(LOADABLE_PRESETS) - len(GPT_OSS_PRESETS)} of {len(SHIPPED_PRESETS)} preset(s) into",
@@ -456,7 +456,6 @@ class PresetTests(unittest.TestCase):
 
     def test_preset_validation_rules(self):
         head = PRESET_HEAD
-        self.preset_error(head + 'parallel = 2\nspec_type = "draft-mtp"\n', "requires parallel = 1")
         self.preset_error(head + "cache_reuse = 256\n", "unknown [server] key(s): cache_reuse")
         self.preset_error(head + 'extra = ["--verbose"]\n', "must be a table")
         self.preset_error(head + "[server.extra]\nverbose = [1]\n", "must be a string, number, or boolean")
@@ -509,6 +508,17 @@ class PresetTests(unittest.TestCase):
         )
         gpt = PRESET_HEAD.replace('model_set = "qwen3.8-27b-ud-q4-k-xl"', 'model_set = "gpt-oss-20b-mxfp4"')
         self.preset_error(gpt + 'spec_type = "draft-mtp"\nspec_draft_n_max = 3\n', "mtp = true")
+
+    def test_mtp_with_several_slots_keeps_one_kv_cache_per_slot(self):
+        # llama-server unifies the KV cache only for an automatic slot count,
+        # and MTP fails with a unified cache and several slots: the section
+        # states the slot count, and no preset can ask for the unified cache.
+        case = PRESET_HEAD + 'parallel = 2\nspec_type = "draft-mtp"\nspec_draft_n_max = 3\n'
+        _, _, output = self.render(self.config_with_cases(case=case))
+        section = read_ini(output / "models.ini")["case"]
+        self.assertEqual((section["parallel"], section["spec-type"]), ("2", "draft-mtp"))
+        self.assertNotIn("kv-unified", section)
+        self.preset_error(case + "[server.extra]\nkv-unified = true\n", "cannot set kv-unified")
 
     def test_extra_options_become_ini_lines(self):
         # Booleans, numbers, and strings are written as the router reads them,

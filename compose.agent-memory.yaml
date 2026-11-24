@@ -1,0 +1,12 @@
+# Opt-in overlay, after compose.agent-egress.yaml: a pi session with a route
+# out that asked for the memory server (`agent pi --memory` with the
+# hindsight set). It joins the internal `memory` network besides the default
+# one; the server never joins a network with a route out, because its API
+# registers webhooks to public addresses and every offline session reaches
+# that API. The name is a hosts entry with the address the wrapper read at
+# start, so no resolver can send it off the machine, also when the server
+# stops during the session.
+services:
+  agent-pi:
+    networks: !override [default, memory]
+    extra_hosts: ["hindsight:${TOKENCRATE_MEMORY_ADDRESS:?set by bin/tokencrate}"]

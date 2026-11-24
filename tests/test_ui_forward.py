@@ -47,6 +47,12 @@ class Target(http.server.BaseHTTPRequestHandler):
             except OSError:
                 self.server.stream_closed.set()
             return
+        if self.path == "/csp":
+            self.send_response(200)
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.headers.get("Upgrade") == "websocket":
             self.send_response(101)
             self.send_header("Upgrade", "websocket")
@@ -116,14 +122,32 @@ class ForwarderTests(unittest.TestCase):
         self.assertTrue(self.target.stream_closed.wait(2), "the canceled stream remained open upstream")
 
     def get(self, path: str, **headers: str) -> tuple[int, str]:
+        return self.fetch(path, **headers)[:2]
+
+    def fetch(self, path: str, **headers: str) -> tuple[int, str, list[str]]:
+        """Status, body, and the Content-Security-Policy headers."""
         headers.setdefault("Host", f"127.0.0.1:{self.published_port}")
         request = urllib.request.Request(f"http://127.0.0.1:{self.listen_port}{path}", headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
-                return response.status, response.read().decode()
+                policies = response.headers.get_all("Content-Security-Policy") or []
+                return response.status, response.read().decode(), policies
         except urllib.error.HTTPError as error:
             with error:
-                return error.code, error.read().decode()
+                return error.code, error.read().decode(), error.headers.get_all("Content-Security-Policy") or []
+
+    def test_every_response_limits_images_and_media_to_the_ui(self) -> None:
+        # Model output rendered as an image or media element must not make
+        # the browser fetch another site; the UI's own policy is kept beside it.
+        policy = "img-src 'self' data: blob:; media-src 'self' data: blob:"
+        self.assertEqual(self.fetch("/")[2], [policy])
+        self.assertEqual(self.fetch("/csp")[2], ["frame-ancestors 'none'", policy])
+        refused = self.fetch("/", Origin="http://evil.example.com")
+        self.assertEqual((refused[0], refused[2]), (403, [policy]))
+        self.target.shutdown()
+        self.target.server_close()
+        unavailable = self.fetch("/")
+        self.assertEqual((unavailable[0], unavailable[2]), (502, [policy]))
 
     def test_requests_for_the_published_address_reach_the_target(self) -> None:
         status, body = self.get("/api/x?y=1")
@@ -154,9 +178,9 @@ class ForwarderTests(unittest.TestCase):
             status, body = self.get("/", **{"Sec-Fetch-Site": site})
             self.assertEqual(status, 403, site)
             self.assertIn(f"(Sec-Fetch-Site: {site})", body)
-        # Paseo's web client connects to localhost from a page opened as
-        # 127.0.0.1, which the browser calls cross-site; the Origin header
-        # still names the UI and settles it, and a foreign Origin never passes.
+        # A page opened as 127.0.0.1 that connects to localhost is cross-site
+        # to the browser; the Origin header still names the UI and settles
+        # it, and a foreign Origin never passes.
         ui = f"http://127.0.0.1:{self.published_port}"
         cross = {"Sec-Fetch-Site": "cross-site"}
         status, _ = self.get("/", Host=f"localhost:{self.published_port}", Origin=ui, **cross)

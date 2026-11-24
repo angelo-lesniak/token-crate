@@ -11,11 +11,12 @@ ctx_size = 131072
 # One turn's reasoning, answer, and tool calls: the max_tokens of the model
 # card's coding benchmark (32,768 at a 256K context; the card's own advice,
 # 262,144 for reasoning alone, does not fit these slots). pi shortens a turn
-# near the end of the slot to what fits. The presets with a slot of 96K or
-# more use it; the smaller ones keep 16,384, half of a 32K slot.
+# near the end of the slot to what fits. The Qwen presets with a slot of 56K
+# or more use it: at 16,384 the reasoning budget of xhigh would leave 1,024
+# tokens for the answer and the tool calls. A 32K slot keeps 16,384, half of it.
 n_predict = 32768
-# MTP drafting works with one slot only; a second client queues behind the
-# first.
+# One slot: a second client queues behind the first; the presets with
+# several slots draft on every slot.
 parallel = 1
 gpu_layers = 99
 flash_attn = "auto"

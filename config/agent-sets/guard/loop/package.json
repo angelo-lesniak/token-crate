@@ -1,0 +1,9 @@
+{
+  "name": "tokencrate-loop-guard",
+  "private": true,
+  "type": "module",
+  "description": "Blocks a turn that repeats the same tool calls with the same results, and ends the run when the model keeps at it.",
+  "pi": {
+    "extensions": ["./index.js"]
+  }
+}

@@ -17,6 +17,11 @@ PERSISTENT_DIRECTORIES = {
     "pi": (".pi/agent/sessions",),
     "omp": tuple(f".omp/agent/{name}" for name in ("sessions", "blobs", "terminal-sessions", "custom-session-files")),
 }
+# The pi-memory store (PI_MEMORY_DIR of the memory set), bound only for
+# `agent pi --memory`: from the project's home, or for `--memory global`
+# from GLOBAL_MEMORY below the pi homes, which no project home is named.
+MEMORY_DIRECTORY = ".pi/agent/memory"
+GLOBAL_MEMORY = "memory"
 
 
 def persistent_directories(agent: str, state: str | None = None) -> tuple[str, ...]:

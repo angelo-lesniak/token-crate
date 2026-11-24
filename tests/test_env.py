@@ -223,6 +223,8 @@ class SettingsTests(unittest.TestCase):
         for word, expected in (("1", True), ("YES", True), (" on ", True), ("0", False), ("No", False), ("off", False)):
             self.assertEqual(env.load(self.tmp, {"LLM_GPU": word}).gpu, expected, word)
             self.assertEqual(env.load(self.tmp, {"LLM_DASHBOARD": word}).dashboard, expected, word)
+            self.assertEqual(env.load(self.tmp, {"LLM_MEMORY_SERVER": word}).memory_server, expected, word)
+            self.assertEqual(env.load(self.tmp, {"LLM_JUDGE_SERVER": word}).judge_server, expected, word)
         for key in env.BOOLEAN_KEYS:
             with self.assertRaisesRegex(
                 TokenCrateError, f"^{key} must be one of 1/true/yes/on or 0/false/no/off, not 'ture'$"
@@ -281,8 +283,13 @@ class SettingsTests(unittest.TestCase):
                 Path("build/agents/pi"),
                 Path("reports"),
                 Path("data/dashboard/victoria"),
+                Path("data/agents/hindsight"),
             },
         )
+        # The memory server's database is created with the agent homes and
+        # bound into the memory server alone.
+        self.assertTrue(by_label["the memory server's database"].created_by_init)
+        self.assertEqual(by_label["the memory server's database"].path, settings.agents_dir / "hindsight")
 
     def test_symlinked_env_file_is_refused(self) -> None:
         (self.tmp / "real.env").write_text("LLM_PORT=1\n")

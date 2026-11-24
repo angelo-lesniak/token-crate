@@ -172,6 +172,7 @@ class Engine:
         *args: str,
         profiles: tuple[str, ...] = (),
         egress: bool = False,
+        memory_network: bool = False,
         capture: bool = False,
         check: bool = True,
         stdin: int | None = None,
@@ -189,6 +190,8 @@ class Engine:
             files += ["--file", "compose.docker.yaml"]
         if egress:
             files += ["--file", "compose.agent-egress.yaml"]
+        if memory_network:
+            files += ["--file", "compose.agent-memory.yaml"]
         for profile in profiles:
             files += ["--profile", profile]
         env = self.settings.subprocess_env(**extra)
@@ -371,6 +374,22 @@ class Engine:
             if gateway:
                 return str(gateway)
         return ""
+
+    def network_address(self, container_id: str, network: str) -> str:
+        """The IPv4 address of a container on one Compose network of this
+        project (`NetworkSettings.Networks[<project>_<network>].IPAddress`
+        on both engines), or an empty string when it is not attached there
+        or the engine no longer knows it."""
+        result = self.command(
+            "inspect", "--format", "{{json .NetworkSettings.Networks}}", container_id, capture=True, check=False
+        )
+        if result.returncode != 0:
+            return ""
+        try:
+            networks = json.loads(result.stdout) or {}
+        except json.JSONDecodeError:
+            return ""
+        return str((networks.get(f"{self.settings.project_name}_{network}") or {}).get("IPAddress") or "")
 
     def bridge_forwarding(self, interface: str) -> tuple[str, str]:
         """(flag, cause): the IPv4 `forwarding` flag ("0" or "1") of a bridge

@@ -29,10 +29,15 @@ updates:
   - package-ecosystem: npm
     directories:
       - /config/agent-sets/browser
-      - /config/agent-sets/paseo
       - /config/agent-sets/pi-web
       - /config/agent-sets/coding
       - /config/agent-sets/web
+      - /config/agent-sets/guard
+      - /config/agent-sets/todo
+      - /config/agent-sets/search
+      - /config/agent-sets/memory
+      - /config/agent-sets/hindsight
+      - /config/agent-sets/roles
     schedule:
       interval: weekly
     open-pull-requests-limit: 0

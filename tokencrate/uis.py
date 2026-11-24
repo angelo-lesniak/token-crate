@@ -13,13 +13,15 @@ targets.
 from __future__ import annotations
 
 import dataclasses
+import os
+import urllib.parse
 from pathlib import Path
 
 from . import TokenCrateError, agentsets, presets, runtime
 from .engine import SERVICE_LABEL, Engine
 from .env import SERVICE_HOST, Settings
 from .localhttp import http_get
-from .session import plan, resolve_project_directory, symlink_in_path
+from .session import plan, resolve_project_directory
 
 # The set a UI container belongs to, and on the UI container of a set
 # started with --egress or --cloud, the mark the egress overlay sets.
@@ -27,8 +29,6 @@ UI_LABEL = "io.tokencrate.ui-set"
 EGRESS_LABEL = "io.tokencrate.ui-egress"
 # How long `ui` waits for the UI to answer on the published port.
 UI_START_TIMEOUT = 90
-# Where every UI container of a set finds the set's one shared directory.
-UI_STATE_MOUNT = "/run/tokencrate/ui-state"
 
 
 def container_names(name: str) -> tuple[str, str]:
@@ -134,21 +134,6 @@ def peer_targets(engine: Engine) -> str:
 # --- Launching a browser UI -------------------------------------------------
 
 
-def ui_state_store(settings: Settings, ui_set: str) -> Path:
-    """One directory per UI set, next to the agent homes, mounted read-write
-    at UI_STATE_MOUNT into the set's UI container of every project: what a
-    UI keeps once rather than per project. Paseo's launcher keeps its
-    daemon identity there (the browser tells daemons apart by it); PI WEB
-    ignores the directory. The copies run inside the container, where the
-    agent owns both sides, so the host side only has to be a real path."""
-    store = settings.agents_dir / "pi" / f"{ui_set}-state"
-    if link := symlink_in_path(store):
-        raise TokenCrateError(f"{link} is a symbolic link; the agent home must contain real paths (move it aside)")
-    store.mkdir(parents=True, exist_ok=True)
-    store.chmod(0o700)
-    return store
-
-
 def ui_entry(settings: Settings, ui_set: str) -> agentsets.AgentSet:
     """The named set, which must declare a `[ui]` table."""
     entry = agentsets.load_set(settings.root, ui_set)
@@ -165,6 +150,14 @@ def host_port(entry: agentsets.AgentSet, requested: str) -> str:
     if entry.ui.host_port is None:
         raise TokenCrateError(f"UI set {entry.name} declares no host_port; pass --port")
     return str(entry.ui.host_port)
+
+
+def address(entry: agentsets.AgentSet, port: str, project: Path) -> str:
+    """The address `ui` prints: the manifest's path with the project in it.
+    The project is mounted at its host path, so the UI knows it by that
+    name; its bytes are quoted, as a path need not be UTF-8."""
+    quoted = urllib.parse.quote(os.fsencode(project), safe="")
+    return f"http://{SERVICE_HOST}:{port}{entry.ui.path.replace(agentsets.PROJECT_PLACEHOLDER, quoted)}"
 
 
 def wait_for_ui(engine: Engine, ui_set: str, port: str, timeout: int) -> None:
@@ -238,7 +231,6 @@ def start(
     )
     # A build failure leaves the running pair untouched.
     launch.build(engine)
-    store = ui_state_store(settings, ui_set)
     with engine.lock("ui"):
         engine.require_port(forward_name, port)
         # A replace: the set's own pair goes, nothing else. --no-deps keeps
@@ -253,7 +245,7 @@ def start(
                     f"free it there with: bash bin/tokencrate ui stop {ui_set}"
                 )
         engine.remove_containers([item for item in containers(engine) if set_name(item) == ui_set])
-        launch.run(engine, ui_name, "-v", f"{store}:{UI_STATE_MOUNT}", detach=True, no_deps=True)
+        launch.run(engine, ui_name, detach=True, no_deps=True)
         # The forwarder is not an agent container: no keys, no overlay.
         engine.compose(
             "run",
@@ -268,7 +260,7 @@ def start(
             **launch.variables,
         )
     wait_for_ui(engine, ui_set, port, UI_START_TIMEOUT)
-    print(f"{ui_set} is ready at http://{SERVICE_HOST}:{port}/ for {resolved}")
+    print(f"{ui_set} is ready at {address(entry, port, resolved)} for {resolved}")
     print(
         f"Follow its output with: bash bin/tokencrate ui logs {ui_set}; "
         f"stop it with: bash bin/tokencrate ui stop {ui_set}"

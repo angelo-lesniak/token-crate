@@ -8,7 +8,9 @@ it checks the keys file, resolves the preset and the home, prepares the
 mounts, renders the image, and warns once, and returns a `Launch` whose
 `build` and `run` are the only way a start reaches Compose. Every `run`
 names its container, stops it on any unwind, and carries the profiles,
-the egress, and the keys mount (`run_arguments`) of the plan; a caller
+the egress, the keys mount (`run_arguments`), and with a route out the
+addresses of the judge (`judge_url`) and the memory server
+(`memory_address`) of the plan; a caller
 chooses only the command, whether to detach, and the terminal. The cloud
 keys file is checked by `cloud_keys_file` and never read by the wrapper.
 """
@@ -16,6 +18,7 @@ keys file is checked by `cloud_keys_file` and never read by the wrapper.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import stat
 import subprocess
@@ -25,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import TokenCrateError, agentsets, presets, runtime, skills, warn
-from .agenthome import persistent_directories
+from .agenthome import GLOBAL_MEMORY, MEMORY_DIRECTORY, persistent_directories
 from .engine import Engine
 from .env import Settings, require_private
 from .names import parse_list
@@ -38,11 +41,17 @@ CLOUD_IS_PI_ONLY = (
     "--cloud applies to pi only; oh-my-pi reads provider settings from the project's .env files, "
     "which could redirect a key"
 )
+MEMORY_IS_PI_ONLY = "--memory applies to pi only; the memory sets are pi agent sets"
+# The sets whose store `--memory` retains; the memory server is the
+# hindsight set's.
+MEMORY_SETS = ("memory", "hindsight")
+NO_MEMORY_SERVER = "no memory server is on the memory network (run: bash bin/tokencrate up)"
 UNSAFE_PATH_CHARACTERS = set(" \t\n,:$\"'")
 # Where `--cloud` mounts the keys file, read-only; the entrypoint exports
 # its lines and refuses to start without it when the start asked for it
 # (TOKENCRATE_CLOUD).
 KEYS_MOUNT_TARGET = "/etc/tokencrate/cloud-keys"
+MEMORY_MOUNT_TARGET = f"/home/agent/{MEMORY_DIRECTORY}"
 
 
 def cloud_keys_file(settings: Settings, project: Path) -> Path:
@@ -79,7 +88,7 @@ def run_arguments(keys: Path | None) -> tuple[str, ...]:
     return ("-v", f"{keys}:{KEYS_MOUNT_TARGET}:ro", "-e", "TOKENCRATE_CLOUD=1") if keys else ()
 
 
-def warn_about(egress: bool, keys: Path | None) -> None:
+def warn_about(egress: bool, keys: Path | None, memory: str = "", address: str = "") -> None:
     """What a start with a route out, or with the keys file, gives away."""
     if egress:
         warn("this agent session has internet access (egress enabled).")
@@ -88,6 +97,54 @@ def warn_about(egress: bool, keys: Path | None) -> None:
             f"this session offers the cloud providers keyed in {keys}: prompts, file contents, and the "
             "conversation so far go to a cloud model you pick, and every process in the session can read the keys."
         )
+    if keys and memory:
+        warn(
+            f"what the {memory} memory puts in a prompt, notes and recalled memories, go to the cloud model "
+            "with each request, and what this session writes there reaches later sessions."
+        )
+    if egress and memory == "global":
+        warn(
+            "the global memory store holds every project's notes, and this session has a route out: "
+            "a process in it can send them off this machine."
+        )
+    if address:
+        warn(
+            "this session reaches every project's Hindsight bank and has a route out: a process in it can send "
+            "them off this machine, and what web content makes it store reaches later sessions, offline ones included."
+        )
+
+
+def service_address(engine: Engine, service: str, network: str) -> str:
+    """The IPv4 address of the one running container of a service on one
+    network of this project, else empty."""
+    ids = engine.container_ids(service)
+    if len(ids) != 1:
+        return ""
+    address = engine.network_address(ids[0], network)
+    try:
+        ipaddress.IPv4Address(address)
+    except ValueError:
+        return ""
+    return address
+
+
+def memory_address(engine: Engine) -> str:
+    """The memory server's address on the memory network, for a session
+    with a route out: compose.agent-memory.yaml makes it the hosts entry
+    of the server's name, so no resolver sees the name."""
+    return service_address(engine, "hindsight", "memory")
+
+
+def judge_url(settings: Settings, engine: Engine) -> str:
+    """TOKENCRATE_JUDGE_URL for a start with a route out: the judge
+    container's IPv4 address on the default network, never its name,
+    which that container's resolver could send off the machine; empty
+    when LLM_JUDGE_SERVER is off or the judge is not running, and the
+    judge set then stays silent."""
+    if not settings.judge_server:
+        return ""
+    address = service_address(engine, "judge", "default")
+    return f"http://{address}:{runtime.JUDGE_PORT}" if address else ""
 
 
 def resolve_project_directory(settings: Settings, requested: str) -> Path:
@@ -239,19 +296,41 @@ def symlink_in_path(path: Path) -> Path | None:
     return next((part for part in (*reversed(path.parents), path) if part.is_symlink()), None)
 
 
+def make_bind_source(path: Path) -> None:
+    """Create a retained bind source as the caller, without following links."""
+    if link := symlink_in_path(path):
+        raise TokenCrateError(f"{link} is a symbolic link; the agent home must contain real paths (move it aside)")
+    if path.exists() and not path.is_dir():
+        raise TokenCrateError(f"{path} is not a directory; move it aside")
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def prepare_mountpoints(home: Path, agent: str, state: str | None = None) -> None:
-    """Create the retained bind sources as the caller, without following
-    links; nothing else in the host home is mounted or touched. The home
-    is readable by the calling user only: transcripts carry what the
-    session saw, keys an `agent --cloud` session printed included."""
+    """Create the retained bind sources; nothing else in the host home is
+    mounted or touched. The home is readable by the calling user only:
+    transcripts carry what the session saw, keys an `agent --cloud`
+    session printed included."""
     for relative in persistent_directories(agent, state):
-        path = home / relative
-        if link := symlink_in_path(path):
-            raise TokenCrateError(f"{link} is a symbolic link; the agent home must contain real paths (move it aside)")
-        if path.exists() and not path.is_dir():
-            raise TokenCrateError(f"{path} is not a directory; move it aside")
-        path.mkdir(parents=True, exist_ok=True)
+        make_bind_source(home / relative)
     home.chmod(0o700)
+
+
+def memory_arguments(settings: Settings, home: Path, project: Path, scope: str, server: bool) -> tuple[str, ...]:
+    """The `run` arguments of `agent pi --memory <scope>`: the pi-memory
+    store bound from the project's home, or for `global` the one store of
+    every project, readable by the calling user only. With `server` the
+    hindsight set gets its bank (one per project home, or one for all) and
+    the project's approval, without which it stays inert."""
+    if scope == "project":
+        store, bank = home / MEMORY_DIRECTORY, home.name
+    else:
+        store, bank = settings.agents_dir / "pi" / GLOBAL_MEMORY, "global"
+    make_bind_source(store)
+    store.chmod(0o700)
+    arguments = ("-v", f"{store}:{MEMORY_MOUNT_TARGET}")
+    if server:
+        arguments += ("-e", f"HINDSIGHT_BANK_ID=tokencrate::{bank}", "-e", f"HINDSIGHT_OPT_IN_PATHS={project}")
+    return arguments
 
 
 def selected_sets(settings: Settings, sets: str | None) -> list[agentsets.AgentSet]:
@@ -331,6 +410,14 @@ class Launch:
     egress: bool
     keys: Path | None
     variables: dict[str, str]
+    # The `run` arguments of `--memory` (`memory_arguments`).
+    memory: tuple[str, ...] = ()
+    # With a route out, the judge's address (`judge_url`); the egress
+    # overlay leaves the variable empty otherwise.
+    judge: str = ""
+    # With a route out and --memory, the memory server's address
+    # (`memory_address`); it adds the memory overlay.
+    memory_server: str = ""
 
     def build(self, engine: Engine) -> None:
         """The image, from the rendered Dockerfile. The egress overlay only
@@ -348,7 +435,8 @@ class Launch:
         no_deps: bool = False,
     ) -> subprocess.CompletedProcess:
         """The container, started under `name` with the plan's profiles,
-        egress, and keys mount, so no start can leave one out. `command`
+        egress, keys mount, and service addresses, so no start can leave
+        one out. `command`
         replaces the image command. Compose gets `-T` and attaches no
         terminal unless the caller has one to give (`tty`); a terminal on
         stdin that is not the caller's to give (a job under `timeout`, a
@@ -369,13 +457,17 @@ class Launch:
                 "--name",
                 name,
                 *run_arguments(self.keys),
+                *self.memory,
+                *(("-e", f"TOKENCRATE_JUDGE_URL={self.judge}") if self.judge else ()),
                 self.service,
                 *command,
                 profiles=self.profiles,
                 egress=self.egress,
+                memory_network=bool(self.memory_server),
                 check=detach,
                 stdin=subprocess.DEVNULL if not tty and sys.stdin.isatty() else None,
                 **self.variables,
+                **({"TOKENCRATE_MEMORY_ADDRESS": self.memory_server} if self.memory_server else {}),
             )
         except BaseException:
             stop_container(engine, name)
@@ -395,6 +487,7 @@ def plan(
     egress: bool = False,
     cloud: bool = False,
     home: Path | None = None,
+    memory: str = "",
 ) -> Launch:
     """The one pre-flight of every agent container start. `project` is the
     resolved project directory (`resolve_project_directory`, or a scratch
@@ -403,9 +496,15 @@ def plan(
     alone mounts no keys. `sets` is the pi selection (`--sets`, else
     LLM_AGENT_SETS; oh-my-pi has none), to which a browser UI's set `ui`
     is added. The home is the per-project one unless the caller has one
-    of its own (the containment check uses a scratch home). The keys file
-    is checked first, before the preset and the pre-flight, which all
-    cost something."""
+    of its own (the containment check uses a scratch home). `memory` is
+    the scope of `--memory` (`project` or `global`), which needs a memory
+    set; the memory server serves a session on the default preset alone,
+    the model it extracts with. An offline session reaches it on the
+    agents network; one with a route out gets its address on the memory
+    network (`memory_address`). With a route out, a pi start with the
+    judge set gets the judge's address (`judge_url`). The keys file is
+    checked first, before the preset and the pre-flight, which all cost
+    something."""
     keys = cloud_keys_file(settings, project) if cloud else None
     egress = egress or cloud
     preset = chosen_preset(settings, preset)
@@ -413,8 +512,27 @@ def plan(
     selected = selected_sets(settings, sets) if agent == "pi" else None
     if ui is not None and all(entry.name != ui.name for entry in selected):
         selected.append(ui)
+    names = {entry.name for entry in selected or []}
+    if memory and not names & set(MEMORY_SETS):
+        raise TokenCrateError("--memory needs the memory or hindsight agent set (--sets or LLM_AGENT_SETS)")
+    hindsight = bool(memory) and "hindsight" in names
+    server = hindsight and settings.memory_server
+    if hindsight and not server:
+        warn("the hindsight set stays inert in this session: LLM_MEMORY_SERVER is false.")
+    if server and preset != settings.default_preset:
+        raise TokenCrateError(
+            f"the memory server extracts memories with LLM_DEFAULT_PRESET ({settings.default_preset or 'unset'}); "
+            f"a --memory session with the hindsight set on {preset} would swap the model at every extraction "
+            "(start it without --preset, or without the hindsight set)"
+        )
     variables = prepare(settings, engine, configuration, agent, preset, project, home, selected=selected, ui=ui)
-    warn_about(egress, keys)
+    address = memory_address(engine) if server and egress else ""
+    if server and egress and not address:
+        server = False
+        warn(f"the hindsight set stays inert in this session: {NO_MEMORY_SERVER}.")
+    arguments = memory_arguments(settings, home, project, memory, server) if memory else ()
+    judge = judge_url(settings, engine) if egress and "judge" in names else ""
+    warn_about(egress, keys, memory, address)
     service = "agent-ui" if ui is not None else f"agent-{agent}"
     profiles = ("ui",) if ui is not None else (service,)
-    return Launch(agent, service, profiles, project, home, preset, egress, keys, variables)
+    return Launch(agent, service, profiles, project, home, preset, egress, keys, variables, arguments, judge, address)

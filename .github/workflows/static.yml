@@ -21,11 +21,10 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ShellCheck comes with the runner image; strict mode fails the run
+      # if it is missing.
       - name: Install static tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes ripgrep shellcheck
-          python3 -m pip install -r requirements-dev.txt
+        run: python3 -m pip install -r requirements-dev.txt
 
       - name: Run project checks
         # The runner checks out only tracked files, so this is also the proof

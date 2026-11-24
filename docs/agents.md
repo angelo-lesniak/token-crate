@@ -56,16 +56,16 @@ loadable preset.
   repository can instruct the agent. Project-local code runs inside the
   container as soon as the agent loads it. With the shipped
   `defaultProjectTrust: ask`, pi's `.pi/` resources (subagent
-  definitions, extensions, prompts, skills) are expected not to load
-  until you accept a prompt; nothing gates oh-my-pi's Bun configuration
-  (a `bunfig.toml` `preload`).
+  definitions, extensions, prompts, skills, MCP servers) are expected
+  not to load until you accept a prompt; nothing gates oh-my-pi's Bun
+  configuration (a `bunfig.toml` `preload`).
 - Files it writes can run on the host later: `.git/hooks`, `core.hooksPath`
   or `credential.helper` in `.git/config`, Makefiles, package scripts, and
   `.envrc`. Git does not show changes below `.git/` in a diff, so inspect
   `.git/config` and `.git/hooks` after a session before running Git on the
   host.
 - Its home is writable tmpfs, reset when the container stops, except
-  the transcript and UI directories that [Storage
+  the transcript, UI, and memory directories that [Storage
   layout](configuration.md#storage-layout) lists.
 - Commits made inside the container use `GIT_AUTHOR_NAME` and
   `GIT_AUTHOR_EMAIL` from `.env`; without them, `git commit` fails with
@@ -92,16 +92,19 @@ Each line is `NAME=value` with an upper-case name; blank lines and
 lines starting with `#` are skipped, and matching quotes around a value
 are removed. The container's entrypoint exports each key without
 expanding anything. It refuses a line with a carriage return and a name
-the agent image owns, such as `PATH`, `LD_*`, `TOKENCRATE_*`, or a
-telemetry switch; the refusal names the line and the variable, and the
-`case` list in
+the agent image owns, such as `PATH`, `LD_*`, `TOKENCRATE_*`, a
+telemetry switch, or the memory sets' `PI_MEMORY_*` and `HINDSIGHT_*`;
+the refusal names the line and the variable, and the `case` list in
 [`entrypoint.sh`](../services/agents/entrypoint.sh) is the full set.
 
-Pick the cloud model with `/model`. A provider is offered as soon as
-its key variable is set, with the regional and plan variants that read
-the same variable; `HF_TOKEN` in the file enables pi's Hugging Face
-provider. The wrapper does not set up a provider that needs a login or
-a second variable, such as pi's ChatGPT subscription (`openai-codex`).
+A session starts on the local preset; pick a cloud model with `/model`,
+or start on one with `-- --model <provider>/<model>`. The `roles` set's
+planner and reviewer run on the session's model, its scout and worker
+on the local preset. A provider is offered as soon as its key variable
+is set, with the regional and plan variants that read the same
+variable; `HF_TOKEN` in the file enables pi's Hugging Face provider.
+The wrapper does not set up a provider that needs a login or a second
+variable, such as pi's ChatGPT subscription (`openai-codex`).
 
 Use `--cloud` only in a project you trust:
 
@@ -146,44 +149,59 @@ sets remain readable by agent tools. A skill's name must be unique
 across both sources and match its frontmatter `name`; the container
 refuses to start otherwise.
 
+## Memory between sessions
+
+`agent pi --memory project` keeps the store of the `memory` and
+`hindsight` sets for the project, `--memory global` one store for all
+projects. Without `--memory`, and in a browser UI, the `memory` store
+lasts until the container stops and `hindsight` is inert.
+
+- **`memory`** keeps Markdown files in its store ([Storage
+  layout](configuration.md#storage-layout) says where); delete a file
+  to remove that memory.
+- **`hindsight`** uses the memory server ([`agent`](cli.md#agent) says
+  which sessions reach it). To delete every bank, run `down` and empty
+  `LLM_AGENTS_DIR/hindsight`.
+
+An instruction planted in a memory reaches later sessions, and with
+`global` other projects. [Networks](privacy.md#networks) says which
+sessions can read and change a bank.
+
+## MCP servers
+
+The `mcp` set turns on pi's MCP client. Add a server to the project's
+`.pi/mcp.json`, which pi reads after you accept the trust prompt;
+`~/.pi/agent/mcp.json` is lost when the container stops. Use `deferred`
+exposure: it declares one `tool_search` tool, where pi's default
+`codemode` exposure lists the server's tools in every request:
+
+```json
+{ "mcpServers": { "<name>": { "command": "<command>", "args": [], "exposure": "deferred" } } }
+```
+
+A stdio server's command runs in the container, so an [agent
+set](agent-sets.md#write-a-set) must install it in the image; `npx` and
+remote servers need `--egress`.
+
 ## Browser UIs
 
 `bash bin/tokencrate ui <set>` starts a browser UI for pi
-([`ui`](cli.md#ui) lists its options). Each UI runs inside a pi
-container and shares the project's pi transcripts with terminal
-sessions; its own state persists per project beside them.
-
-| Set | What it is | Choose it when |
-| --- | --- | --- |
-| `pi-web` | [PI WEB](https://github.com/jmfederico/pi-web): a file browser, editor, diffs, terminal, and layout for small screens, with one project at a time | You want a terminal session in a browser tab |
-| `paseo` | [Paseo](https://github.com/getpaseo/paseo): several agent sessions side by side, worktrees, and session import | You want several sessions at once or Paseo's workspace workflow |
+([`ui`](cli.md#ui) lists its options). The shipped UI set is `pi-web`:
+[agegr's pi-web](https://github.com/agegr/pi-web), with a session tree,
+a file browser, Git diffs, and a terminal. The UI runs inside a pi
+container, opens the project `ui` names, and shares its pi transcripts
+with terminal sessions; its own state persists per project beside them.
 
 The UI has no password, and its terminal and file editor have the
 agent's access to the project; [Browser UIs](privacy.md#browser-uis)
 says who can reach it. Extension dialogs appear in the browser.
 
-PI WEB switches off its own session-spawning and session-messaging
-tools; the `coding` set's subagent tool takes their place.
+## Use three clients with one model
 
-Paseo runs pi in RPC mode, which shows no project trust prompt, so
-project-local `.pi/` resources are expected not to load there. At first
-start the launcher registers the project as a workspace and seeds a
-daemon configuration with pi as the only provider and the selected
-preset as the default model. That configuration persists in the
-project's `.paseo` directory, so a later `--preset` does not replace it.
-Paseo's web client treats a new daemon identity at a known address as
-an unreachable host, so the launcher shares one identity between
-projects through the per-set store
-([Troubleshooting](troubleshooting.md#paseo-asks-to-pair-again-or-shows-the-previous-project)
-says how to get a fresh one).
-
-## Use four clients with one model
-
-A terminal pi, a terminal oh-my-pi, PI WEB, and Paseo can work on one
-project at once. Start each with the same `--preset` and `--dir`, and
-give each client its own conversation: concurrent writes to one
-conversation are not safe. On a preset with one slot, their requests
-queue.
+A terminal pi, a terminal oh-my-pi, and pi-web can work on one project
+at once. Start each with the same `--preset` and `--dir`, and give
+each client its own conversation: concurrent writes to one conversation
+are not safe. On a preset with one slot, their requests queue.
 
 ## Agent configuration
 
@@ -205,8 +223,8 @@ project. Neither bash tool reads shell startup files from the home.
 A running UI container serves one project and one home, shared by its
 conversations. An agent in one conversation can change what later
 conversations and sessions execute or read: project hooks and scripts,
-`AGENTS.md`, `.pi/`, retained transcripts, and UI configuration, including
-Paseo's provider command and environment. Changes elsewhere in the agent
-home last until the container stops. Stop the UI between tasks that must
-not trust each other, and inspect the project and the retained UI
-directories before trusting a later session.
+`AGENTS.md`, `.pi/`, retained transcripts, and UI configuration.
+Changes elsewhere in the agent home last until the container stops.
+Stop the UI between tasks that must not trust each other, and inspect
+the project and the retained UI directories before trusting a later
+session.

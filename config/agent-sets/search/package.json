@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-agent-set-search",
+  "private": true,
+  "description": "The pi-web-access extension, pinned by the lockfile; pi provides the peer packages.",
+  "dependencies": {
+    "pi-web-access": "0.48.0"
+  }
+}

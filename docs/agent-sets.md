@@ -23,25 +23,41 @@ the pinned versions. What decides a selection:
 
 | Set | Select it for |
 | --- | --- |
-| `coding` | Code intelligence, anchored edits, `/plan`, `/advisor`, and subagents that run on the session's own model |
+| `coding` | Code intelligence, `/plan`, and `/advisor` |
+| `roles` | Subagents: a read-only scout and planner, a worker, and an adversarial reviewer; two children run in parallel on a preset with several slots |
+| `guard` | Holds on destructive commands, masked credentials, and a loop guard the model sees; also in `roles` children |
+| `judge` | Advice from the judge service (`LLM_JUDGE_SERVER=true`) on unverified work, repeated failures, and edits off the task |
+| `todo` | A todo list for multi-step work, shown above the editor |
+| `memory` | Notes the model keeps in its system prompt, with no server ([Memory](agents.md#memory-between-sessions)) |
+| `hindsight` | Memories the memory server (`LLM_MEMORY_SERVER=true`) extracts and recalls; extraction runs on the default preset's slot ([Memory](agents.md#memory-between-sessions)) |
+| `search` | Web search and page extracts, which need `--egress` |
+| `mcp` | pi's MCP client ([MCP servers](agents.md#mcp-servers)) |
 | `debug` | A `debug` tool over the debug adapters of `dotnet` or `odin`, so select one of them too |
 | `dotnet` | .NET; NuGet restores from a read-only cache warmed with four project templates, and other packages need `--egress`, an explicit source, and a writable `NUGET_PACKAGES` |
 | `web` | TypeScript and Vue; `npm install` needs `--egress` |
 | `browser` | Chrome DevTools tools against headless Chromium, which runs without its own sandbox (the container is the sandbox) |
 | `metrics` | The [`stats`](cli.md#stats) Timings table; it adds no tool |
 | `odin` | Odin with SDL2 and Vulkan; there is no display, so SDL uses its dummy drivers |
-| `pi-web` | The PI WEB browser UI (`ui pi-web`) |
-| `paseo` | The Paseo browser UI (`ui paseo`); about 0.5 GB more image |
+| `pi-web` | The pi-web browser UI (`ui pi-web`) |
 
-Every tool schema is sent with every request, so select `debug` and
-`browser` only for projects that need them. The `dotnet` set pins its
-SDK tarball by SHA-512; csharp-ls and the cached NuGet packages come
-from nuget.org by version only, without a hash.
+`guard` and `judge` show what they did in a status in pi's footer and
+in pi-web's bottom bar, such as `guard: 2 reminders, 1 steer` or
+`judge: 4 asked, 1 advised`. Each reminder, blocked call, steer, and
+stopped run of the guard, and each question the judge answered with its
+verdicts, is also a `loop-guard` or `judge` entry in the session file,
+which the model never reads.
+
+Every tool schema is sent with every request, so select a set only for
+projects that need it: `roles`, `memory`, `todo`, and `search` each add
+about 5 KB to a request, `guard` about 3 KB, and `hindsight` about 11 KB
+in a `--memory` session. The `dotnet` set pins its SDK tarball by
+SHA-512; csharp-ls and the cached NuGet packages come from nuget.org by
+version only, without a hash.
 
 ## Common selections
 
 ```bash
-# A .NET backend and Vue frontend in PI WEB
+# A .NET backend and Vue frontend in pi-web
 bash bin/tokencrate ui pi-web --sets coding,debug,dotnet,web,browser --dir ~/src/my-project
 # Odin in terminal pi
 bash bin/tokencrate agent pi --sets coding,debug,odin --dir ~/src/my-project
@@ -109,13 +125,11 @@ the refusal states the rule.
 
 | Key | Meaning |
 | --- | --- |
-| `command` | A program name on the image's `PATH`, installed by a `build` line, that the entrypoint runs instead of `pi`. It must stay in the foreground and listen on the container's `ui`-network address or on all interfaces; the shipped launchers read that address from `/proc/net/route` and bind it alone |
+| `command` | A program name on the image's `PATH`, installed by a `build` line, that the entrypoint runs instead of `pi`. It must stay in the foreground and listen on the container's `ui`-network address or on all interfaces; the shipped launcher reads that address from `/proc/net/route` and binds it alone |
 | `port` | The container port it listens on, which the forwarder publishes on a loopback port |
-| `state` | One directory below the agent home, such as `.paseo`, that holds the UI's configuration and sessions and persists per project |
+| `state` | One directory below the agent home, such as `.pi-web`, that holds the UI's own state and persists per project |
+| `path` (optional) | The path of the address `ui` prints, default `/`; `{project}` stands for the URL-encoded project directory |
 | `host_port` (optional) | The loopback port the forwarder publishes unless `--port` names another; a set without it needs `--port` |
-
-What a UI keeps once for all projects goes in the per-set state
-directory that [Storage layout](configuration.md#storage-layout) names.
 
 ## Upgrade a set
 

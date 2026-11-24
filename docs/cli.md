@@ -73,9 +73,8 @@ In order:
 
 1. Runs the checks of [`doctor`](#doctor) for `LLM_DEFAULT_PRESET` and
    stops on a `[fail]` line.
-2. Refuses, before downloading, an existing `agents`, `ui`, or
-   `dashboard` network that breaks the [internal-network
-   rule](privacy.md#internal-networks).
+2. Refuses, before downloading, an existing internal network that
+   breaks the [internal-network rule](privacy.md#internal-networks).
 3. Downloads and verifies only the model sets named with `--model-sets`.
    Plain `up` downloads nothing, and the default preset's files must be
    present or startup fails.
@@ -96,6 +95,12 @@ In order:
 8. With `LLM_DASHBOARD=true`, starts the
    [dashboard](configuration.md#dashboard) profile (pulling its pinned
    images on the first start).
+9. Starts the [memory server and the judge
+   service](configuration.md#memory-server-and-judge-service) that
+   `LLM_MEMORY_SERVER` and `LLM_JUDGE_SERVER` switch on, and waits until
+   the judge answers. That wait fails if the judge container stops (as
+   when Kev-4B does not fit beside the default preset) or the timeout
+   expires.
 
 | Flag | Meaning |
 | --- | --- |
@@ -114,12 +119,13 @@ bin/tokencrate down
 ```
 
 Stops and removes the model server, terminal-agent containers, all
-browser UIs, the [dashboard](configuration.md#dashboard), and the
-Compose networks, which ends active agent sessions. Images and host data
-are kept. `down` finds its containers and networks by the Compose
-project labels, so it works even when the pins are invalid. A network of
-the project's name made without those labels is left alone, and `up`
-refuses until it is removed by hand.
+browser UIs, the [dashboard](configuration.md#dashboard), the memory
+server, the judge service, and the Compose networks, which ends active
+agent sessions. Images and host data are kept. `down` finds its
+containers and networks by the Compose project labels, so it works even
+when the pins are invalid. A network of the project's name made without
+those labels is left alone, and `up` refuses until it is removed by
+hand.
 
 ## status
 
@@ -197,7 +203,7 @@ written to `reports/bench-<timestamp>.md`, with the per-iteration
 measurements in `reports/bench-<timestamp>.json`.
 
 ```bash
-bash bin/tokencrate bench --presets qwen3.8-27b-q4-2x128k,qwen3.8-27b-q4-mtp-128k
+bash bin/tokencrate bench --presets qwen3.8-27b-q4-mtp-2x128k,qwen3.8-27b-q4-mtp-128k
 ```
 
 ## stats
@@ -254,7 +260,7 @@ bash bin/tokencrate stats --since 7d --agent pi
 ## agent
 
 ```text
-bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [-- args]
+bin/tokencrate agent <pi|omp> [--preset id] [--sets names] [--dir path] [--egress] [--cloud] [--memory project|global] [-- args]
 ```
 
 Opens a coding agent in a container with the project directory mounted
@@ -293,6 +299,14 @@ line it cannot use, naming it; [Cloud
 providers](agents.md#cloud-providers) states the line rule. `--egress`
 alone hands the container no key.
 
+`--memory project|global` needs the `memory` or `hindsight` set
+([Memory between sessions](agents.md#memory-between-sessions)). Both
+sets work with `--egress` and `--cloud` too. The `hindsight` set needs
+`LLM_MEMORY_SERVER=true` and a running server, and `LLM_DEFAULT_PRESET`,
+which the server extracts with: another `--preset` is refused. With a
+route out the command warns that the session [can send every bank off
+the machine](privacy.md#networks).
+
 The session container is named `tokencrate-agent-<id>`. A hang-up or
 `SIGTERM` to the wrapper stops it; a `SIGKILL` leaves it running with the
 keys it exported, until `down` or the agent exits.
@@ -305,7 +319,7 @@ The command refuses to start unless:
 - the model server runs the configuration the last `up` rendered; after
   a failed `up`, fix its error and run `up` again;
 - every skill set in `LLM_SKILL_SETS` is known, fetched, and complete;
-- the `agents`, `ui`, and `dashboard` networks satisfy the [internal-network
+- the internal networks satisfy the [internal-network
   rule](privacy.md#internal-networks).
 
 Arguments after `--` are passed to the agent binary; with pi's `-p`, the
@@ -347,10 +361,10 @@ prints its loopback address. The set must declare a `[ui]` manifest. The
 image contains `LLM_AGENT_SETS`, or `--sets` for this launch, plus the
 named UI set. The project directory, `--preset`, and pre-flight checks
 are those of [`agent`](#agent). A launch does not remember options from
-an earlier one and replaces only the named UI; the other UI and the
-model server keep running. A terminal session and both UIs can use one
-project ([the four-client
-workflow](agents.md#use-four-clients-with-one-model)).
+an earlier one and replaces only the named UI; other UIs and the model
+server keep running. A terminal session and a UI can use one project
+([the three-client
+workflow](agents.md#use-three-clients-with-one-model)).
 
 `--port` selects a host port for this launch only; without it the
 forwarder publishes the manifest's `host_port` ([Ports](configuration.md#ports)).
@@ -380,8 +394,8 @@ explains its network access.
 
 ```bash
 bash bin/tokencrate ui pi-web --dir ~/src/my-project
-bash bin/tokencrate ui paseo --cloud --dir ~/src/my-project
-bash bin/tokencrate ui stop paseo
+bash bin/tokencrate ui pi-web --cloud --dir ~/src/my-project
+bash bin/tokencrate ui stop pi-web
 ```
 
 ## models
@@ -476,7 +490,8 @@ upstream version, for one component or all of them (the default). A
 component is named by its key without `_TAG` or `_VERSION`, in lower
 case with hyphens (`LLAMA_CPP_TAG` is `llama-cpp`). For llama-cpp, the
 output also links the releases between the two builds and lists model
-sets waiting for a newer build. When an update is available, the output
+sets waiting for a newer build. For pi, it names the pi the newest pi-web
+pins, which `PI_VERSION` must equal. When an update is available, the output
 ends with `KEY=VALUE` lines to paste into `pins.env`, an image's tag and
 digest together; the command writes nothing. A pin whose source cannot
 be read is marked `lookup failed`, and the command exits with status 1.

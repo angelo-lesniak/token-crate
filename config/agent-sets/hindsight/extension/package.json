@@ -1,0 +1,8 @@
+{
+  "name": "tokencrate-hindsight",
+  "private": true,
+  "description": "Loads the pi entry of the pinned Hindsight integration, whose package declares no pi manifest.",
+  "pi": {
+    "extensions": ["./index.js"]
+  }
+}
